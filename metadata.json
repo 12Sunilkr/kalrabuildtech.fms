@@ -1,0 +1,5 @@
+{
+  "name": "FMS v.test27",
+  "description": "A comprehensive Attendance and Leave Management System featuring an Employee Master, monthly attendance grid with color-coded status (Present, Absent, Half-day, Short-leave), and automated leave quota calculations.",
+  "requestFramePermissions": []
+}
