@@ -13,11 +13,12 @@
     "npm": ">=11.7.0"
   },
   "dependencies": {
-    "react-dom": "^19.0.0",
-    "react": "^19.0.0",
+    "@google/generative-ai": "^0.24.1",
+    "date-fns": "^4.1.0",
     "lucide-react": "^0.468.0",
-    "recharts": "^3.5.1",
-    "date-fns": "^4.1.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^3.5.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
