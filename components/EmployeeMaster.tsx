@@ -79,7 +79,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
      }));
   };
 
-  const handleAddEmployee = () => {
+  const handleAddEmployee = async () => {
     if (currentEmp.id && currentEmp.name && currentEmp.department) {
       let finalDesignation = currentEmp.designation;
       const allowedRoles = DEPARTMENT_ROLES[currentEmp.department] || [];
@@ -102,14 +102,42 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
 
       setEmployees([...employees, newEmployee]);
       
+      // Create employee on server (if available), then create the user account
+      try {
+        const empRes = await fetch('http://localhost:4001/api/employees', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newEmployee)
+        });
+        if (empRes.ok) {
+          // refresh employees from server
+          const r = await fetch('http://localhost:4001/api/employees', { credentials: 'include' });
+          if (r.ok) setEmployees(await r.json());
+        }
+      } catch (err) {
+        console.warn('Employee create failed on server, continuing with local copy', err);
+      }
+
       if (currentEmp.email) {
-          setUsers([...users, {
-              email: currentEmp.email,
-              password: password || '123', 
-              role: role,
-              name: currentEmp.name,
-              employeeId: currentEmp.id
-          }]);
+          // Try to create user on server; fall back to local in offline mode
+          try {
+            const res = await fetch('http://localhost:4001/api/users', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: currentEmp.name, email: currentEmp.email, password: password || '123', role, employeeId: currentEmp.id })
+            });
+            if (res.ok) {
+              const listRes = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+              if (listRes.ok) setUsers(await listRes.json());
+            } else {
+              setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
+            }
+          } catch (err) {
+            console.error('Failed to create user on server, using local fallback', err);
+            setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
+          }
       }
 
       setShowAddModal(false);
@@ -138,58 +166,125 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     setShowDocsModal(true);
   };
 
-  const handleEditEmployee = () => {
+  const handleEditEmployee = async () => {
     if (!currentEmp.id) return;
     
+    // Optimistically update local employees
     setEmployees(employees.map(e => e.id === currentEmp.id ? { ...e, ...currentEmp } as Employee : e));
+
+    // Update employee on server
+    try {
+      const empUpd = await fetch(`http://localhost:4001/api/employees/${currentEmp.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(currentEmp)
+      });
+      if (empUpd.ok) {
+        const refreshed = await fetch('http://localhost:4001/api/employees', { credentials: 'include' });
+        if (refreshed.ok) setEmployees(await refreshed.json());
+      }
+    } catch (err) {
+      console.warn('Failed to update employee on server, keeping local copy', err);
+    }
 
     // Update User details (Email, Role, Password)
     const linkedUser = users.find(u => u.employeeId === currentEmp.id);
-    if (linkedUser) {
-        setUsers(users.map(u => {
-            if (u.employeeId === currentEmp.id) {
-                return {
-                    ...u,
-                    name: currentEmp.name || u.name,
-                    email: currentEmp.email || u.email,
-                    role: role, // Update Role from state
-                    password: password ? password : u.password 
-                };
-            }
-            return u;
-        }));
+    if (linkedUser && (linkedUser as any).id) {
+        // Update server-side user when we have an id
+        try {
+          const updRes = await fetch(`http://localhost:4001/api/users/${(linkedUser as any).id}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: currentEmp.name || linkedUser.name, email: currentEmp.email || linkedUser.email, password: password || undefined, role })
+          });
+          if (updRes.ok) {
+            const list = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+            if (list.ok) setUsers(await list.json());
+          } else {
+            // fallback to local update
+            setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password } : u));
+          }
+        } catch (err) {
+          console.error('Failed to update user on server, using local fallback', err);
+          setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password } : u));
+        }
     } else if (currentEmp.email) {
-        // If user didn't exist but email is now provided, create user
-        setUsers([...users, {
-            email: currentEmp.email,
-            password: password || '123',
-            role: role,
-            name: currentEmp.name || '',
-            employeeId: currentEmp.id
-        }]);
+        // Create user on server or fallback locally
+        try {
+          const res = await fetch('http://localhost:4001/api/users', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: currentEmp.name || '', email: currentEmp.email, password: password || '123', role, employeeId: currentEmp.id })
+          });
+          if (res.ok) {
+            const list = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+            if (list.ok) setUsers(await list.json());
+          } else {
+            setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
+          }
+        } catch (err) {
+          console.error('Failed to create user on server, using local fallback', err);
+          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
+        }
     }
 
     setShowEditModal(false);
   };
 
-  const handleUpdateAdminPassword = (email: string) => {
+  const handleUpdateAdminPassword = async (email: string) => {
     if (!newAdminPassword) {
         alert("Please enter a new password.");
         return;
     }
-    setUsers(users.map(u => u.email === email ? { ...u, password: newAdminPassword } : u));
-    setEditingAdminEmail(null);
-    setNewAdminPassword('');
-    alert("Admin password updated successfully.");
+    try {
+      // Find user on server
+      const res = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+      if (!res.ok) throw new Error('User list fetch failed');
+      const list = await res.json();
+      const user = list.find((u: any) => u.email === email);
+      if (!user) throw new Error('User not found');
+      const upd = await fetch(`http://localhost:4001/api/users/${user.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: newAdminPassword })
+      });
+      if (!upd.ok) throw new Error('Update failed');
+      const refreshed = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+      if (refreshed.ok) setUsers(await refreshed.json());
+      setEditingAdminEmail(null);
+      setNewAdminPassword('');
+      alert("Admin password updated successfully.");
+    } catch (err) {
+      console.error('Failed to update admin password on server, using local fallback', err);
+      setUsers(users.map(u => u.email === email ? { ...u, password: newAdminPassword } : u));
+      setEditingAdminEmail(null);
+      setNewAdminPassword('');
+      alert("Admin password updated (local fallback).");
+    }
   };
 
-  const handleArchive = (id: string) => {
+  const handleArchive = async (id: string) => {
     if (window.confirm('Are you sure you want to archive this team member? Data will be moved to the Archive section.')) {
       const empToArchive = employees.find(e => e.id === id);
       if (empToArchive) {
           setArchivedEmployees([...archivedEmployees, { ...empToArchive, status: 'Inactive' }]);
           setEmployees(employees.filter(e => e.id !== id));
           onNavigate(ViewMode.ARCHIVED_STAFF);
+          // Update server status if possible
+          try {
+            await fetch(`http://localhost:4001/api/employees/${id}`, {
+              method: 'PUT',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'Inactive' })
+            });
+          } catch (err) {
+            console.warn('Failed to archive employee on server', err);
+          }
       }
     }
   };

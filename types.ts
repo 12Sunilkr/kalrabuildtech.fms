@@ -24,6 +24,7 @@ export interface Employee {
 export type Role = 'ADMIN' | 'EMPLOYEE';
 
 export interface User {
+  id?: any;
   email: string;
   password: string; // In a real app, never store plain text
   role: Role;

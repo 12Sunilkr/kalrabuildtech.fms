@@ -118,7 +118,7 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
       setManualTime('');
   };
 
-  const saveManualOut = (log: any) => {
+  const saveManualOut = async (log: any) => {
       if (!manualTime) return;
 
       const clockOutIso = `${log.date}T${manualTime}:00`;
@@ -149,27 +149,56 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
         attendanceVal = 0; // Absent
       }
 
-      // 1. Update TimeLogs
-      setTimeLogs(prev => ({
-          ...prev,
-          [log.empId]: {
-              ...(prev[log.empId] || {}),
-              [log.date]: {
-                  ...log, // Keep ID, Date, In time
-                  clockOut: clockOutIso,
-                  durationHours: durationHours
-              }
-          }
-      }));
+      const tId = `T-${log.empId}-${log.date}`;
+      const aId = `A-${log.empId}-${log.date}`;
+      try {
+        await fetch(`http://localhost:4001/api/timelogs/${encodeURIComponent(tId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endTime: clockOutIso }) });
+        await fetch(`http://localhost:4001/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clockOut: clockOutIso, value: attendanceVal }) });
 
-      // 2. Update Attendance Sheet
-      setAttendanceData(prev => ({
-          ...prev,
-          [log.empId]: {
-              ...(prev[log.empId] || {}),
-              [log.date]: attendanceVal
-          }
-      }));
+        // 1. Update TimeLogs locally
+        setTimeLogs(prev => ({
+            ...prev,
+            [log.empId]: {
+                ...(prev[log.empId] || {}),
+                [log.date]: {
+                    ...log, // Keep ID, Date, In time
+                    clockOut: clockOutIso,
+                    durationHours: durationHours
+                }
+            }
+        }));
+
+        // 2. Update Attendance Sheet locally
+        setAttendanceData(prev => ({
+            ...prev,
+            [log.empId]: {
+                ...(prev[log.empId] || {}),
+                [log.date]: attendanceVal
+            }
+        }));
+
+      } catch (err) {
+        console.warn('Manual out update failed, falling back to local update', err);
+        // Fallback behavior
+        setTimeLogs(prev => ({
+            ...prev,
+            [log.empId]: {
+                ...(prev[log.empId] || {}),
+                [log.date]: {
+                    ...log, // Keep ID, Date, In time
+                    clockOut: clockOutIso,
+                    durationHours: durationHours
+                }
+            }
+        }));
+        setAttendanceData(prev => ({
+            ...prev,
+            [log.empId]: {
+                ...(prev[log.empId] || {}),
+                [log.date]: attendanceVal
+            }
+        }));
+      }
 
       setEditingKey(null);
       setManualTime('');

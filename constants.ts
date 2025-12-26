@@ -77,12 +77,13 @@ export const INITIAL_EMPLOYEES: Employee[] = [];
 export const INITIAL_ARCHIVED_EMPLOYEES: Employee[] = [];
 
 export const INITIAL_USERS: User[] = [
-  { 
+  ({ 
+    id: 'U-admin',
     email: 'admin@fms.com', 
     password: 'admin', 
     role: 'ADMIN', 
     name: 'Administrator' 
-  }
+  } as User)
 ];
 
 export const INITIAL_TASKS: Task[] = [];

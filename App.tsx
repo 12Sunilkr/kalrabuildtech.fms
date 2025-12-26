@@ -33,9 +33,86 @@ import { useLocalStorage } from './hooks/useLocalStorage';
 
 const App: React.FC = () => {
   // 1. AUTH STATE (Primary Authority)
-  const [currentUser, setCurrentUser] = useLocalStorage<User | null>('fms_currentUser', null);
-  const [users, setUsers] = useLocalStorage<User[]>('fms_users', INITIAL_USERS);
+  // NOTE: Switch from localStorage-backed users/currentUser to server-backed SQLite (via /api/users).
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [users, setUsers] = useState<User[]>(INITIAL_USERS);
   const [authError, setAuthError] = useState<string>('');
+
+  // Restore session and load users from the server on startup
+  useEffect(() => {
+    const init = async () => {
+      try {
+        // Try to restore session
+        const me = await fetch('http://localhost:4001/api/auth/me', { credentials: 'include' });
+        if (me.ok) {
+          const meJson = await me.json();
+          setCurrentUser(meJson.user || null);
+        }
+      } catch (err) {
+        console.warn('Auth/me unreachable', err);
+      }
+      try {
+        const res = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+        if (res.ok) {
+          const list = await res.json();
+          setUsers(list);
+        } else {
+          console.warn('Failed to fetch users from server. Using local defaults.');
+          setUsers(INITIAL_USERS);
+        }
+      } catch (err) {
+        console.error('User API unreachable, using local defaults', err);
+        setUsers(INITIAL_USERS);
+      }
+
+      // Try to load employees from server
+      try {
+        const r = await fetch('http://localhost:4001/api/employees', { credentials: 'include' });
+        if (r.ok) {
+          setEmployees(await r.json());
+        } else {
+          console.warn('Employees API unreachable, using local storage');
+        }
+      } catch (err) {
+        console.warn('Employees API unreachable, using local storage', err);
+      }
+
+      // Load attendance records from server
+      try {
+        const sat = await fetch('http://localhost:4001/api/attendance', { credentials: 'include' });
+        if (sat.ok) {
+          const arr = await sat.json();
+          // Convert array into attendanceData shape: { [empId]: { [date]: value } }
+          const ag: Record<string, AttendanceRecord> = {};
+          arr.forEach((a: any) => {
+            if (!ag[a.userId]) ag[a.userId] = {};
+            ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+          });
+          setAttendanceData(ag);
+        }
+      } catch (err) {
+        console.warn('Attendance API unreachable', err);
+      }
+
+      // Load timelogs from server
+      try {
+        const stl = await fetch('http://localhost:4001/api/timelogs', { credentials: 'include' });
+        if (stl.ok) {
+          const arr = await stl.json();
+          const ag: Record<string, Record<string, TimeLog>> = {};
+          arr.forEach((t: any) => {
+            const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
+            if (!ag[t.userId]) ag[t.userId] = {};
+            ag[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime || undefined, clockOut: t.endTime || undefined } as TimeLog;
+          });
+          setTimeLogs(ag);
+        }
+      } catch (err) {
+        console.warn('TimeLog API unreachable', err);
+      }
+    };
+    init();
+  }, []);
 
   // 2. VIEW STATE (Decoupled from hash if not logged in)
   const [currentView, setCurrentView] = useState<ViewMode>(ViewMode.DASHBOARD);
@@ -87,10 +164,10 @@ const App: React.FC = () => {
   // --- App Data State ---
   const [employees, setEmployees] = useLocalStorage<Employee[]>('fms_employees', INITIAL_EMPLOYEES);
   const [archivedEmployees, setArchivedEmployees] = useLocalStorage<Employee[]>('fms_archived', INITIAL_ARCHIVED_EMPLOYEES);
-  const [attendanceData, setAttendanceData] = useLocalStorage<Record<string, AttendanceRecord>>('fms_attendance', {});
+  const [attendanceData, setAttendanceData] = useState<Record<string, AttendanceRecord>>({});
   const [holidays, setHolidays] = useLocalStorage<Holiday[]>('fms_holidays', []); 
   const [reminders, setReminders] = useLocalStorage<Reminder[]>('fms_reminders', []); 
-  const [timeLogs, setTimeLogs] = useLocalStorage<Record<string, Record<string, TimeLog>>>('fms_timelogs', {}); 
+  const [timeLogs, setTimeLogs] = useState<Record<string, Record<string, TimeLog>>>({}); 
   const [tasks, setTasks] = useLocalStorage<Task[]>('fms_tasks', INITIAL_TASKS);
   const [orders, setOrders] = useLocalStorage<MaterialOrder[]>('fms_orders', INITIAL_ORDERS);
   const [queries, setQueries] = useLocalStorage<Query[]>('fms_queries', INITIAL_QUERIES);
@@ -111,26 +188,63 @@ const App: React.FC = () => {
   // --- Handlers ---
 
   const handleLogin = async (email: string, pass: string) => {
-    await new Promise(r => setTimeout(r, 600));
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === pass);
-    if (user) {
-      if (user.role === 'EMPLOYEE' && user.employeeId) {
-          const isActive = employees.find(e => e.id === user.employeeId);
-          if (!isActive) {
-              setAuthError('Account is inactive. Contact Administrator.');
-              return;
-          }
+    // Try remote auth server first
+    try {
+      const res = await fetch('http://localhost:4001/api/auth/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.toLowerCase(), password: pass })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuthError(data.message || 'Invalid credentials. Access Denied.');
+        return;
       }
-      setCurrentUser(user);
-      setAuthError('');
-      // Force initial view after login
-      setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
-    } else {
+      const user = data.user as User;
+      if (user) {
+        if (user.role === 'EMPLOYEE' && user.employeeId) {
+          const isActive = employees.find(e => e.id === user.employeeId);
+          // if (!isActive) {
+          //   setAuthError('Account is inactive. Contact Administrator.');
+          //   return;
+          // }
+        }
+        setCurrentUser(user);
+        setAuthError('');
+        setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+        return;
+      }
       setAuthError('Invalid credentials. Access Denied.');
+    } catch (err) {
+      // If server unreachable, fall back to local in-browser users
+      console.error('Auth server unreachable, falling back to local users', err);
+      await new Promise(r => setTimeout(r, 600));
+      const user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === pass);
+      if (user) {
+        if (user.role === 'EMPLOYEE' && user.employeeId) {
+            const isActive = employees.find(e => e.id === user.employeeId);
+            if (!isActive) {
+                setAuthError('Account is inactive. Contact Administrator.');
+                return;
+            }
+        }
+        setCurrentUser(user);
+        setAuthError('');
+        // Force initial view after login
+        setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+      } else {
+        setAuthError('Invalid credentials. Access Denied.');
+      }
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await fetch('http://localhost:4001/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch (err) {
+      console.warn('Logout call failed', err);
+    }
     setCurrentUser(null);
     setAuthError('');
     setIsSidebarOpen(false);
@@ -159,9 +273,33 @@ const App: React.FC = () => {
            return;
        }
     }
-    setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { date: dateKey, clockIn: now.toISOString() } } }));
-    setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
-    addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', empId);
+
+    const tId = `T-${empId}-${dateKey}`;
+    const aId = `A-${empId}-${dateKey}`;
+
+    try {
+      // Create timelog
+      await fetch('http://localhost:4001/api/timelogs', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: tId, userId: empId, startTime: now.toISOString() })
+      });
+      // Create attendance record (value may be null until clock out)
+      await fetch('http://localhost:4001/api/attendance', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null })
+      });
+
+      // Update local state to reflect server
+      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { date: dateKey, clockIn: now.toISOString() } } }));
+      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
+      addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', empId);
+    } catch (err) {
+      console.warn('Clock-in server call failed, falling back to local update', err);
+      // Fallback to local only
+      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { date: dateKey, clockIn: now.toISOString() } } }));
+      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
+      addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', empId);
+    }
   };
 
   const handleClockOut = async () => {
@@ -173,14 +311,35 @@ const App: React.FC = () => {
     if (!currentLog?.clockIn) return;
     const diffMinutes = differenceInMinutes(now, new Date(currentLog.clockIn));
     const hoursWorked = diffMinutes / 60; 
-    setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { ...currentLog, clockOut: now.toISOString(), durationHours: hoursWorked } } }));
-    let val: AttendanceValue = 0;
-    if (hoursWorked >= 7.5) val = 1;
-    else if (hoursWorked >= 6) val = 0.75;
-    else if (hoursWorked >= 4) val = 0.5;
-    else if (hoursWorked >= 2) val = 0.25;
-    setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: val } }));
-    addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(hoursWorked)}`, 'SYSTEM', empId);
+
+    const tId = `T-${empId}-${dateKey}`;
+    const aId = `A-${empId}-${dateKey}`;
+
+    const computedVal: AttendanceValue = hoursWorked >= 7.5 ? 1 : (hoursWorked >= 6 ? 0.75 : (hoursWorked >= 4 ? 0.5 : (hoursWorked >= 2 ? 0.25 : 0)));
+
+    try {
+      // Update timelog endTime
+      await fetch(`http://localhost:4001/api/timelogs/${encodeURIComponent(tId)}`, {
+        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endTime: now.toISOString() })
+      });
+
+      // Update attendance with clockOut and computed value
+      await fetch(`http://localhost:4001/api/attendance/${encodeURIComponent(aId)}`, {
+        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clockOut: now.toISOString(), value: computedVal })
+      });
+
+      // Update local state
+      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { ...currentLog, clockOut: now.toISOString(), durationHours: hoursWorked } } }));
+      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
+      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(hoursWorked)}`, 'SYSTEM', empId);
+    } catch (err) {
+      console.warn('Clock-out server call failed, falling back to local update', err);
+      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { ...currentLog, clockOut: now.toISOString(), durationHours: hoursWorked } } }));
+      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
+      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(hoursWorked)}`, 'SYSTEM', empId);
+    }
   };
 
   // MASTER SECURITY GUARD: If not logged in, return Auth component IMMEDIATELY
@@ -189,12 +348,25 @@ const App: React.FC = () => {
       <Auth 
         onLogin={handleLogin} 
         onResetPassword={async (email) => {
-          const user = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-          if (user) {
-            setUsers(prev => prev.map(u => u.email === user.email ? { ...u, password: 'KBT' + Math.floor(Math.random()*9000) } : u));
+          try {
+            const res = await fetch('http://localhost:4001/api/users');
+            if (!res.ok) return false;
+            const list = await res.json();
+            const user = list.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
+            if (!user) return false;
+            const newPass = 'KBT' + Math.floor(Math.random()*9000);
+            const upd = await fetch(`http://localhost:4001/api/users/${user.id}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password: newPass })
+            });
+            if (!upd.ok) return false;
+            setUsers(prev => prev.map(u => u.id === user.id ? { ...u, password: newPass } : u));
             return true;
+          } catch (err) {
+            console.error('Reset password failed', err);
+            return false;
           }
-          return false;
         }} 
         error={authError} 
       />
