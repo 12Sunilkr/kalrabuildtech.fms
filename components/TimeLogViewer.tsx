@@ -152,8 +152,8 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
       const tId = `T-${log.empId}-${log.date}`;
       const aId = `A-${log.empId}-${log.date}`;
       try {
-        await fetch(`http://localhost:4001/api/timelogs/${encodeURIComponent(tId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endTime: clockOutIso }) });
-        await fetch(`http://localhost:4001/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clockOut: clockOutIso, value: attendanceVal }) });
+        await fetch(`/api/timelogs/${encodeURIComponent(tId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endTime: clockOutIso }) });
+        await fetch(`/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clockOut: clockOutIso, value: attendanceVal }) });
 
         // 1. Update TimeLogs locally
         setTimeLogs(prev => ({

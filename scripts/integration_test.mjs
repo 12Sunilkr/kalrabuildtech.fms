@@ -1,15 +1,48 @@
-import '../server/index.js';
+// Integration test: optionally start the embedded server.
+// To use an already-running server instead of starting one here, set USE_RUNNING_SERVER=1
+
+const SERVER = 'http://127.0.0.1:4001';
+
+async function waitForHealth(timeoutMs = 5000, interval = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${SERVER}/api/health`);
+      if (res.ok) return true;
+    } catch (e) {
+      // server not ready yet
+    }
+    await new Promise(r => setTimeout(r, interval));
+  }
+  return false;
+}
 
 (async () => {
-  // wait for server to initialize
-  await new Promise(r => setTimeout(r, 700));
+  if (!process.env.USE_RUNNING_SERVER) {
+    console.log('Starting embedded server for integration test...');
+    await import('../server/index.js');
+  } else {
+    console.log('Using existing running server for integration test (set USE_RUNNING_SERVER=1 to enable)');
+  }
+
+  const ready = await waitForHealth(5000, 500);
+  if (!ready) {
+    console.error('Server not responding at', SERVER, '\nMake sure the server is running: `npm run server` and accessible at http://127.0.0.1:4001');
+    process.exit(2);
+  }
 
   try {
-    const login = await fetch('http://127.0.0.1:4001/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'admin@example.com', password: 'admin123' })
-    });
+    let login;
+    try {
+      login = await fetch(`${SERVER}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'admin@example.com', password: 'admin123' })
+      });
+    } catch (err) {
+      console.error('Network error when calling /api/auth/login:', err && (err.stack || err.message || err));
+      process.exit(2);
+    }
     console.log('login status', login.status);
     const setCookie = login.headers.get('set-cookie') || login.headers.get('Set-Cookie');
     console.log('set-cookie:', setCookie);

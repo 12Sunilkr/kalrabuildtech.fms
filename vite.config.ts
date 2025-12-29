@@ -9,6 +9,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3000,
       host: '0.0.0.0',
+      // Proxy API calls to the backend to keep same-origin requests during dev
+      proxy: {
+        '/api': {
+          target: 'http://127.0.0.1:4001',
+          changeOrigin: true,
+          secure: false,
+          ws: true
+        }
+      }
     },
 
     preview: {

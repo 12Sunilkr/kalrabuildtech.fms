@@ -79,8 +79,8 @@ export const INITIAL_ARCHIVED_EMPLOYEES: Employee[] = [];
 export const INITIAL_USERS: User[] = [
   ({ 
     id: 'U-admin',
-    email: 'admin@fms.com', 
-    password: 'admin', 
+    email: 'admin@example.com', 
+    password: 'admin123', 
     role: 'ADMIN', 
     name: 'Administrator' 
   } as User)

@@ -104,7 +104,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
       
       // Create employee on server (if available), then create the user account
       try {
-        const empRes = await fetch('http://localhost:4001/api/employees', {
+        const empRes = await fetch('/api/employees', {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
@@ -112,7 +112,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
         });
         if (empRes.ok) {
           // refresh employees from server
-          const r = await fetch('http://localhost:4001/api/employees', { credentials: 'include' });
+          const r = await fetch('/api/employees', { credentials: 'include' });
           if (r.ok) setEmployees(await r.json());
         }
       } catch (err) {
@@ -122,15 +122,33 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
       if (currentEmp.email) {
           // Try to create user on server; fall back to local in offline mode
           try {
-            const res = await fetch('http://localhost:4001/api/users', {
+            const res = await fetch('/api/users', {
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: currentEmp.name, email: currentEmp.email, password: password || '123', role, employeeId: currentEmp.id })
             });
             if (res.ok) {
-              const listRes = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+              const listRes = await fetch('/api/users', { credentials: 'include' });
               if (listRes.ok) setUsers(await listRes.json());
+
+              // Optionally auto-login the newly created user (server session cookie)
+              try {
+                const loginRes = await fetch('/api/auth/login', {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ email: currentEmp.email, password: password || '123' })
+                });
+                if (loginRes.ok) {
+                  const data = await loginRes.json();
+                  if (data?.user) {
+                    onSwitchUser(data.user);
+                  }
+                }
+              } catch (e) {
+                console.warn('Auto-login failed', e);
+              }
             } else {
               setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
             }
@@ -174,14 +192,14 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
 
     // Update employee on server
     try {
-      const empUpd = await fetch(`http://localhost:4001/api/employees/${currentEmp.id}`, {
+      const empUpd = await fetch(`/api/employees/${currentEmp.id}`, {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(currentEmp)
       });
       if (empUpd.ok) {
-        const refreshed = await fetch('http://localhost:4001/api/employees', { credentials: 'include' });
+        const refreshed = await fetch('/api/employees', { credentials: 'include' });
         if (refreshed.ok) setEmployees(await refreshed.json());
       }
     } catch (err) {
@@ -193,14 +211,14 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     if (linkedUser && (linkedUser as any).id) {
         // Update server-side user when we have an id
         try {
-          const updRes = await fetch(`http://localhost:4001/api/users/${(linkedUser as any).id}`, {
+          const updRes = await fetch(`/api/users/${(linkedUser as any).id}`, {
             method: 'PUT',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: currentEmp.name || linkedUser.name, email: currentEmp.email || linkedUser.email, password: password || undefined, role })
           });
           if (updRes.ok) {
-            const list = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+            const list = await fetch('/api/users', { credentials: 'include' });
             if (list.ok) setUsers(await list.json());
           } else {
             // fallback to local update
@@ -213,15 +231,24 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     } else if (currentEmp.email) {
         // Create user on server or fallback locally
         try {
-          const res = await fetch('http://localhost:4001/api/users', {
+          const res = await fetch('/api/users', {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
+
             body: JSON.stringify({ name: currentEmp.name || '', email: currentEmp.email, password: password || '123', role, employeeId: currentEmp.id })
           });
           if (res.ok) {
-            const list = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+            const list = await fetch('/api/users', { credentials: 'include' });
             if (list.ok) setUsers(await list.json());
+            // Attempt auto-login for newly created user
+            try {
+              const lr = await fetch('/api/auth/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: currentEmp.email, password: password || '123' }) });
+              if (lr.ok) {
+                const d = await lr.json();
+                if (d?.user) onSwitchUser(d.user);
+              }
+            } catch (e) { console.warn('Auto-login failed', e); }
           } else {
             setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
           }
@@ -241,19 +268,19 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     }
     try {
       // Find user on server
-      const res = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+      const res = await fetch('/api/users', { credentials: 'include' });
       if (!res.ok) throw new Error('User list fetch failed');
       const list = await res.json();
       const user = list.find((u: any) => u.email === email);
       if (!user) throw new Error('User not found');
-      const upd = await fetch(`http://localhost:4001/api/users/${user.id}`, {
+      const upd = await fetch(`/api/users/${user.id}`, {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: newAdminPassword })
       });
       if (!upd.ok) throw new Error('Update failed');
-      const refreshed = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+      const refreshed = await fetch('/api/users', { credentials: 'include' });
       if (refreshed.ok) setUsers(await refreshed.json());
       setEditingAdminEmail(null);
       setNewAdminPassword('');
@@ -276,7 +303,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
           onNavigate(ViewMode.ARCHIVED_STAFF);
           // Update server status if possible
           try {
-            await fetch(`http://localhost:4001/api/employees/${id}`, {
+            await fetch(`/api/employees/${id}`, {
               method: 'PUT',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },

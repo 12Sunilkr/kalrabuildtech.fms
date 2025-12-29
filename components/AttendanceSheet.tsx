@@ -54,9 +54,9 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
       // Try to create or update attendance record on server
       const existing = attendanceData[empId]?.[dateKey];
       if (existing === undefined) {
-        await fetch('http://localhost:4001/api/attendance', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: aId, userId: empId, date: dateKey, value: newVal }) });
+        await fetch('/api/attendance', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: aId, userId: empId, date: dateKey, value: newVal }) });
       } else {
-        await fetch(`http://localhost:4001/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: newVal }) });
+        await fetch(`/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: newVal }) });
       }
       setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: newVal } }));
     } catch (err) {

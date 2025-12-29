@@ -38,12 +38,40 @@ const App: React.FC = () => {
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
   const [authError, setAuthError] = useState<string>('');
 
+  // Install global fetch wrapper to automatically attach Authorization header when token is present
+  useEffect(() => {
+    const orig = window.fetch.bind(window);
+    const wrapper = async (input: RequestInfo, init?: RequestInit) => {
+      init = init ? { ...init } : {};
+      init.headers = new Headers(init.headers || {} as HeadersInit);
+      try {
+        const token = localStorage.getItem('fms_token');
+        if (token && !(init.headers as Headers).has('Authorization')) {
+          (init.headers as Headers).set('Authorization', `Bearer ${token}`);
+        }
+      } catch (e) {
+        // ignore localStorage errors
+      }
+      // default to include credentials so cookies continue to work
+      if (!init.credentials) init.credentials = 'include';
+      return orig(input, init);
+    };
+    // Replace global fetch
+    // @ts-ignore
+    window.fetch = wrapper;
+    return () => {
+      // Restore original
+      // @ts-ignore
+      window.fetch = orig;
+    };
+  }, []);
+
   // Restore session and load users from the server on startup
   useEffect(() => {
     const init = async () => {
       try {
         // Try to restore session
-        const me = await fetch('http://localhost:4001/api/auth/me', { credentials: 'include' });
+        const me = await fetch('/api/auth/me', { credentials: 'include' });
         if (me.ok) {
           const meJson = await me.json();
           setCurrentUser(meJson.user || null);
@@ -52,7 +80,7 @@ const App: React.FC = () => {
         console.warn('Auth/me unreachable', err);
       }
       try {
-        const res = await fetch('http://localhost:4001/api/users', { credentials: 'include' });
+        const res = await fetch('/api/users', { credentials: 'include' });
         if (res.ok) {
           const list = await res.json();
           setUsers(list);
@@ -67,7 +95,7 @@ const App: React.FC = () => {
 
       // Try to load employees from server
       try {
-        const r = await fetch('http://localhost:4001/api/employees', { credentials: 'include' });
+        const r = await fetch('/api/employees', { credentials: 'include' });
         if (r.ok) {
           setEmployees(await r.json());
         } else {
@@ -79,7 +107,7 @@ const App: React.FC = () => {
 
       // Load attendance records from server
       try {
-        const sat = await fetch('http://localhost:4001/api/attendance', { credentials: 'include' });
+        const sat = await fetch('/api/attendance', { credentials: 'include' });
         if (sat.ok) {
           const arr = await sat.json();
           // Convert array into attendanceData shape: { [empId]: { [date]: value } }
@@ -96,7 +124,7 @@ const App: React.FC = () => {
 
       // Load timelogs from server
       try {
-        const stl = await fetch('http://localhost:4001/api/timelogs', { credentials: 'include' });
+        const stl = await fetch('/api/timelogs', { credentials: 'include' });
         if (stl.ok) {
           const arr = await stl.json();
           const ag: Record<string, Record<string, TimeLog>> = {};
@@ -190,7 +218,7 @@ const App: React.FC = () => {
   const handleLogin = async (email: string, pass: string) => {
     // Try remote auth server first
     try {
-      const res = await fetch('http://localhost:4001/api/auth/login', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -202,6 +230,10 @@ const App: React.FC = () => {
         return;
       }
       const user = data.user as User;
+      // Persist token from server response so we can attach Authorization header on subsequent requests
+      if (data.token) {
+        try { localStorage.setItem('fms_token', data.token); } catch (e) { console.warn('Could not store token', e); }
+      }
       if (user) {
         if (user.role === 'EMPLOYEE' && user.employeeId) {
           const isActive = employees.find(e => e.id === user.employeeId);
@@ -241,10 +273,12 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await fetch('http://localhost:4001/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     } catch (err) {
       console.warn('Logout call failed', err);
     }
+    // Remove persisted token
+    try { localStorage.removeItem('fms_token'); } catch (e) { /* ignore */ }
     setCurrentUser(null);
     setAuthError('');
     setIsSidebarOpen(false);
@@ -279,12 +313,12 @@ const App: React.FC = () => {
 
     try {
       // Create timelog
-      await fetch('http://localhost:4001/api/timelogs', {
+      await fetch('/api/timelogs', {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: tId, userId: empId, startTime: now.toISOString() })
       });
       // Create attendance record (value may be null until clock out)
-      await fetch('http://localhost:4001/api/attendance', {
+      await fetch('/api/attendance', {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null })
       });
@@ -319,13 +353,13 @@ const App: React.FC = () => {
 
     try {
       // Update timelog endTime
-      await fetch(`http://localhost:4001/api/timelogs/${encodeURIComponent(tId)}`, {
+      await fetch(`/api/timelogs/${encodeURIComponent(tId)}`, {
         method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ endTime: now.toISOString() })
       });
 
       // Update attendance with clockOut and computed value
-      await fetch(`http://localhost:4001/api/attendance/${encodeURIComponent(aId)}`, {
+      await fetch(`/api/attendance/${encodeURIComponent(aId)}`, {
         method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clockOut: now.toISOString(), value: computedVal })
       });
@@ -349,14 +383,15 @@ const App: React.FC = () => {
         onLogin={handleLogin} 
         onResetPassword={async (email) => {
           try {
-            const res = await fetch('http://localhost:4001/api/users');
+            const res = await fetch('/api/users', { credentials: 'include' });
             if (!res.ok) return false;
             const list = await res.json();
             const user = list.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
             if (!user) return false;
             const newPass = 'KBT' + Math.floor(Math.random()*9000);
-            const upd = await fetch(`http://localhost:4001/api/users/${user.id}`, {
+            const upd = await fetch(`/api/users/${user.id}`, {
               method: 'PUT',
+              credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ password: newPass })
             });
