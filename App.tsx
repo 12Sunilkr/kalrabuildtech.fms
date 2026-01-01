@@ -41,21 +41,50 @@ const App: React.FC = () => {
   // Install global fetch wrapper to automatically attach Authorization header when token is present
   useEffect(() => {
     const orig = window.fetch.bind(window);
+    // Use proxy in dev to avoid cross-origin calls to backend port
+    const USE_PROXY = (import.meta.env.VITE_USE_PROXY as string) === '1' || import.meta.env.DEV;
+    const API_BASE_ENV = (import.meta.env.VITE_API_BASE as string) || '';
+    const API_BASE = USE_PROXY ? '' : (API_BASE_ENV || '');
+
     const wrapper = async (input: RequestInfo, init?: RequestInit) => {
-      init = init ? { ...init } : {};
-      init.headers = new Headers(init.headers || {} as HeadersInit);
+      // Normalize URL and prepend API_BASE for relative /api paths when API_BASE is set
+      let url: string;
+      let method = 'GET';
+      let body: any = undefined;
+      let reqInit: RequestInit = init ? { ...init } : {};
+
+      if (typeof input === 'string') {
+        url = input;
+      } else {
+        url = input.url || '';
+        method = input.method || method;
+        // body may be a ReadableStream for Requests; we won't attempt to reuse streamed bodies
+        try { body = (input as Request).body || undefined; } catch (e) { /* ignore */ }
+      }
+
+      if (url.startsWith('/api') && API_BASE) {
+        url = `${API_BASE}${url}`;
+      }
+
+      reqInit.headers = new Headers(reqInit.headers || {} as HeadersInit);
       try {
         const token = localStorage.getItem('fms_token');
-        if (token && !(init.headers as Headers).has('Authorization')) {
-          (init.headers as Headers).set('Authorization', `Bearer ${token}`);
+        if (token && !(reqInit.headers as Headers).has('Authorization')) {
+          (reqInit.headers as Headers).set('Authorization', `Bearer ${token}`);
         }
       } catch (e) {
         // ignore localStorage errors
       }
+
       // default to include credentials so cookies continue to work
-      if (!init.credentials) init.credentials = 'include';
-      return orig(input, init);
+      if (!reqInit.credentials) reqInit.credentials = 'include';
+
+      // If original input was a Request with a body that we couldn't access via init, include it here
+      if (typeof input !== 'string' && body && !reqInit.body) reqInit.body = body as any;
+
+      return orig(url, reqInit);
     };
+
     // Replace global fetch
     // @ts-ignore
     window.fetch = wrapper;

@@ -103,9 +103,15 @@ try {
     fs.writeFileSync(dbFile, Buffer.from(db.export()));
     console.log('Created users.sqlite and seeded default users (passwords hashed) and employees');
   }
+
+  // Mark the app as ready for embedded hosts
+  app.set('ready', true);
+  console.log('Server initialization complete, DB ready');
 } catch (err) {
   console.error('Failed to initialize SQL.js or DB:', err && (err.stack || err.message || err));
-  process.exit(1);
+  // When embedded into another process (e.g., Vite dev server) we should not terminate the host process.
+  // Throw the error so the importer can decide how to handle it.
+  throw err;
 }
 
 // --- Migration: Hash any existing plaintext passwords ---
@@ -208,13 +214,16 @@ app.use(express.json());
 app.use(cookieParser());
 // CORS: allow the requesting origin and allow credentials (needed for cookies)
 app.use((req, res, next) => {
-  const origin = req.headers.origin || '*';
-  // When credentials are used, Access-Control-Allow-Origin cannot be '*'
-  if (origin && origin !== 'null') {
+  const origin = req.headers.origin || '';
+  const allowedOrigins = [ 'http://localhost:3000', 'http://127.0.0.1:3000' ];
+
+  if (allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // Deny or set to 'null' for requests from unknown origins
+    res.setHeader('Access-Control-Allow-Origin', 'null');
   }
+
   // Allow common headers + Authorization for future use
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   // Expose cookie related headers if needed
@@ -226,9 +235,6 @@ app.use((req, res, next) => {
     console.log('CORS preflight from', origin);
     return res.sendStatus(204);
   }
-
-  // Debug: log cross-origin requests (can be removed later)
-  // console.log('CORS request', req.method, 'from', origin, req.path);
 
   next();
 });
@@ -271,24 +277,59 @@ app.post('/api/auth/login', (req, res) => {
 
 // Auth helpers
 app.get('/api/auth/me', (req, res) => {
+  console.log('GET /api/auth/me from', req.ip, 'origin', req.headers.origin || 'no-origin');
+
+  // Guard: Ensure DB/Server is initialized
+  if (!app.get('ready') || !db) {
+    console.warn('Auth/me: service not ready (DB missing)');
+    res.setHeader('Content-Type', 'application/json');
+    return res.status(503).json({ message: 'Service unavailable' });
+  }
+
   try {
-    const token = req.cookies?.token;
+    // Accept token via cookie OR Authorization header (Bearer)
+    let token = req.cookies?.token;
     if (!token) {
-      console.warn('Auth/me: missing token', { path: req.path, ip: req.ip });
+      const auth = req.headers && req.headers.authorization;
+      if (auth && typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
+        token = auth.slice(7).trim();
+        console.log('Auth/me: using Bearer token from Authorization header');
+      }
+    }
+
+    if (!token) {
+      console.warn('Auth/me: missing token', { path: req.path, ip: req.ip, origin: req.headers.origin || null });
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    const payload = jwt.verify(token, JWT_SECRET);
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+      console.log('Auth/me: token verified for id', payload && payload.id);
+    } catch (err) {
+      console.warn('Auth/me: token verification failed', { err: err && (err.message || err) });
+      if (err && err.name === 'TokenExpiredError') {
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+
     const id = payload.id;
-    const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE id = ?');
-    stmt.bind([Number(id)]);
-    if (!stmt.step()) { stmt.free(); console.warn('Auth/me: user not found for id', id); return res.status(401).json({ message: 'Unauthorized' }); }
-    const row = stmt.getAsObject();
-    stmt.free();
-    row.role = row.role || 'EMPLOYEE';
-    return res.json({ authenticated: true, user: row });
+    try {
+      const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE id = ?');
+      stmt.bind([Number(id)]);
+      if (!stmt.step()) { stmt.free(); console.warn('Auth/me: user not found for id', id); return res.status(401).json({ message: 'Unauthorized' }); }
+      const row = stmt.getAsObject();
+      stmt.free();
+      row.role = row.role || 'EMPLOYEE';
+      return res.json({ authenticated: true, user: row });
+    } catch (err) {
+      console.error('Auth/me: DB error', err && (err.stack || err.message || err));
+      return res.status(500).json({ message: 'Internal server error' });
+    }
   } catch (err) {
-    console.warn('Auth/me error', { path: req.path, err: err && (err.message || err) });
-    return res.status(401).json({ message: 'Unauthorized' });
+    console.error('Auth/me unexpected error', err && (err.stack || err.message || err));
+    return res.status(500).json({ message: 'Internal server error' });
   }
 });
 
@@ -751,36 +792,44 @@ app.use((err, req, res, next) => {
 
 const port = process.env.PORT || 4001;
 // Explicitly bind to 0.0.0.0 to avoid IPv6/IPv4 loopback inconsistencies on some Windows setups
-const server = app.listen(port, '0.0.0.0', () => console.log(`Auth server listening on http://0.0.0.0:${port}`));
-server.on('error', (err) => {
-  console.error('Server error', err);
-  if (err && err.code === 'EADDRINUSE') {
-    console.error(`EADDRINUSE: Port ${port} already in use. On Windows run: netstat -ano | findstr :${port} and then taskkill /PID <pid> /F to free it.`);
-  }
-});
-server.on('close', () => console.log('Server closed'));
-process.on('exit', (code) => console.log('Process exit code', code));
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down');
-  server.close(() => {
-    console.log('Server closed due to SIGINT');
-    process.exit(0);
+// Export the express app so it can be embedded into other servers (like Vite dev server)
+export default app;
+
+// Only start listening when NOT embedded by a host (embedding tool should set VITE_EMBEDDED=1)
+if (process.env.VITE_EMBEDDED !== '1') {
+  const server = app.listen(port, '0.0.0.0', () => console.log(`Auth server listening on http://0.0.0.0:${port}`));
+  server.on('error', (err) => {
+    console.error('Server error', err);
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`EADDRINUSE: Port ${port} already in use. On Windows run: netstat -ano | findstr :${port} and then taskkill /PID <pid> /F to free it.`);
+    }
   });
-  // Fallback to force exit if close hangs
-  setTimeout(() => {
-    console.error('SIGINT shutdown did not complete, forcing exit');
-    process.exit(1);
-  }, 5000);
-});
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down');
-  server.close(() => {
-    console.log('Server closed due to SIGTERM');
-    process.exit(0);
+  server.on('close', () => console.log('Server closed'));
+  process.on('exit', (code) => console.log('Process exit code', code));
+  process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down');
+    server.close(() => {
+      console.log('Server closed due to SIGINT');
+      process.exit(0);
+    });
+    // Fallback to force exit if close hangs
+    setTimeout(() => {
+      console.error('SIGINT shutdown did not complete, forcing exit');
+      process.exit(1);
+    }, 5000);
   });
-  setTimeout(() => {
-    console.error('SIGTERM shutdown did not complete, forcing exit');
-    process.exit(1);
-  }, 5000);
-});
-console.log('server object leaked (exists)?', !!server);
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down');
+    server.close(() => {
+      console.log('Server closed due to SIGTERM');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('SIGTERM shutdown did not complete, forcing exit');
+      process.exit(1);
+    }, 5000);
+  });
+  console.log('server object leaked (exists)?', true);
+} else {
+  console.log('Server loaded for embedding (VITE_EMBEDDED=1), not listening on TCP port.');
+}
