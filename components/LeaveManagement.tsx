@@ -5,6 +5,7 @@ import { LEAVE_QUOTA_YEARLY, LEAVE_SUBJECT_TEMPLATES, LEAVE_TYPES_LIST } from '.
 import { AlertCircle, CheckCircle, FileBarChart, Plus, X, Send, Clock, CalendarDays, CheckCircle2, XCircle, ArrowRight, User as UserIcon } from 'lucide-react';
 import { isSunday, eachDayOfInterval } from 'date-fns';
 import { AITextEnhancer } from './AITextEnhancer';
+import api, { safePost, safeGet, extractPayload, ensureArray } from '../src/utils/api';
 import { formatDateKey } from '../utils/dateUtils';
 
 interface LeaveManagementProps {
@@ -63,98 +64,74 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
     return totalLeaves;
   };
 
-  const handleApplyLeave = () => {
+  const handleApplyLeave = async () => {
       // Logic for Date Mapping
       let start = newLeave.startDate;
       let end = newLeave.endDate;
 
       if (newLeave.durationType !== 'Multiple Days') {
-          if (!singleDate) {
-              alert("Please select a date.");
-              return;
-          }
-          start = singleDate;
-          end = singleDate;
+          if (!singleDate) { alert("Please select a date."); return; }
+          start = singleDate; end = singleDate;
       } else {
-          if (!start || !end) {
-              alert("Please select Start and End dates.");
-              return;
-          }
+          if (!start || !end) { alert("Please select Start and End dates."); return; }
       }
 
-      if (newLeave.reason && newLeave.appliedTo) {
-          const finalSubject = isCustomSubject ? newLeave.subject : (newLeave.subject || LEAVE_SUBJECT_TEMPLATES[0]);
-          
-          const request: LeaveRequest = {
-              id: `LR-${Date.now()}`,
-              employeeId: myEmpId,
-              leaveType: (newLeave.leaveType || 'Casual Leave') as LeaveType,
-              durationType: (newLeave.durationType || 'Multiple Days') as LeaveDurationType,
-              startDate: start!,
-              endDate: end!,
-              subject: finalSubject || 'Leave Application',
-              reason: newLeave.reason!,
-              appliedTo: newLeave.appliedTo!,
-              status: 'PENDING',
-              appliedOn: new Date().toISOString().split('T')[0]
-          };
+      if (!(newLeave.reason && newLeave.appliedTo)) { alert("Please fill all required fields (Reason & Approver)."); return; }
 
-          setLeaveRequests(prev => [request, ...prev]);
-          setShowApplyModal(false);
-          
-          // Reset form
-          setNewLeave({ leaveType: 'Casual Leave', subject: '', durationType: 'Multiple Days', appliedTo: '' });
-          setSingleDate('');
-          setIsCustomSubject(false);
-
-          addNotification('Leave Request', `New leave application from ${currentUser.name}`, 'LEAVE', request.appliedTo);
-      } else {
-          alert("Please fill all required fields (Reason & Approver).");
+      const days = 1; // approximate days; frontend keeps lightweight value, server authoritative
+      try {
+        const body = { userId: myEmpId, startDate: start, endDate: end, days, reason: newLeave.reason };
+        await safePost('/leave', body, { withCredentials: true });
+        // Refresh list from server (admin will see all, user will see their own via query param)
+        const url = currentUser.role === 'ADMIN' ? '/leave' : `/leave?userId=${encodeURIComponent(myEmpId)}`;
+        const listRes = await safeGet(url);
+        setLeaveRequests(ensureArray(extractPayload(listRes)));
+        setShowApplyModal(false);
+        setNewLeave({ leaveType: 'Casual Leave', subject: '', durationType: 'Multiple Days', appliedTo: '' });
+        setSingleDate(''); setIsCustomSubject(false);
+        addNotification('Leave Request', `New leave application from ${currentUser.name}`, 'LEAVE', String(newLeave.appliedTo));
+      } catch (err) {
+        console.error('Failed to submit leave to server', err && (err.stack || err.message || err));
+        alert('Failed to submit leave to server. Try again later.');
       }
   };
 
-  const handleApproval = (req: LeaveRequest, approved: boolean) => {
-      // 1. Update Request Status
-      setLeaveRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: approved ? 'APPROVED' : 'REJECTED' } : r));
+  const handleApproval = async (req: LeaveRequest, approved: boolean) => {
+      try {
+        // Update status on server
+        await api.put(`/leave/${encodeURIComponent(req.id)}`, { status: approved ? 'APPROVED' : 'REJECTED' }, { withCredentials: true });
+        // Refresh list
+        const url = currentUser.role === 'ADMIN' ? '/leave' : `/leave?userId=${encodeURIComponent(myEmpId)}`;
+        const listRes = await safeGet(url);
+        setLeaveRequests(ensureArray(extractPayload(listRes)));
 
-      // 2. If Approved, Update Attendance Grid
-      if (approved) {
-          const start = new Date(req.startDate);
-          const end = new Date(req.endDate);
-          const dates = eachDayOfInterval({ start, end });
-          
-          let attValue: AttendanceValue = 0; // Default Absent (Full Day)
-          
-          // Determine Attendance Value based on Duration Type (Matching defined constants)
-          switch (req.durationType) {
-              case 'Short Leave':
-                  attValue = 0.75; // Per user request: Short Leave is 0.75 (Present for 3/4 day)
-                  break;
-              case 'Half Day':
-                  attValue = 0.5; // Half Day
-                  break;
-              case 'Full Day':
-              case 'Multiple Days':
-                  attValue = 0; // Full Leave means 0 attendance
-                  break;
-              default:
-                  attValue = 0;
-          }
+        // If approved, update attendance on server for each date (best-effort)
+        if (approved) {
+            const start = new Date(req.startDate);
+            const end = new Date(req.endDate);
+            const dates = eachDayOfInterval({ start, end });
+            const attValue = req.durationType === 'Half Day' ? 0.5 : (req.durationType === 'Short Leave' ? 0.75 : 0);
+            // Batch update attendance entries (PUT /attendance/:id) for each date
+            for (const d of dates) {
+                if (isSunday(d)) continue;
+                const key = formatDateKey(d);
+                const aId = `A-${req.employeeId}-${key}`;
+                try {
+                  await api.put(`/attendance/${encodeURIComponent(aId)}`, { userId: req.employeeId, date: key, value: attValue }, { withCredentials: true });
+                } catch (e) {
+                  // best-effort; continue
+                  console.warn('Failed to update attendance for', key, e && (e.stack || e.message || e));
+                }
+            }
+            // Refresh attendance grid client-side
+            try { const sat = await safeGet('/attendance'); const arr = ensureArray(extractPayload(sat));
+                  const ag: Record<string, AttendanceRecord> = {}; arr.forEach((a: any) => { if (!ag[a.userId]) ag[a.userId] = {}; ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value; }); setAttendanceData(ag); } catch (e) { console.warn('Failed to refresh attendance after approval', e && (e.stack || e.message || e)); }
+        }
 
-          const updatedRecord = { ...attendanceData };
-          if (!updatedRecord[req.employeeId]) updatedRecord[req.employeeId] = {};
-
-          dates.forEach(date => {
-              if (!isSunday(date)) {
-                  const key = formatDateKey(date);
-                  // Only overwrite if not already defined or override existing
-                  updatedRecord[req.employeeId][key] = attValue;
-              }
-          });
-          setAttendanceData(updatedRecord);
-          addNotification('Leave Approved', `Your leave request was approved.`, 'LEAVE', req.employeeId);
-      } else {
-          addNotification('Leave Rejected', `Your leave request was rejected.`, 'LEAVE', req.employeeId);
+        addNotification('Leave ' + (approved ? 'Approved' : 'Rejected'), `Your leave request was ${approved ? 'approved' : 'rejected'}.`, 'LEAVE', String(req.employeeId));
+      } catch (err) {
+        console.error('Failed to update leave on server', err && (err.stack || err.message || err));
+        alert('Failed to update leave status on server. Try again.');
       }
   };
 

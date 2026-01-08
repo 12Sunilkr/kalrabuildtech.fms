@@ -1,6 +1,7 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Notification, User, ViewMode } from '../types';
+import api, { safeGet, safePut, safeDelete, extractPayload, ensureArray } from '../src/utils/api';
 import { Bell, Search, CheckCircle2, Trash2, MailOpen, AlertTriangle, ArrowLeft, X } from 'lucide-react';
 
 interface NotificationCenterProps {
@@ -14,27 +15,87 @@ interface NotificationCenterProps {
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({ 
     notifications, setNotifications, currentUser, onNavigate, onCloseOverlay 
 }) => {
+  // NotificationCenter follows the Task module pattern:
+  // - Always treat server as single source of truth
+  // - Fetch notifications on mount (or when user becomes available)
+  // - Validate and normalize API responses to arrays with `ensureArray`
+  // - Never call GET during a simple UI click (clicks only toggle UI or call write endpoints)
+  // - Defensively guard all render-time property accesses to avoid crashes
+  // These guards ensure the component never calls `.map()` on undefined and never crashes on refresh.
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState<'ALL' | 'UNREAD'>('ALL');
+  const [loading, setLoading] = useState(false);
 
   const isOverlay = !!onCloseOverlay;
 
-  const myNotifications = notifications.filter(n => {
-    const isForMe = currentUser.role === 'ADMIN' 
-        ? true 
+  const safeNotifications = ensureArray(notifications);
+
+  const myNotifications = safeNotifications.filter(n => {
+    const isForMe = currentUser.role === 'ADMIN'
+        ? true
         : (n.targetUser === currentUser.employeeId || n.targetUser === 'ALL');
-    const matchesSearch = n.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          n.message.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = (n.title || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (n.message || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter = filter === 'ALL' ? true : !n.read;
     return isForMe && matchesSearch && matchesFilter;
   });
 
-  const markAllRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+  // Fetch notifications for current user from server and update state
+  const fetchNotifications = async () => {
+    // Defensive: do not attempt to fetch without a logged-in user
+    if (!currentUser || !(currentUser.employeeId || currentUser.id)) {
+      setNotifications([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await safeGet(`/notifications/${encodeURIComponent(currentUser.employeeId || currentUser.id)}`, { cacheBust: true });
+      const payload = extractPayload(res);
+      const rows = ensureArray(payload);
+      // Normalize server rows to frontend Notification shape
+      const normalized = rows.map((r: any) => {
+        const meta = r.meta ? (typeof r.meta === 'string' ? (() => { try { return JSON.parse(r.meta); } catch { return null; } })() : r.meta) : null;
+        return {
+          id: r.id,
+          title: meta && meta.title ? meta.title : (r.message ? (typeof r.message === 'string' ? r.message.split('\n')[0] : 'Notification') : 'Notification'),
+          message: r.message,
+          time: meta && meta.time ? meta.time : r.createdAt || '',
+          read: !!r.isRead,
+          type: meta && meta.type ? meta.type : 'SYSTEM',
+          targetUser: r.userId || (meta && meta.targetUser) || 'ALL'
+        } as Notification;
+      });
+      setNotifications(normalized);
+    } catch (err) {
+      console.error('Failed to fetch notifications', err && (err.stack || err.message || err));
+      setNotifications([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const deleteNotification = (id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
+  // Load notifications on mount and whenever `currentUser` becomes available
+  useEffect(() => {
+    fetchNotifications();
+    // Re-run when currentUser changes so we fetch as soon as user is known
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
+
+  const markAllRead = async () => {
+    // Persist mark-all-read to server by marking each notification read, then re-fetch
+    try {
+      const arr = ensureArray(notifications);
+      if (arr.length === 0) return;
+      await Promise.all(arr.map(n => safePut(`/notifications/${encodeURIComponent(n.id)}/read`, {}, { withCredentials: true })));
+      await fetchNotifications();
+    } catch (e) { console.error('Failed to mark notifications read', e && (e.message || e)); }
+  };
+
+  const deleteNotification = async (id: string) => {
+    try {
+      await safeDelete(`/notifications/${encodeURIComponent(id)}`, { withCredentials: true });
+      await fetchNotifications();
+    } catch (e) { console.error('Failed to delete notification', e && (e.message || e)); }
   };
 
   const getIcon = (type: Notification['type']) => {
@@ -90,31 +151,33 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         </div>
 
         <div className="divide-y divide-slate-100 overflow-y-auto custom-scrollbar flex-1">
-            {myNotifications.length === 0 ? (
-                <div className="p-12 text-center text-slate-400 flex flex-col items-center">
-                    <Bell size={48} className="mb-4 opacity-10" />
-                    <p className="text-sm">No notifications found.</p>
-                </div>
-            ) : (
-                myNotifications.map(note => (
-                    <div key={note.id} className={`p-4 md:p-6 flex items-start gap-4 hover:bg-slate-50 transition-colors ${!note.read ? 'bg-blue-50/20' : ''}`}>
-                         <div className="shrink-0">{getIcon(note.type)}</div>
-                         <div className="flex-1 min-w-0">
-                             <div className="flex justify-between items-start mb-1">
-                                 <h4 className={`text-sm font-bold truncate ${!note.read ? 'text-slate-900' : 'text-slate-600'}`}>
-                                     {note.title}
-                                     {!note.read && <span className="ml-2 w-2 h-2 rounded-full bg-blue-500 inline-block shadow-[0_0_8px_blue]"></span>}
-                                 </h4>
-                                 <span className="text-[10px] text-slate-400 font-mono shrink-0">{note.time}</span>
-                             </div>
-                             <p className="text-sm text-slate-500 leading-relaxed line-clamp-2">{note.message}</p>
-                         </div>
-                         <button onClick={() => deleteNotification(note.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
-                             <Trash2 size={16} />
-                         </button>
-                    </div>
-                ))
-            )}
+          {loading ? (
+            <div className="p-8 text-center text-slate-500">Loading notifications…</div>
+          ) : (!Array.isArray(myNotifications) || myNotifications.length === 0) ? (
+            <div className="p-12 text-center text-slate-400 flex flex-col items-center">
+              <Bell size={48} className="mb-4 opacity-10" />
+              <p className="text-sm">No notifications found.</p>
+            </div>
+          ) : (
+            myNotifications.map(note => (
+              <div key={note && note.id ? note.id : Math.random().toString(36).slice(2)} className={`p-4 md:p-6 flex items-start gap-4 hover:bg-slate-50 transition-colors ${!note?.read ? 'bg-blue-50/20' : ''}`}>
+                 <div className="shrink-0">{getIcon((note && note.type) as Notification['type'])}</div>
+                 <div className="flex-1 min-w-0">
+                   <div className="flex justify-between items-start mb-1">
+                     <h4 className={`text-sm font-bold truncate ${!note?.read ? 'text-slate-900' : 'text-slate-600'}`}>
+                       {note?.title || 'Untitled'}
+                       {!note?.read && <span className="ml-2 w-2 h-2 rounded-full bg-blue-500 inline-block shadow-[0_0_8px_blue]"></span>}
+                     </h4>
+                     <span className="text-[10px] text-slate-400 font-mono shrink-0">{note?.time || ''}</span>
+                   </div>
+                   <p className="text-sm text-slate-500 leading-relaxed line-clamp-2">{note?.message || ''}</p>
+                 </div>
+                 <button onClick={() => deleteNotification(note && note.id ? note.id : '')} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
+                   <Trash2 size={16} />
+                 </button>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

@@ -100,6 +100,8 @@ export interface ExtensionRequest {
     reason: string;
     status: 'PENDING' | 'APPROVED' | 'REJECTED';
     timestamp?: string; // When the request was made
+    // Optional admin response/rejection note
+    adminResponse?: string;
 }
 
 export interface Task {
@@ -108,6 +110,10 @@ export interface Task {
   description: string;
   assignedTo: string; // Employee ID
   assignedBy: string; // Admin Name/ID
+  // Optional fields supplied by server JOINs for convenience
+  assignedToEmployeeId?: string;
+  assignedToName?: string;
+  assignedByName?: string;
   createdDate: string; // ISO Date
   dueDate: string; // ISO Date
   status: TaskStatus;

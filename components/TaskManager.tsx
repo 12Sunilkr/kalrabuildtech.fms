@@ -5,6 +5,12 @@ import { format, isPast, differenceInHours } from 'date-fns';
 import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link } from 'lucide-react';
 import { AITextEnhancer } from './AITextEnhancer';
 import { convertFileToBase64 } from '../utils/fileHelper';
+import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
+
+const extractPayload = apiExtractPayload;
+const ensureArray = apiEnsureArray;
+
+// Note: TaskManager previously stored tasks in localStorage; it now synchronizes with the backend API.
 
 interface TaskManagerProps {
   tasks: Task[];
@@ -19,6 +25,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null); // Task ID
   const [showObjectionModal, setShowObjectionModal] = useState<string | null>(null); // Task ID
+
+  // Loading / Error states for async operations
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   // Action Reason Modal State
   const [actionPrompt, setActionPrompt] = useState<{taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE'} | null>(null);
@@ -30,6 +40,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   // Form States for New Task
   const [newTask, setNewTask] = useState<Partial<Task>>({ priority: 'MEDIUM' });
+  const [usersList, setUsersList] = useState<User[]>([]);
+  // store selected assignee as EMPLOYEE ID (string) to show all employees added in the app
+  const [newAssignedUserId, setNewAssignedUserId] = useState<string | ''>('');
   const [attachment, setAttachment] = useState<string | null>(null);
 
   // Form States for Completion/Objection
@@ -45,6 +58,24 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     window.addEventListener('click', handleClickOutside);
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
+
+  // Refresh tasks on mount and when currentUser changes
+  useEffect(() => {
+    fetchTasks();
+    fetchUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
+
+  const fetchUsers = async () => {
+    try {
+      const r = await safeGet('/users');
+      const p = apiExtractPayload(r) as any;
+      const arr = Array.isArray(p) ? p : (p && p.data) || p;
+      setUsersList(Array.isArray(arr) ? arr : []);
+    } catch (e) {
+      console.warn('Failed to fetch users', e);
+    }
+  };
 
   // --- Helper for Overdue Logic ---
   const isSameDay = (d1: Date, d2: Date) => {
@@ -75,6 +106,23 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     }
   };
 
+  // --- Fetch tasks from server for current user (admin fetches all) ---
+  const fetchTasks = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      // The API returns tasks for the logged-in user when called as GET /api/tasks
+      const r = await safeGet('/tasks');
+      const payload = extractPayload(r);
+      setTasks(ensureArray(payload));
+    } catch (e) {
+      console.warn('Failed to fetch tasks', e);
+      setError('Failed to load tasks');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // --- Export Functionality ---
   const handleExportTasks = () => {
     // 1. Define Headers matching the request
@@ -96,7 +144,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
     // 2. Map Data
     const csvContent = tasks.map(t => {
-      const assignedEmp = employees.find(e => e.id === t.assignedTo);
+    const assignedEmp = employees.find(e => e.id === (t.assignedTo || t.assignedToEmployeeId || ''));
       const assignedEmpName = assignedEmp?.name || 'Unknown';
       const department = assignedEmp?.department || 'General';
       const displayStatus = getDisplayStatus(t);
@@ -169,73 +217,123 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   // --- Actions ---
 
-  const handleCreateTask = () => {
-    if (newTask.title && newTask.assignedTo && newTask.dueDate) {
-      const todayStr = format(new Date(), 'yyyy-MM-dd');
-      const task: Task = {
-        id: `T-${Math.floor(1000 + Math.random() * 9000)}`,
+  const createTask = async () => {
+    // Require a selected user from the Assign dropdown (we use newAssignedUserId)
+    if (!(newTask.title && (newAssignedUserId !== '' && newAssignedUserId != null) && newTask.dueDate)) {
+      setError('Please provide title, assignee and due date');
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      // selected assignee is an employee ID (string)
+      const selectedEmployeeId = String(newAssignedUserId || '');
+      // Try to resolve numeric user id (assigned_to) from usersList using employeeId matching
+      const matchedUser = usersList.find(u => String(u.employeeId) === selectedEmployeeId);
+      const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
+
+      // Keep local task state consistent: assignedTo should be employee id
+      setNewTask(prev => ({ ...prev, assignedTo: selectedEmployeeId }));
+
+      const payload: any = {
         title: newTask.title,
         description: newTask.description || '',
-        assignedTo: newTask.assignedTo,
-        assignedBy: currentUser.name,
-        createdDate: newTask.createdDate || todayStr,
+        // server accepts either employee-id (assignedTo) or numeric user id (assigned_to). Provide both when available.
+        assignedTo: selectedEmployeeId,
+        assigned_to: assigned_to_numeric || null,
+        assigned_by: Number(currentUser.id),
         dueDate: newTask.dueDate,
-        status: 'PENDING',
         priority: newTask.priority || 'MEDIUM',
-        attachment: attachment || undefined,
-        externalLink: newTask.externalLink || undefined,
-        extensionHistory: []
+        attachment: attachment || null,
+        externalLink: newTask.externalLink || null
       };
-      setTasks([task, ...tasks]);
+      console.log('TaskManager.createTask -> POST /tasks payload:', payload);
+      const r = await api.post('/tasks', payload);
+      console.log('TaskManager.createTask -> POST /tasks response:', r && r.data ? r.data : r);
+      // Use returned task to update local state immediately so DB writes are not lost
+      try {
+        const created = extractPayload(r);
+        if (created && (Array.isArray(created) ? created.length > 0 : created.id)) {
+          // If API returned created resource (object or array), add to local list
+          const createdTask = Array.isArray(created) ? created[0] : created;
+          setTasks(prev => [createdTask as Task, ...prev]);
+        }
+      } catch (e) {
+        console.warn('Could not extract created task, continuing to refresh', e && (e.stack || e.message || e));
+      }
+      // Refresh tasks view (admin fetches all, employees fetch self). If this fails, keep local optimistic copy.
+      try { await fetchTasks(); } catch (e) { console.warn('Refresh after create failed, keeping optimistic state', e && (e.stack || e.message || e)); }
       setShowAssignModal(false);
       setNewTask({ priority: 'MEDIUM' });
       setAttachment(null);
-      addNotification('New Task', `Task "${task.title}" assigned successfully.`, 'TASK', task.assignedTo);
+      // Clear selected assignee
+      setNewAssignedUserId('');
+      // Notify using the employee id if available, otherwise numeric id
+      addNotification('New Task', `Task "${payload.title}" assigned successfully.`, 'TASK', String(payload.assignedTo || payload.assigned_to));
+    } catch (err: any) {
+      console.error('Create task failed', err);
+      const message = err && err.response && (err.response.data?.message || err.response.data?.error) ? (err.response.data.message || err.response.data.error) : (err && err.message) || 'Failed to create task';
+      setError(message);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleCompleteTask = (taskId: string) => {
-    const task = tasks.find(t => t.id === taskId);
-    setTasks(tasks.map(t => {
-      if (t.id === taskId) {
-        return {
-          ...t,
-          status: 'COMPLETED',
-          completionDate: new Date().toISOString().split('T')[0],
-          completionProcess: processNote,
-          completionAttachment: attachment || undefined
-        };
-      }
-      return t;
-    }));
-    setShowCompleteModal(null);
-    setProcessNote('');
-    setAttachment(null);
-    if(task) addNotification('Task Completed', `Task ${taskId} marked as completed by ${currentUser.name}.`, 'TASK', 'ADMIN');
+  const handleCompleteTask = async (taskId: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const payload = {
+        status: 'COMPLETED',
+        completionDate: new Date().toISOString().split('T')[0],
+        completionProcess: processNote,
+        completionAttachment: attachment || null
+      };
+      await api.put(`/tasks/${taskId}`, payload);
+      // Optimistic UI update
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'COMPLETED', completionDate: payload.completionDate, completionProcess: payload.completionProcess, completionAttachment: payload.completionAttachment } : t));
+      await fetchTasks();
+      setShowCompleteModal(null);
+      setProcessNote('');
+      setAttachment(null);
+      addNotification('Task Completed', `Task ${taskId} marked as completed by ${currentUser.name}.`, 'TASK', String('ADMIN'));
+    } catch (e) {
+      console.error('Complete task failed', e);
+      setError('Failed to complete task');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleRaiseObjection = (taskId: string) => {
-    setTasks(tasks.map(t => {
-      if (t.id === taskId) {
-        const newReq: ExtensionRequest = {
-            requestedDate: extensionDate,
-            reason: extensionReason,
-            status: 'PENDING',
-            timestamp: new Date().toISOString()
-        };
-        return {
-          ...t,
-          status: 'EXTENSION_REQUESTED',
-          extensionRequest: newReq, // Set as current
-          extensionHistory: [...(t.extensionHistory || []), newReq] // Add to log
-        };
-      }
-      return t;
-    }));
-    setShowObjectionModal(null);
-    setExtensionDate('');
-    setExtensionReason('');
-    addNotification('Task Alert', `Extension requested for Task ${taskId} by ${currentUser.name}.`, 'TASK', 'ADMIN');
+  const handleRaiseObjection = async (taskId: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const newReq: ExtensionRequest = {
+          requestedDate: extensionDate,
+          reason: extensionReason,
+          status: 'PENDING',
+          timestamp: new Date().toISOString()
+      };
+      // Update extensionRequest and extensionHistory on the server
+      // Fetch existing task to build new history
+      const res = await safeGet('/tasks');
+      const payload = extractPayload(res);
+      const allTasks = ensureArray(payload);
+      const task = tasks.find(t => t.id === taskId) || allTasks.find((x: any) => x.id === taskId);
+      const newHistory = [...(task?.extensionHistory || []), newReq];
+      await api.put(`/tasks/${taskId}`, { status: 'EXTENSION_REQUESTED', extensionRequest: newReq, extensionHistory: newHistory });
+      await fetchTasks();
+      setShowObjectionModal(null);
+      setExtensionDate('');
+      setExtensionReason('');
+      addNotification('Task Alert', `Extension requested for Task ${taskId} by ${currentUser.name}.`, 'TASK', String('ADMIN'));
+    } catch (e) {
+      console.error('Raise objection failed', e);
+      setError('Failed to raise extension request');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const initiateAdminAction = (taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE') => {
@@ -243,7 +341,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     setActionReason('');
   };
 
-  const confirmAdminAction = () => {
+  const confirmAdminAction = async () => {
     if (!actionPrompt) return;
     if (!actionReason.trim()) {
         alert("Please provide a reason for this action.");
@@ -251,40 +349,65 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     }
 
     const { taskId, type } = actionPrompt;
-    const task = tasks.find(t => t.id === taskId);
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Instead of hard-deleting tasks, mark them as TERMINATED so reasons remain visible
+      const newStatus = type === 'HOLD' ? 'HOLD' : 'TERMINATED';
+      // Persist change on server
+      await api.put(`/tasks/${taskId}`, { status: newStatus, statusNote: actionReason });
 
-    if (type === 'DELETE') {
-        setTasks(tasks.filter(t => t.id !== taskId));
-    } else {
-        setTasks(tasks.map(t => {
-            if (t.id !== taskId) return t;
-            return {
-                ...t,
-                status: type === 'HOLD' ? 'HOLD' : 'TERMINATED',
-                statusNote: actionReason
-            };
-        }));
-        if(task) addNotification('Task Update', `Task ${taskId} was ${type.toLowerCase()}ed by Admin.`, 'TASK', task.assignedTo);
-    }
-    setActionPrompt(null);
-    setActionReason('');
-  };
-
-  const handleResumeTask = (taskId: string) => {
-      const task = tasks.find(t => t.id === taskId);
-      setTasks(tasks.map(t => {
-          if (t.id !== taskId) return t;
-          return { ...t, status: 'PENDING', statusNote: undefined };
+      // Optimistically update local tasks so UI reflects immediately and avoid stale-state issues
+      let assigned: any = null;
+      setTasks(prev => prev.map(t => {
+        if (t.id === taskId) { assigned = t.assignedTo; return { ...t, status: newStatus, statusNote: actionReason }; }
+        return t;
       }));
-      if(task) addNotification('Task Resumed', `Task ${taskId} is now active again.`, 'TASK', task.assignedTo);
+
+      if (assigned) addNotification('Task Update', `Task ${taskId} was ${type.toLowerCase()}ed by Admin.`, 'TASK', String(assigned));
+
+      // Keep server-authoritative data in sync
+      await fetchTasks();
+    } catch (e) {
+      console.error('Admin action failed', e);
+      setError('Failed to perform admin action');
+    } finally {
+      setIsLoading(false);
+      setActionPrompt(null);
+      setActionReason('');
+    }
   };
 
-  const handleExtensionResponse = (taskId: string, approved: boolean) => {
-      const task = tasks.find(t => t.id === taskId);
-      setTasks(tasks.map(t => {
-          if (t.id !== taskId) return t;
-          
-          // Update Log in history (find latest pending or update last added)
+  const handleResumeTask = async (taskId: string) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: null });
+        // Optimistic UI update
+        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING', statusNote: null } : t));
+        await fetchTasks();
+        const task = tasks.find(t => t.id === taskId);
+        if(task) addNotification('Task Resumed', `Task ${taskId} is now active again.`, 'TASK', String(task.assignedTo));
+      } catch (e) {
+        console.error('Resume task failed', e);
+        setError('Failed to resume task');
+      } finally {
+        setIsLoading(false);
+      }
+  };
+
+  const handleExtensionResponse = async (taskId: string, approved: boolean) => {
+      setIsLoading(true);
+      setError(null);
+      console.log('handleExtensionResponse start', { taskId, approved });
+      try {
+          // Fetch existing task to update its history
+          const res = await safeGet('/tasks');
+          const payload = extractPayload(res);
+          const allTasks = ensureArray(payload);
+          const t = allTasks.find((x: any) => x.id === taskId);
+          if (!t) throw new Error('Task not found');
+
           let newHistory = t.extensionHistory || [];
           if (newHistory.length > 0) {
               const lastIndex = newHistory.length - 1;
@@ -295,32 +418,55 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
           }
 
           if (approved && t.extensionRequest) {
-              return {
-                  ...t,
-                  status: 'PENDING',
-                  dueDate: t.extensionRequest.requestedDate,
-                  extensionRequest: { ...t.extensionRequest, status: 'APPROVED' },
-                  extensionHistory: newHistory
-              };
+              // Approving: move due date forward and set back to pending
+              await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null });
+              console.log('handleExtensionResponse: approved put completed', { taskId, newDate: t.extensionRequest.requestedDate });
+
+              // Optimistic UI update
+              setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null } : task));
+
           } else if (!approved && t.extensionRequest) {
-              return {
-                  ...t,
-                  status: 'OVERDUE',
-                  extensionRequest: { ...t.extensionRequest, status: 'REJECTED' },
-                  extensionHistory: newHistory
-              };
+              // Rejecting: keep task as PENDING (do not set to OVERDUE) and record admin rejection note
+              const rejectionNote = `Extension rejected by ${currentUser.name}`;
+              const updatedReq = { ...t.extensionRequest, status: 'REJECTED', adminResponse: rejectionNote };
+
+              await api.put(`/tasks/${taskId}`, { status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote });
+              console.log('handleExtensionResponse: rejected put completed', { taskId, note: rejectionNote });
+
+              // Optimistic UI update
+              setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote } : task));
           }
-          return t;
-      }));
-      if(task) addNotification('Extension Request', `Your extension request for Task ${taskId} was ${approved ? 'Approved' : 'Rejected'}.`, 'TASK', task.assignedTo);
+
+          // Keep server in sync
+          await fetchTasks();
+          if(t) addNotification('Extension Request', `Your extension request for Task ${taskId} was ${approved ? 'Approved' : 'Rejected'}.`, 'TASK', String(t.assignedTo));
+      } catch (e) {
+        console.error('Extension response failed', e);
+        setError('Failed to update extension request');
+      } finally {
+        setIsLoading(false);
+      }
   };
 
   // --- Filtering ---
   
   // Employees see tasks assigned TO them OR tasks assigned BY them
-  const relevantTasks = isAdmin 
-    ? tasks 
-    : tasks.filter(t => t.assignedTo === currentUser.employeeId || t.assignedBy === currentUser.name);
+  const safeTasks = ensureArray(tasks);
+  const relevantTasks = safeTasks.filter(t => {
+    const assignedToId = (t.assignedTo || t.assignedToEmployeeId || '').toString();
+    const assignedByName = (t.assignedBy || t.assignedByName || '').toString();
+
+    const matchesAssignedTo = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
+    const matchesAssignedBy = assignedByName && (
+      assignedByName === currentUser.employeeId?.toString() ||
+      assignedByName === currentUser.id?.toString() ||
+      assignedByName === currentUser.name
+    );
+
+    // Admins should see all tasks; non-admins see tasks assigned TO them or assigned BY them
+    if (isAdmin) return true;
+    return Boolean(matchesAssignedTo || matchesAssignedBy);
+  });
 
   const filteredTasks = relevantTasks.filter(t => {
     const displayStatus = getDisplayStatus(t);
@@ -383,8 +529,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const renderActionButtons = (task: Task, isMobile: boolean) => {
     const displayStatus = getDisplayStatus(task);
     const isTaskOverdue = displayStatus === 'OVERDUE';
-    const isCreator = task.assignedBy === currentUser.name;
-    const isAssignee = task.assignedTo === currentUser.employeeId;
+    const assignedToId = (task.assignedTo || (task as any).assignedToEmployeeId || '').toString();
+    const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
+    const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
 
     const btnBaseClass = isMobile 
       ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 hover:bg-slate-50 rounded-lg transition-colors text-slate-700" 
@@ -554,8 +701,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
             .map(task => {
             const displayStatus = getDisplayStatus(task);
             const isTaskOverdue = displayStatus === 'OVERDUE';
-            const assignedEmp = employees.find(e => e.id === task.assignedTo);
-            const isCreator = task.assignedBy === currentUser.name;
+            const assignedEmp = employees.find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || ''));
+            const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
             const isNew = isNewTask(task.createdDate);
 
             return (
@@ -605,11 +752,11 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                     <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-3 sm:gap-6 text-sm text-slate-500">
                        <div className="flex items-center gap-2">
                         <UserIcon size={16} className="text-slate-400" />
-                        <span className="font-medium">From: <span className="text-slate-700">{task.assignedBy}</span></span>
+                        <span className="font-medium">From: <span className="text-slate-700">{task.assignedBy || task.assignedByName || task.assignedBy}</span></span>
                       </div>
                       <div className="flex items-center gap-2">
                         <UserIcon size={16} className="text-slate-400" />
-                        <span className="font-medium">To: <span className="text-slate-700">{assignedEmp?.name || task.assignedTo}</span></span>
+                        <span className="font-medium">To: <span className="text-slate-700">{assignedEmp?.name || task.assignedToName || task.assignedTo}</span></span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Calendar size={16} className="text-slate-400" />
@@ -662,13 +809,15 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                             <div className="flex gap-2 mt-3">
                               <button 
                                 onClick={() => handleExtensionResponse(task.id, true)}
-                                className="px-3 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-bold shadow-sm hover:bg-purple-700"
+                                disabled={isLoading}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all ${isLoading ? 'bg-purple-400 text-white opacity-60 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
                               >
                                 Approve New Date
                               </button>
                               <button 
                                 onClick={() => handleExtensionResponse(task.id, false)}
-                                className="px-3 py-1.5 bg-white border border-purple-200 text-purple-600 rounded-lg text-xs font-bold hover:bg-purple-50"
+                                disabled={isLoading}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isLoading ? 'bg-white border-purple-100 text-purple-300 cursor-not-allowed' : 'bg-white border border-purple-200 text-purple-600 hover:bg-purple-50'}`}
                               >
                                 Reject
                               </button>
@@ -678,12 +827,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                       )}
 
                       {/* Show Status Note (Hold/Terminate Reason) */}
-                      {(task.status === 'HOLD' || task.status === 'TERMINATED') && task.statusNote && (
-                         <div className={`p-4 rounded-xl border text-sm ${task.status === 'HOLD' ? 'bg-yellow-50 border-yellow-100' : 'bg-gray-50 border-gray-200'}`}>
-                           <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : 'text-gray-700'}`}>
-                              <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : 'Termination Reason'}
+                      {(task.status === 'HOLD' || task.status === 'TERMINATED' || task.status === 'REJECTED' || task.extensionRequest?.status === 'REJECTED') && task.statusNote && (
+                         <div className={`p-4 rounded-xl border text-sm ${task.status === 'HOLD' ? 'bg-yellow-50 border-yellow-100' : (task.status === 'TERMINATED' ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-100')}`}>
+                           <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : (task.status === 'TERMINATED' ? 'text-gray-700' : 'text-red-700')}`}>
+                              <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection Reason')}
                            </p>
-                           <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : 'text-gray-600'} italic`}>"{task.statusNote}"</p>
+                           <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
                          </div>
                       )}
                     </div>
@@ -712,6 +861,14 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                <button onClick={() => setShowAssignModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20}/></button>
             </div>
             <div className="p-6 space-y-4 overflow-y-auto">
+              {/* Inline error display for validation/server errors */}
+              {error && (
+                <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+                  <strong className="font-bold">Error: </strong>
+                  <span>{error}</span>
+                </div>
+              )}
+
               <div className="relative">
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
                 <div className="relative">
@@ -719,12 +876,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                     type="text" 
                     className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
                     value={newTask.title || ''}
-                    onChange={e => setNewTask({...newTask, title: e.target.value})}
+                    onChange={e => { setNewTask({...newTask, title: e.target.value}); setError(null); }}
                     placeholder="e.g. Inspect HVAC Unit B"
                     />
                     <AITextEnhancer 
                         text={newTask.title || ''} 
-                        onUpdate={(text) => setNewTask({...newTask, title: text})} 
+                        onUpdate={(text) => { setNewTask({...newTask, title: text}); setError(null); }} 
                         context="concise"
                         mini={true}
                     />
@@ -733,16 +890,16 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To</label>
-                  <select 
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    value={newTask.assignedTo || ''}
-                    onChange={e => setNewTask({...newTask, assignedTo: e.target.value})}
-                  >
-                    <option value="">Select Team Member</option>
-                    {employees.map(e => (
-                      <option key={e.id} value={e.id}>{e.name} ({e.department})</option>
-                    ))}
-                  </select>
+                    <select 
+                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      value={newAssignedUserId}
+                      onChange={e => { setNewAssignedUserId(e.target.value || ''); setError(null); }}
+                    >
+                      <option value="">Select Team Member</option>
+                      {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                        <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
+                      ))}
+                    </select>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
@@ -831,7 +988,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
             </div>
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
               <button onClick={() => setShowAssignModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button onClick={handleCreateTask} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20">Assign Task</button>
+              <button 
+                type="button"
+                onClick={createTask}
+                className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
+                {isLoading ? 'Assigning...' : 'Assign Task'}
+              </button>
             </div>
           </div>
         </div>

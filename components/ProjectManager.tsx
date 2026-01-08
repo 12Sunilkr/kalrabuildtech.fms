@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { Project, SitePhoto, User, Employee, Notification } from '../types';
 import { HardHat, Plus, MapPin, Camera, Image, Upload, User as UserIcon, Calendar, X, ExternalLink, Download, Search, Filter } from 'lucide-react';
 import { convertFileToBase64 } from '../utils/fileHelper';
+import api, { safePost, safeGet, extractPayload, ensureArray } from '../src/utils/api';
 import { format } from 'date-fns';
 
 interface ProjectManagerProps {
@@ -20,6 +21,18 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
 }) => {
     
   const isAdmin = currentUser.role === 'ADMIN';
+    // Helper to safely obtain assigned employee ids from project record.
+    const getAssignedEmployees = (proj: any): string[] => {
+        if (!proj) return [];
+        if (Array.isArray(proj.assignedEmployees)) return proj.assignedEmployees;
+        try {
+            const d = typeof proj.data === 'string' && proj.data ? JSON.parse(proj.data) : proj.data;
+            if (d && Array.isArray(d.assignedEmployees)) return d.assignedEmployees;
+        } catch (e) {
+            // ignore parse errors
+        }
+        return [];
+    };
   const [activeTab, setActiveTab] = useState<'PROJECTS' | 'PHOTOS'>('PROJECTS');
   const [showAddProject, setShowAddProject] = useState(false);
   
@@ -36,22 +49,30 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
 
   // --- Handlers ---
 
-  const handleCreateProject = () => {
-    if (newProject.name && newProject.location) {
-        const project: Project = {
-            id: `P-${Math.floor(1000 + Math.random() * 9000)}`,
-            name: newProject.name,
-            location: newProject.location,
-            status: 'ACTIVE',
-            assignedEmployees: newProject.assignedEmployees || [],
-            description: newProject.description
-        };
-        setProjects([...projects, project]);
-        setShowAddProject(false);
-        setNewProject({ status: 'ACTIVE', assignedEmployees: [] });
-        addNotification('Project Created', `New project ${project.name} initialized.`, 'PROJECT', 'ALL');
-    }
-  };
+    const handleCreateProject = async () => {
+        if (newProject.name && newProject.location) {
+                const payload: any = {
+                        name: newProject.name,
+                        address: newProject.location,
+                        status: 'ACTIVE',
+                        data: { description: newProject.description, assignedEmployees: newProject.assignedEmployees || [] }
+                };
+                try {
+                    const res = await safePost('/projects', payload, { withCredentials: true });
+                    const resPayload = extractPayload(res);
+                    // Refresh list from server
+                    const listRes = await safeGet('/projects');
+                    setProjects(ensureArray(extractPayload(listRes)));
+                    addNotification('Project Created', `New project ${newProject.name} initialized.`, 'PROJECT', String('ALL'));
+                } catch (err) {
+                    console.error('Failed to create project on server', err && (err.stack || err.message || err));
+                    alert('Could not create project on server. Please try again.');
+                } finally {
+                    setShowAddProject(false);
+                    setNewProject({ status: 'ACTIVE', assignedEmployees: [] });
+                }
+        }
+    };
 
   const toggleAssignedEmployee = (empId: string) => {
       const current = newProject.assignedEmployees || [];
@@ -120,9 +141,26 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
               gps: gps || undefined
           };
           
-          setPhotos(prev => [newPhoto, ...prev]);
-          addNotification('Site Photo', `New photo uploaded for project.`, 'PROJECT', 'ADMIN');
-          
+                    // Optimistic update so user sees photo immediately
+                    setPhotos(prev => [newPhoto, ...prev]);
+                    addNotification('Site Photo', `New photo uploaded for project.`, 'PROJECT', String('ADMIN'));
+
+                    // Persist photo to server (use O2D endpoint as generic store for uploads)
+                    try {
+                        const payload = { id: newPhoto.id, data: newPhoto, status: 'NEW' };
+                        await safePost('/o2d', payload, { withCredentials: true });
+                        // Refresh photos from server (map o2d.data -> SitePhoto)
+                        const listRes = await safeGet('/o2d');
+                        const listPayload = extractPayload(listRes) || [];
+                        const arr = ensureArray(listPayload).map((r: any) => {
+                            try { return typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch { return r.data || null; }
+                        }).filter(Boolean) as SitePhoto[];
+                        setPhotos(arr);
+                    } catch (e) {
+                        console.error('Failed to upload photo to server', e && (e.stack || e.message || e));
+                        alert('Failed to upload photo to server. It will be added locally until retry.');
+                        // optimistic photo already added above
+                    }
       } catch (err) {
           console.error(err);
           alert("Failed to process image.");
@@ -131,11 +169,35 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
       }
   };
 
+    // Fetch projects and photos on mount (Task pattern: GET on load, validate arrays)
+    React.useEffect(() => {
+        const fetchData = async () => {
+            try {
+                const p = await safeGet('/projects');
+                setProjects(ensureArray(extractPayload(p)));
+            } catch (e) {
+                console.warn('Projects API unreachable', e && (e.stack || e.message || e));
+            }
+            try {
+                const o = await safeGet('/o2d');
+                const listPayload = extractPayload(o) || [];
+                const arr = ensureArray(listPayload).map((r: any) => {
+                    try { return typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch { return r.data || null; }
+                }).filter(Boolean) as SitePhoto[];
+                setPhotos(arr);
+            } catch (e) {
+                console.warn('O2D API unreachable', e && (e.stack || e.message || e));
+            }
+        };
+        fetchData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentUser]);
+
   // --- RENDERING ---
 
   // Employee View: List of assigned projects
   if (!isAdmin && !selectedProjectId) {
-      const myProjects = projects.filter(p => p.assignedEmployees.includes(currentUser.employeeId || ''));
+    const myProjects = (projects || []).filter(p => getAssignedEmployees(p).includes(currentUser.employeeId || ''));
       
       return (
           <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
@@ -283,7 +345,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
 
       {activeTab === 'PROJECTS' && (
            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-               {projects.map(project => (
+               {(projects || []).map(project => (
                    <div key={project.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
                        <div className="flex justify-between items-start mb-4">
                            <div>
@@ -298,7 +360,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 mb-4">
                            <div className="text-xs font-bold text-slate-400 uppercase mb-2">Assigned Team</div>
                            <div className="flex flex-wrap gap-2">
-                               {project.assignedEmployees.map(empId => {
+                               {getAssignedEmployees(project).map(empId => {
                                    const emp = employees.find(e => e.id === empId);
                                    return (
                                        <div key={empId} className="flex items-center gap-1 bg-white px-2 py-1 rounded border border-slate-200 text-xs font-bold text-slate-700" title={empId}>
@@ -306,7 +368,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                                        </div>
                                    );
                                })}
-                               {project.assignedEmployees.length === 0 && <span className="text-xs text-slate-400 italic">No staff assigned</span>}
+                               {getAssignedEmployees(project).length === 0 && <span className="text-xs text-slate-400 italic">No staff assigned</span>}
                            </div>
                        </div>
                        
@@ -333,7 +395,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                     className="flex-1 w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                       <option value="">All Projects</option>
-                      {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      {(projects || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                   <input 
                     type="date" 
@@ -347,7 +409,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                     className="w-full md:w-auto bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                       <option value="">All Users</option>
-                      {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                      {(employees || []).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                   </select>
                   <button 
                     onClick={() => { setSelectedProjectId(null); setFilterDate(''); setFilterUser(''); }}
@@ -359,11 +421,11 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
 
               {/* Photo Grid */}
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                  {photos
-                    .filter(p => !selectedProjectId || p.projectId === selectedProjectId)
-                    .filter(p => !filterDate || p.date === filterDate)
-                    .filter(p => !filterUser || p.uploadedBy === filterUser)
-                    .map(photo => {
+                                    {(photos || [])
+                                        .filter(p => !selectedProjectId || p.projectId === selectedProjectId)
+                                        .filter(p => !filterDate || p.date === filterDate)
+                                        .filter(p => !filterUser || p.uploadedBy === filterUser)
+                                        .map(photo => {
                         const project = projects.find(proj => proj.id === photo.projectId);
                         const uploader = employees.find(e => e.id === photo.uploadedBy);
 
@@ -387,9 +449,9 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                                      )}
                                 </div>
                                 <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/80 to-transparent text-white text-[10px] pt-6">
-                                    <div className="font-bold truncate">{project?.name}</div>
+                                        <div className="font-bold truncate">{project?.name}</div>
                                     <div className="flex justify-between items-center opacity-80">
-                                        <span>{uploader?.name.split(' ')[0]}</span>
+                                        <span>{(uploader?.name || '').split(' ')[0]}</span>
                                         <span>{format(new Date(photo.timestamp), 'MMM d, h:mm a')}</span>
                                     </div>
                                 </div>

@@ -1,7 +1,7 @@
 // Integration test: optionally start the embedded server.
 // To use an already-running server instead of starting one here, set USE_RUNNING_SERVER=1
 
-const SERVER = 'http://127.0.0.1:3000';
+const SERVER = process.env.SERVER || 'http://127.0.0.1:3000';
 
 async function waitForHealth(timeoutMs = 5000, interval = 500) {
   const deadline = Date.now() + timeoutMs;
@@ -17,6 +17,29 @@ async function waitForHealth(timeoutMs = 5000, interval = 500) {
   return false;
 }
 
+function checkEnvelope(obj, expectedSuccess = true) {
+  if (!obj || typeof obj !== 'object' || typeof obj.success !== 'boolean') {
+    console.error('Response envelope missing or invalid', obj);
+    process.exit(1);
+  }
+  if (expectedSuccess && obj.success !== true) {
+    console.error('Expected success=true but response indicates failure', obj);
+    process.exit(1);
+  }
+  if (!expectedSuccess && obj.success !== false) {
+    console.error('Expected success=false but response indicates success', obj);
+    process.exit(1);
+  }
+  if (!('data' in obj)) {
+    console.error('Response envelope missing `data`', obj);
+    process.exit(1);
+  }
+  if (typeof obj.message !== 'string') {
+    console.error('Response envelope missing `message` string', obj);
+    process.exit(1);
+  }
+}
+
 (async () => {
   if (!process.env.USE_RUNNING_SERVER) {
     console.log('Starting embedded server for integration test...');
@@ -27,7 +50,7 @@ async function waitForHealth(timeoutMs = 5000, interval = 500) {
 
   const ready = await waitForHealth(5000, 500);
   if (!ready) {
-    console.error('Server not responding at', SERVER, '\nMake sure the server is running: `npm run server` and accessible at http://127.0.0.1:3000');
+    console.error('Server not responding at ' + SERVER + '\nMake sure the server is running: `npm run server` and accessible at ' + SERVER);
     process.exit(2);
   }
 
@@ -53,41 +76,87 @@ async function waitForHealth(timeoutMs = 5000, interval = 500) {
     const tId = `T-E-001-${Date.now()}`;
     const aId = `A-E-001-${Date.now()}`;
 
-    const tlRes = await fetch('http://127.0.0.1:3000/api/timelogs', {
+    const tlRes = await fetch(`${SERVER}/api/timelogs`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
       body: JSON.stringify({ id: tId, userId: 'E-001', startTime: new Date().toISOString(), task: 'Integration Test' })
     });
-    console.log('timelog status', tlRes.status, await tlRes.text());
+    const tlBody = await tlRes.json().catch(() => null);
+    console.log('timelog status', tlRes.status, tlBody);
+    checkEnvelope(tlBody, true);
 
-    const atRes = await fetch('http://127.0.0.1:3000/api/attendance', {
+    const atRes = await fetch(`${SERVER}/api/attendance`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
       body: JSON.stringify({ id: aId, userId: 'E-001', date: new Date().toISOString().split('T')[0], clockIn: new Date().toISOString() })
     });
-    console.log('attendance status', atRes.status, await atRes.text());
+    const atBody = await atRes.json().catch(() => null);
+    console.log('attendance status', atRes.status, atBody);
+    checkEnvelope(atBody, true);
 
-    const getTL = await fetch('http://127.0.0.1:3000/api/timelogs?userId=E-001', { headers: { cookie } });
-    console.log('timelogs:', await getTL.json());
+    // --- Tasks API smoke tests ---
+    const taskId = `T-IT-${Date.now()}`;
+    const taskRes = await fetch(`${SERVER}/api/tasks`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ title: 'Integration Task', description: 'Created by integration test', assignedTo: 'E-001', dueDate: new Date().toISOString().split('T')[0] })
+    });
+    const taskBody = await taskRes.json().catch(() => null);
+    console.log('task create status', taskRes.status, taskBody);
+    checkEnvelope(taskBody, true);
 
-    const getAt = await fetch('http://127.0.0.1:3000/api/attendance?userId=E-001', { headers: { cookie } });
-    console.log('attendance:', await getAt.json());
+    const getTasks = await fetch(`${SERVER}/api/tasks`, { headers: { cookie } });
+    const getTasksBody = await getTasks.json().catch(() => null);
+    console.log('tasks (admin):', getTasksBody);
+    checkEnvelope(getTasksBody, true);
+
+    // Login as a normal employee to verify GET /api/tasks returns their tasks
+    const empLogin = await fetch(`${SERVER}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'alice@example.com', password: 'alice123' })
+    });
+    const empBody = await empLogin.json().catch(() => null);
+    const empSetCookie = empLogin.headers.get('set-cookie') || empLogin.headers.get('Set-Cookie');
+    const empCookie = empSetCookie ? empSetCookie.split(';')[0] : undefined;
+    checkEnvelope(empBody, true);
+    console.log('employee login status', empLogin.status, 'cookie', !!empCookie);
+
+    const getTasksEmp = await fetch(`${SERVER}/api/tasks`, { headers: { cookie: empCookie } });
+    const getTasksEmpBody = await getTasksEmp.json().catch(() => null);
+    console.log('tasks (employee):', getTasksEmpBody);
+    checkEnvelope(getTasksEmpBody, true);
+
+    const getTL = await fetch(`${SERVER}/api/timelogs?userId=E-001`, { headers: { cookie } });
+    const getTLBody = await getTL.json().catch(() => null);
+    console.log('timelogs:', getTLBody);
+    checkEnvelope(getTLBody, true);
+
+    const getAt = await fetch(`${SERVER}/api/attendance?userId=E-001`, { headers: { cookie } });
+    const getAtBody = await getAt.json().catch(() => null);
+    console.log('attendance:', getAtBody);
+    checkEnvelope(getAtBody, true);
 
     // Now simulate clock-out update
     const endTime = new Date().toISOString();
-    const putTL = await fetch(`http://127.0.0.1:3000/api/timelogs/${encodeURIComponent(tId)}`, {
+    const putTL = await fetch(`${SERVER}/api/timelogs/${encodeURIComponent(tId)}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify({ endTime })
     });
-    console.log('timelog put status', putTL.status, await putTL.text());
+    const putTLBody = await putTL.json().catch(() => null);
+    console.log('timelog put status', putTL.status, putTLBody);
+    checkEnvelope(putTLBody, true);
 
-    const putAt = await fetch(`http://127.0.0.1:3000/api/attendance/${encodeURIComponent(aId)}`, {
+    const putAt = await fetch(`${SERVER}/api/attendance/${encodeURIComponent(aId)}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify({ clockOut: endTime, value: 1 })
     });
-    console.log('attendance put status', putAt.status, await putAt.text());
+    const putAtBody = await putAt.json().catch(() => null);
+    console.log('attendance put status', putAt.status, putAtBody);
+    checkEnvelope(putAtBody, true);
 
-    const getTL2 = await fetch('http://127.0.0.1:3000/api/timelogs?userId=E-001', { headers: { cookie } });
-    console.log('timelogs after put:', await getTL2.json());
+    const getTL2 = await fetch(`${SERVER}/api/timelogs?userId=E-001`, { headers: { cookie } });
+    const getTL2Body = await getTL2.json().catch(() => null);
+    console.log('timelogs after put:', getTL2Body);
+    checkEnvelope(getTL2Body, true);
 
-    const getAt2 = await fetch('http://127.0.0.1:3000/api/attendance?userId=E-001', { headers: { cookie } });
-    console.log('attendance after put:', await getAt2.json());
+    const getAt2 = await fetch(`${SERVER}/api/attendance?userId=E-001`, { headers: { cookie } });
+    const getAt2Body = await getAt2.json().catch(() => null);
+    console.log('attendance after put:', getAt2Body);
+    checkEnvelope(getAt2Body, true);
 
     // Check DB for password hashes using sql.js
     const { default: initSqlJs } = await import('sql.js');

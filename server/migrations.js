@@ -1,0 +1,193 @@
+import fs from 'fs';
+
+// Simple, idempotent migrations helper for the embedded sql.js DB
+// Exports runMigrations({ db, dbFile }) which ensures tables and columns exist and writes the DB file when changes occur.
+
+export async function runMigrations({ db, dbFile }) {
+  if (!db || !dbFile) throw new Error('runMigrations requires {db, dbFile}');
+
+  let changed = false;
+
+  const ensureTable = (name, createSQL, indexes = []) => {
+    try {
+      const sel = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?");
+      sel.bind([name]);
+      const exists = sel.step(); sel.free();
+      if (!exists) {
+        db.run(createSQL);
+        changed = true;
+        console.log(`Migration: created table ${name}`);
+        for (const idx of indexes) {
+          try { db.run(idx); } catch (e) { console.warn('Failed to create index', idx, e && e.message); }
+        }
+      }
+    } catch (e) {
+      console.warn('Migration: ensureTable failed for', name, e && (e.message || e));
+    }
+  };
+
+  const ensureColumns = (tableName, cols) => {
+    try {
+      const stmt = db.prepare("PRAGMA table_info('" + tableName + "')");
+      const existing = new Set();
+      while (stmt.step()) {
+        const c = stmt.getAsObject(); existing.add(String(c.name));
+      }
+      stmt.free();
+
+      for (const [colName, colDef] of Object.entries(cols)) {
+        if (!existing.has(colName)) {
+          try {
+            db.run(`ALTER TABLE ${tableName} ADD COLUMN ${colName} ${colDef}`);
+            changed = true;
+            console.log(`Migration: added column ${colName} to ${tableName}`);
+          } catch (e) {
+            console.warn(`Migration: failed to add column ${colName} to ${tableName}`, e && (e.message || e));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Migration: ensureColumns failed for', tableName, e && (e.message || e));
+    }
+  };
+
+  // Standard columns required by our modules
+  const standardCols = {
+    user_id: 'TEXT',
+    created_at: "TEXT DEFAULT (datetime('now'))",
+    updated_at: "TEXT"
+  };
+
+  // Ensure key module tables exist with baseline schema
+  ensureTable('tasks', `CREATE TABLE tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    assignedTo TEXT,
+    assignedBy TEXT,
+    priority TEXT,
+    dueDate TEXT,
+    status TEXT,
+    createdAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)` ]);
+
+  ensureTable('calendar', `CREATE TABLE calendar (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    startTime TEXT,
+    endTime TEXT,
+    createdBy TEXT,
+    createdAt TEXT
+  )`);
+
+  ensureTable('finance', `CREATE TABLE finance (
+    id TEXT PRIMARY KEY,
+    amount REAL,
+    currency TEXT,
+    type TEXT,
+    description TEXT,
+    date TEXT,
+    createdBy TEXT,
+    createdAt TEXT
+  )`);
+
+  ensureTable('notifications', `CREATE TABLE notifications (
+    id TEXT PRIMARY KEY,
+    userId TEXT,
+    message TEXT,
+    meta TEXT,
+    isRead INTEGER DEFAULT 0,
+    createdAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_notifications_userId ON notifications(userId)` ]);
+
+  ensureTable('projects', `CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    address TEXT,
+    status TEXT,
+    data TEXT,
+    createdBy TEXT,
+    createdAt TEXT
+  )`);
+
+  ensureTable('checklists', `CREATE TABLE checklists (
+    id TEXT PRIMARY KEY,
+    refId TEXT,
+    refType TEXT,
+    item TEXT,
+    done INTEGER DEFAULT 0,
+    createdBy TEXT,
+    createdAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)` ]);
+
+  ensureTable('notepad', `CREATE TABLE notepad (
+    id TEXT PRIMARY KEY,
+    userId TEXT,
+    content TEXT,
+    createdAt TEXT,
+    updatedAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_notepad_userId ON notepad(userId)` ]);
+
+  // Reminders table (migrate client-side reminders into DB)
+  ensureTable('reminders', `CREATE TABLE reminders (
+    id TEXT PRIMARY KEY,
+    userId TEXT,
+    date TEXT,
+    title TEXT,
+    createdBy TEXT,
+    createdAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)` ]);
+
+  // Ensure standard columns exist on tables where appropriate
+  const tablesToPatch = ['tasks', 'calendar', 'finance', 'notifications', 'projects', 'checklists', 'notepad', 'leaves', 'holidays', 'employee_documents', 'employees_profile'];
+  for (const t of tablesToPatch) {
+    ensureColumns(t, {
+      user_id: 'TEXT',
+      created_at: "TEXT DEFAULT (datetime('now'))",
+      updated_at: "TEXT"
+    });
+  }
+
+  // Add is_archived and archived_at columns to users and employees for soft-delete (archive) support
+  ensureColumns('users', {
+    is_archived: 'INTEGER DEFAULT 0',
+    archived_at: 'TEXT'
+  });
+
+  ensureColumns('employees', {
+    is_archived: 'INTEGER DEFAULT 0',
+    archived_at: 'TEXT'
+  });
+
+  // Add more specific migrations if needed (e.g., migrate createdDate -> createdAt for tasks)
+  try {
+    const colsStmt = db.prepare("PRAGMA table_info('tasks')");
+    const cols = new Set();
+    while (colsStmt.step()) { cols.add(colsStmt.getAsObject().name); }
+    colsStmt.free();
+
+    if (!cols.has('createdAt') && cols.has('createdDate')) {
+      try {
+        db.run("ALTER TABLE tasks ADD COLUMN createdAt TEXT");
+        db.run("UPDATE tasks SET createdAt = createdDate WHERE createdAt IS NULL OR createdAt = ''");
+        changed = true;
+        console.log('Migration: migrated tasks.createdDate -> createdAt');
+      } catch (e) { console.warn('Migration: failed to migrate tasks createdDate', e && e.message); }
+    }
+  } catch (e) { /* ignore */ }
+
+  // Persist DB if we changed schema
+  if (changed) {
+    try {
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      console.log('Migration: DB file persisted with changes');
+    } catch (e) {
+      console.error('Migration: failed to persist DB file', e && (e.stack || e.message || e));
+    }
+  } else {
+    console.log('Migration: no changes required');
+  }
+}
+
+export default { runMigrations };

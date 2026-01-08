@@ -6,6 +6,7 @@ import { Package, Plus, MapPin, Search, CheckCircle2, Clock, Truck, Camera, Uplo
 import { format, addHours, addDays, addMonths, differenceInDays } from 'date-fns';
 import { AITextEnhancer } from './AITextEnhancer';
 import { convertFileToBase64 } from '../utils/fileHelper';
+import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 
 interface MaterialOrdersProps {
   orders: MaterialOrder[];
@@ -33,6 +34,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
   const [loadingLoc, setLoadingLoc] = useState(false);
 
   const isAdmin = currentUser.role === 'ADMIN';
+    const safeOrders = ensureArray(orders);
 
   // --- Logic Helpers ---
 
@@ -56,22 +58,26 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
   };
 
   const getTATString = (o: MaterialOrder) => {
-      let base = `${o.tatValue} ${o.tatUnit}`;
-      if (o.isMonsoon && o.tatUnit === 'Days') base += " (+3d Rain)";
-      return base;
+     const val = o && o.tatValue ? o.tatValue : 0;
+     const unit = o && o.tatUnit ? o.tatUnit : 'Days';
+     let base = `${val} ${unit}`;
+     if (o && o.isMonsoon && unit === 'Days') base += " (+3d Rain)";
+     return base;
   };
 
   const calculateFinalTAT = (o: MaterialOrder) => {
-       if(o.tatUnit === 'Hours') return `${o.tatValue} Hrs`;
-       let val = o.tatValue;
-       if(o.isMonsoon && o.tatUnit === 'Days') val += 3;
-       return `${val} ${o.tatUnit}`;
+      const unit = o && o.tatUnit ? o.tatUnit : 'Days';
+      const base = Number(o && o.tatValue ? o.tatValue : 0);
+      if(unit === 'Hours') return `${base} Hrs`;
+      let val = base;
+      if(o && o.isMonsoon && unit === 'Days') val += 3;
+      return `${val} ${unit}`;
   };
 
   // --- Actions ---
 
   // 1. Employee Creates Order (Assigns to Second Employee)
-  const handleCreateOrder = () => {
+    const handleCreateOrder = async () => {
     if (newOrder.itemName && newOrder.quantity && newOrder.siteLocation && newOrder.assignedApprover) {
       
       // Auto-detect Monsoon
@@ -82,7 +88,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
       const tatVal = matInfo ? matInfo.value : 3; // Default 3 days
       const tatUnit = matInfo ? matInfo.unit : 'Days';
 
-      const order: MaterialOrder = {
+            const order: MaterialOrder = {
         id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
         itemName: newOrder.itemName,
         quantity: newOrder.quantity,
@@ -97,54 +103,61 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
         createdDate: new Date().toISOString().split('T')[0],
         status: 'PENDING_APPROVAL',
       };
-      setOrders([order, ...orders]);
-      setShowOrderModal(false);
-      setNewOrder({ priority: 'Medium' });
-      addNotification('Material Request', `New request from ${currentUser.name}. Please approve.`, 'ORDER', order.assignedApprover);
+            try {
+                await api.post('/o2d', { data: order, status: order.status });
+                const listRes = await safeGet('/o2d');
+                setOrders(ensureArray(extractPayload(listRes)));
+            } catch (err) {
+                console.warn('O2D create failed, falling back to local update', err && (err.stack || err.message || err));
+                setOrders([order, ...safeOrders]);
+            }
+            setShowOrderModal(false);
+            setNewOrder({ priority: 'Medium' });
+            addNotification('Material Request', `New request from ${currentUser.name}. Please approve.`, 'ORDER', String(order.assignedApprover));
     } else {
         alert("Please fill all fields including the Approver.");
     }
   };
 
   // 2. Second Employee Approves
-  const handleApprove = (orderId: string, approved: boolean) => {
-      if (approved) {
-          setOrders(orders.map(o => o.id === orderId ? { 
-              ...o, 
-              status: 'APPROVED_FOR_VENDOR',
-              approvedBy: currentUser.name,
-              approvalDate: new Date().toISOString().split('T')[0]
-          } : o));
-          // Notify the Approver themselves (or UI update) that they now need to order
-      } else {
-          setOrders(orders.map(o => o.id === orderId ? { ...o, status: 'REJECTED' } : o));
-          const order = orders.find(o => o.id === orderId);
-          if(order) addNotification('Order Rejected', `Order ${orderId} was rejected by ${currentUser.name}.`, 'ORDER', order.orderedBy);
-      }
-  };
+    const handleApprove = async (orderId: string, approved: boolean) => {
+            const order = safeOrders.find(o => o.id === orderId);
+            if (!order) return;
+            const updated: MaterialOrder = approved ? { ...order, status: 'APPROVED_FOR_VENDOR', approvedBy: currentUser.name, approvalDate: new Date().toISOString().split('T')[0] } : { ...order, status: 'REJECTED' };
+            try {
+                await api.put(`/o2d/${encodeURIComponent(orderId)}`, { data: updated, status: updated.status });
+                const listRes = await safeGet('/o2d');
+                setOrders(ensureArray(extractPayload(listRes)));
+            } catch (err) {
+                console.warn('O2D approve failed, falling back to local update', err && (err.stack || err.message || err));
+                setOrders(safeOrders.map(o => o.id === orderId ? updated : o));
+            }
+            if (!approved) addNotification('Order Rejected', `Order ${orderId} was rejected by ${currentUser.name}.`, 'ORDER', String(order.orderedBy));
+    };
 
   // 3. Second Employee Places Order to Vendor
-  const handlePlaceToVendor = () => {
+    const handlePlaceToVendor = async () => {
       if (!vendorName) return alert("Please enter vendor name");
       
-      const order = orders.find(o => o.id === showVendorModal);
+    const order = safeOrders.find(o => o.id === showVendorModal);
       if (!order) return;
 
       const now = new Date();
       // Calculate Expected Date now that order is placed
       const expected = calculateExpectedDate(now, order.tatValue, order.tatUnit, !!order.isMonsoon);
 
-      setOrders(orders.map(o => o.id === showVendorModal ? {
-          ...o,
-          status: 'ORDERED_TO_VENDOR',
-          vendorName: vendorName,
-          vendorOrderDate: now.toISOString().split('T')[0],
-          expectedDeliveryDate: expected
-      } : o));
-      
-      setShowVendorModal(null);
-      setVendorName('');
-      addNotification('Vendor Order Placed', `Order ${order.id} sent to ${vendorName}.`, 'ORDER', order.orderedBy);
+            const updated: MaterialOrder = { ...order, status: 'ORDERED_TO_VENDOR', vendorName: vendorName, vendorOrderDate: now.toISOString().split('T')[0], expectedDeliveryDate: expected };
+            try {
+                await api.put(`/o2d/${encodeURIComponent(order.id)}`, { data: updated, status: updated.status });
+                const listRes = await safeGet('/o2d');
+                setOrders(ensureArray(extractPayload(listRes)));
+            } catch (err) {
+                console.warn('O2D place-to-vendor failed, falling back to local update', err && (err.stack || err.message || err));
+                setOrders(safeOrders.map(o => o.id === showVendorModal ? updated : o));
+            }
+            setShowVendorModal(null);
+            setVendorName('');
+            addNotification('Vendor Order Placed', `Order ${order.id} sent to ${vendorName}.`, 'ORDER', String(order.orderedBy));
   };
 
   // 5. Site Person (Likely Employee 1 or 2) Uploads Proof
@@ -171,59 +184,66 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
       }
   };
 
-  const submitDelivery = (img: string, gps?: {lat: number, lng: number}) => {
-      setOrders(orders.map(o => o.id === showDeliveryModal ? {
-          ...o,
-          status: 'DELIVERED_AWAITING_ADMIN',
-          proofAttachment: img,
-          deliveryGps: gps,
-          deliveryTimestamp: new Date().toISOString(),
-          deliveryDate: new Date().toISOString().split('T')[0]
-      } : o));
-      setLoadingLoc(false);
-      setShowDeliveryModal(null);
-      addNotification('Delivery Proof', `Delivery proof uploaded. Admin review required.`, 'ORDER', 'ADMIN');
-  };
+    const submitDelivery = async (img: string, gps?: {lat: number, lng: number}) => {
+            const order = safeOrders.find(o => o.id === showDeliveryModal);
+            if (!order) { setLoadingLoc(false); return; }
+            const updated: MaterialOrder = { ...order, status: 'DELIVERED_AWAITING_ADMIN', proofAttachment: img, deliveryGps: gps, deliveryTimestamp: new Date().toISOString(), deliveryDate: new Date().toISOString().split('T')[0] };
+            try {
+                await api.put(`/o2d/${encodeURIComponent(order.id)}`, { data: updated, status: updated.status });
+                const listRes = await safeGet('/o2d');
+                setOrders(ensureArray(extractPayload(listRes)));
+            } catch (err) {
+                console.warn('O2D submitDelivery failed, falling back to local update', err && (err.stack || err.message || err));
+                setOrders(safeOrders.map(o => o.id === showDeliveryModal ? updated : o));
+            }
+            setLoadingLoc(false);
+            setShowDeliveryModal(null);
+            addNotification('Delivery Proof', `Delivery proof uploaded. Admin review required.`, 'ORDER', String('ADMIN'));
+    };
 
   // 6. Admin Final Review
-  const handleAdminReview = (orderId: string, accepted: boolean) => {
-      setOrders(orders.map(o => o.id === orderId ? {
-          ...o,
-          status: accepted ? 'COMPLETED' : 'REJECTED' 
-      } : o));
-      setAdminDetailId(null);
-  };
+    const handleAdminReview = async (orderId: string, accepted: boolean) => {
+            const order = safeOrders.find(o => o.id === orderId);
+            if (!order) return;
+            const updated: MaterialOrder = { ...order, status: accepted ? 'COMPLETED' : 'REJECTED' };
+            try {
+                await api.put(`/o2d/${encodeURIComponent(orderId)}`, { data: updated, status: updated.status });
+                const listRes = await safeGet('/o2d');
+                setOrders(ensureArray(extractPayload(listRes)));
+            } catch (err) {
+                console.warn('O2D admin review failed, falling back to local update', err && (err.stack || err.message || err));
+                setOrders(safeOrders.map(o => o.id === orderId ? updated : o));
+            }
+            setAdminDetailId(null);
+    };
 
   // --- Filter Logic ---
 
   const getFilteredOrders = () => {
       if (currentUser.role === 'ADMIN' && activeTab === 'ADMIN_ALL') {
-          return orders;
-      }
+              return safeOrders;
+          }
       
       const myId = currentUser.employeeId;
       
       if (activeTab === 'MY_REQUESTS') {
           // Orders created BY me
-          return orders.filter(o => o.orderedBy === myId);
+          return safeOrders.filter(o => o && o.orderedBy === myId);
       }
       if (activeTab === 'ACTION_REQUIRED') {
-          return orders.filter(o => 
-             // 1. I need to approve (Approver)
-             (o.assignedApprover === myId && o.status === 'PENDING_APPROVAL') ||
-             // 2. I need to place vendor order (Approver)
-             (o.assignedApprover === myId && o.status === 'APPROVED_FOR_VENDOR') ||
-             // 3. I need to upload proof (Only Initiator)
-             (o.orderedBy === myId && o.status === 'ORDERED_TO_VENDOR')
+          return safeOrders.filter(o => 
+             (o && ((o.assignedApprover === myId && (o.status === 'PENDING_APPROVAL' || o.status === 'APPROVED_FOR_VENDOR')) || (o.orderedBy === myId && o.status === 'ORDERED_TO_VENDOR')))
           );
       }
-      return orders;
+      return safeOrders;
   };
 
-  const displayedOrders = getFilteredOrders().filter(o => 
-      o.itemName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      o.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const displayedOrders = getFilteredOrders().filter(o => {
+      const name = (o && o.itemName) ? String(o.itemName) : '';
+      const id = (o && o.id) ? String(o.id) : '';
+      const q = searchTerm || '';
+      return name.toLowerCase().includes(q.toLowerCase()) || id.toLowerCase().includes(q.toLowerCase());
+  });
 
   const getStatusBadge = (status: OrderStatus) => {
       switch(status) {

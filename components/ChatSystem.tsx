@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ChatMessage, Employee, User, ChatGroup, Notification } from '../types';
 import { MessageCircle, Search, Paperclip, Send, User as UserIcon, Eye, Users, Plus, X, ArrowLeft } from 'lucide-react';
 import { AITextEnhancer } from './AITextEnhancer';
+import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 
 interface ChatSystemProps {
   messages: ChatMessage[];
@@ -59,15 +60,21 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
         attachment: attachment ? attachment.name : undefined
     };
 
-    setMessages([...messages, newMessage]);
-    setInputText('');
-    setAttachment(null);
-    
-    // Notify
-    if (!groups.some(g => g.id === selectedChatId)) {
-       // Only notify if 1-on-1 (Simulated)
-       addNotification('New Message', `Message from ${currentUser.name}`, 'CHAT', selectedChatId);
-    }
+        // Optimistic UI update then persist to server
+        setMessages([...messages, newMessage]);
+        setInputText('');
+        setAttachment(null);
+        (async () => {
+            try {
+                await api.post('/chat', { teamId: selectedChatId, message: newMessage.content, meta: newMessage.attachment ? { attachment: newMessage.attachment } : undefined });
+                const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId!)}`);
+                const p = extractPayload(r);
+                setMessages(ensureArray(p));
+            } catch (e) {
+                console.warn('Chat send failed', e && (e.stack || e.message || e));
+            }
+        })();
+        if (!groups.some(g => g.id === selectedChatId)) addNotification('New Message', `Message from ${currentUser.name}`, 'CHAT', String(selectedChatId));
   };
 
   const handleCreateGroup = () => {
@@ -82,7 +89,7 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
         setShowGroupModal(false);
         setNewGroupName('');
         setNewGroupMembers([]);
-        addNotification('Chat Group', `Group "${newGroupName}" created.`, 'CHAT', 'ALL');
+        addNotification('Chat Group', `Group "${newGroupName}" created.`, 'CHAT', String('ALL'));
     }
   };
 
@@ -99,6 +106,21 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, selectedChatId, adminMonitorPartner]);
+
+    // Load messages for selected chat from server
+    useEffect(() => {
+        let mounted = true;
+        const load = async () => {
+            if (!selectedChatId) return;
+            try {
+                const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId)}`);
+                const p = extractPayload(r);
+                if (mounted) setMessages(ensureArray(p));
+            } catch (e) { console.warn('Failed to load chat messages', e && (e.stack || e.message || e)); }
+        };
+        load();
+        return () => { mounted = false; };
+    }, [selectedChatId]);
 
 
   // --- ADMIN VIEW RENDER ---

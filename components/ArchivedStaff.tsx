@@ -19,19 +19,34 @@ export const ArchivedStaff: React.FC<ArchivedStaffProps> = ({
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [currentEmp, setCurrentEmp] = useState<Employee | null>(null);
 
-  const handleRestore = (id: string) => {
+  const handleRestore = async (id: string) => {
     if (window.confirm('Restore this team member to the active list? Login access will be restored.')) {
         const empToRestore = archivedEmployees.find(e => e.id === id);
         if (empToRestore) {
-            // Add back to active list using functional update to ensure fresh state
+            // Optimistic UI update
             setEmployees(prev => {
-                // Prevent duplicates
                 if (prev.some(e => e.id === id)) return prev;
                 return [...prev, { ...empToRestore, status: 'Active' }];
             });
-            
-            // Remove from archive list
             setArchivedEmployees(prev => prev.filter(e => e.id !== id));
+
+            // Try to restore on server: un-archive employee and any linked user
+            try {
+              await fetch(`/api/employees/${id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'Active', is_archived: 0 }) });
+            } catch (e) { console.warn('Failed to restore employee on server', e); }
+
+            // Attempt to restore linked user by employeeId
+            try {
+              const uRes = await fetch(`/api/users?archived=1` , { credentials: 'include' });
+              const up = await uRes.json();
+              const usersList = Array.isArray(up.data) ? up.data : (Array.isArray(up) ? up : []);
+              const linked = usersList.find((u: any) => u.employeeId === id);
+              if (linked && linked.id) {
+                try {
+                  await fetch(`/api/users/${linked.id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_archived: 0 }) });
+                } catch (e) { console.warn('Failed to restore linked user', e); }
+              }
+            } catch (e) { console.warn('Failed to fetch users for restore', e); }
         }
     }
   };

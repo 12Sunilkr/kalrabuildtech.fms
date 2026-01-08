@@ -4,6 +4,8 @@ import { Employee, AttendanceRecord, AttendanceValue, SundayRequest, Holiday } f
 import { getDaysInMonthArray, formatDateKey, isDateSunday, startOfDay } from '../utils/dateUtils';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
 import { ChevronLeft, ChevronRight, Calendar, AlertCircle, CheckCircle2, XCircle, X } from 'lucide-react';
+import api from '../src/utils/api';
+import { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 import { format, isBefore } from 'date-fns';
 
 interface AttendanceSheetProps {
@@ -54,11 +56,24 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
       // Try to create or update attendance record on server
       const existing = attendanceData[empId]?.[dateKey];
       if (existing === undefined) {
-        await fetch('/api/attendance', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: aId, userId: empId, date: dateKey, value: newVal }) });
+        await api.post('/attendance', { id: aId, userId: empId, date: dateKey, value: newVal }, { withCredentials: true });
       } else {
-        await fetch(`/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: newVal }) });
+        await api.put(`/attendance/${encodeURIComponent(aId)}`, { value: newVal }, { withCredentials: true });
       }
-      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: newVal } }));
+      try {
+        const sat = await safeGet('/attendance');
+        const arr = ensureArray(extractPayload(sat));
+        const ag: Record<string, AttendanceRecord> = {};
+        arr.forEach((a: any) => {
+          if (!a) return;
+          if (!ag[a.userId]) ag[a.userId] = {};
+          ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+        });
+        setAttendanceData(ag);
+      } catch (e) {
+        // fallback to optimistic update if refresh fails
+        setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: newVal } }));
+      }
     } catch (err) {
       console.warn('Attendance update failed, falling back to local update', err);
       setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: newVal } }));

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Query, Employee, User, Notification } from '../types';
 import { HelpCircle, Plus, Search, CheckCircle2, X, Send } from 'lucide-react';
 import { format } from 'date-fns';
 import { AITextEnhancer } from './AITextEnhancer';
+import api, { safePost, safeGet, safePut, extractPayload, ensureArray } from '../src/utils/api';
 
 interface QuerySystemProps {
   queries: Query[];
@@ -16,37 +17,70 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
   const [activeTab, setActiveTab] = useState<'INBOX' | 'SENT'>('INBOX');
   const [showModal, setShowModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [resolvingIds, setResolvingIds] = useState<string[]>([]);
+  // Normalize incoming queries so render-time never sees undefined/null
+  const safeQueries = ensureArray(queries);
   
   // New Query State
   const [newQuery, setNewQuery] = useState<Partial<Query>>({});
 
-  const handleCreateQuery = () => {
-    if (newQuery.subject && newQuery.message && newQuery.to) {
-      const query: Query = {
-        id: `Q-${Math.floor(1000 + Math.random() * 9000)}`,
-        subject: newQuery.subject,
-        message: newQuery.message,
-        from: currentUser.employeeId || 'ADMIN',
-        to: newQuery.to,
-        date: new Date().toISOString().split('T')[0],
-        status: 'OPEN'
-      };
-      setQueries([query, ...queries]);
+  const handleCreateQuery = async () => {
+    if (!(newQuery.subject && newQuery.message && newQuery.to)) return alert('Please fill subject, message and recipient');
+    try {
+      const body = { userId: currentUser.employeeId || 'ADMIN', to: newQuery.to, question: newQuery.subject, answer: '', status: 'OPEN', createdAt: new Date().toISOString(), message: newQuery.message };
+      await safePost('/queries', body, { withCredentials: true });
+      // Refresh queries like Task pattern
+      const res = await safeGet('/queries');
+      setQueries(ensureArray(extractPayload(res)));
       setShowModal(false);
       setNewQuery({});
-      addNotification('New Query', `Query "${newQuery.subject}" sent by ${currentUser.name}.`, 'QUERY', query.to);
+      addNotification('New Query', `Query "${newQuery.subject}" sent by ${currentUser.name}.`, 'QUERY', String(newQuery.to));
+    } catch (err) {
+      console.error('Failed to create query on server', err && (err.stack || err.message || err));
+      alert('Failed to send query to server. Try again later.');
     }
   };
 
-  const handleResolve = (id: string) => {
-    setQueries(queries.map(q => q.id === id ? { ...q, status: 'RESOLVED' } : q));
+  const handleResolve = async (id: string) => {
+    try {
+      // Use safePut helper and then re-fetch authoritative list (Task pattern)
+      await safePut(`/queries/${encodeURIComponent(id)}`, { status: 'RESOLVED' }, { withCredentials: true });
+      // Some backends accept PUT; safe POST endpoint above is tolerant. Now re-fetch list.
+      const res = await safeGet('/queries');
+      setQueries(ensureArray(extractPayload(res)));
+    } catch (err) {
+      console.error('Failed to resolve query on server', err && (err.stack || err.message || err));
+      // Fallback to optimistic local update
+      setQueries(safeQueries.map(q => q.id === id ? { ...q, status: 'RESOLVED' } : q));
+    }
   };
 
-  const filteredQueries = queries.filter(q => {
+  // Fetch queries from server and normalize response
+  const fetchQueries = async () => {
+    if (!currentUser || !(currentUser.employeeId || currentUser.id)) return;
+    setLoading(true);
+    try {
+      const res = await safeGet('/queries', { cacheBust: true });
+      setQueries(ensureArray(extractPayload(res)));
+    } catch (err) {
+      console.warn('Failed to load queries', err && (err.stack || err.message || err));
+      setQueries([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchQueries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
+
+  const filteredQueries = safeQueries.filter(q => {
     // If Admin, they see ALL queries in the inbox view to monitor everything
     if (currentUser.role === 'ADMIN' && activeTab === 'INBOX') {
-        const term = searchTerm.toLowerCase();
-        return q.subject.toLowerCase().includes(term) || q.message.toLowerCase().includes(term);
+        const term = (searchTerm || '').toLowerCase();
+        return (q.subject || '').toLowerCase().includes(term) || (q.message || '').toLowerCase().includes(term);
     }
 
     // Normal User Logic
@@ -55,8 +89,8 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
     
     if (!(isInbox || isSent)) return false;
 
-    const term = searchTerm.toLowerCase();
-    return q.subject.toLowerCase().includes(term) || q.message.toLowerCase().includes(term);
+    const term = (searchTerm || '').toLowerCase();
+    return (q.subject || '').toLowerCase().includes(term) || (q.message || '').toLowerCase().includes(term);
   });
 
   return (
@@ -118,8 +152,10 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
            </div>
         ) : (
             filteredQueries.map(q => {
-                const sender = employees.find(e => e.id === q.from)?.name || q.from;
-                const receiver = employees.find(e => e.id === q.to)?.name || q.to;
+                const sender = employees.find(e => e.id === (q.from || ''))?.name || (q.from || '');
+                const receiver = employees.find(e => e.id === (q.to || ''))?.name || (q.to || '');
+                const displayDate = q.date || q.createdAt || '';
+                const shortId = (id?: string) => id ? (id.length > 12 ? `${id.slice(0,8)}…${id.slice(-4)}` : id) : '';
 
                 return (
                     <div key={q.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 hover:shadow-md transition-shadow relative overflow-hidden">
@@ -127,27 +163,33 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                         <div className="flex flex-col md:flex-row justify-between gap-4">
                             <div className="flex-1">
                                 <div className="flex items-center gap-2 mb-2">
-                                     <span className="font-mono text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-200">{q.id}</span>
+                                    <span className="font-mono text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-200">{shortId(q.id)}</span>
                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${q.status === 'RESOLVED' ? 'bg-green-100 text-green-700 border-green-200' : 'bg-teal-50 text-teal-700 border-teal-200'}`}>
                                         {q.status}
                                      </span>
-                                     <span className="text-xs text-slate-400 ml-auto md:ml-0">{q.date}</span>
+                                     <span className="text-xs text-slate-400 ml-auto md:ml-0">{displayDate}</span>
                                 </div>
                                 <h3 className="text-lg font-bold text-slate-800 mb-2">{q.subject}</h3>
                                 <p className="text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100 italic">"{q.message}"</p>
                                 <div className="mt-3 text-xs font-medium text-slate-500 flex gap-4">
-                                    <span>From: <strong className="text-slate-700">{sender}</strong></span>
-                                    <span>To: <strong className="text-slate-700">{receiver}</strong></span>
+                                  <span>From: <strong className="text-slate-700">{sender || '-'}</strong></span>
+                                  <span>To: <strong className="text-slate-700">{receiver || '-'}</strong></span>
                                 </div>
                             </div>
                             
                             {(q.status === 'OPEN') && (q.to === currentUser.employeeId || currentUser.role === 'ADMIN') && (
                                 <div className="flex items-center">
                                     <button 
-                                        onClick={() => handleResolve(q.id)}
-                                        className="px-4 py-2 bg-white border border-green-200 text-green-700 font-bold text-sm rounded-xl hover:bg-green-50 flex items-center gap-2 shadow-sm"
+                                      onClick={async () => {
+                                        if (resolvingIds.includes(q.id)) return;
+                                        setResolvingIds(prev => [...prev, q.id]);
+                                        await handleResolve(q.id);
+                                        setResolvingIds(prev => prev.filter(x => x !== q.id));
+                                      }}
+                                      disabled={resolvingIds.includes(q.id)}
+                                      className={`px-4 py-2 bg-white border border-green-200 text-green-700 font-bold text-sm rounded-xl hover:bg-green-50 flex items-center gap-2 shadow-sm ${resolvingIds.includes(q.id) ? 'opacity-60 cursor-wait' : ''}`}
                                     >
-                                        <CheckCircle2 size={16} /> Mark Resolved
+                                      <CheckCircle2 size={16} /> {resolvingIds.includes(q.id) ? 'Resolving…' : 'Mark Resolved'}
                                     </button>
                                 </div>
                             )}

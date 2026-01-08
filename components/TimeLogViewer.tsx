@@ -4,6 +4,8 @@ import { TimeLog, Employee, AttendanceRecord, AttendanceValue } from '../types';
 import { Clock, Search, Download, CalendarDays, User, Edit2, Save, X, LogOut } from 'lucide-react';
 import { format, differenceInMinutes } from 'date-fns';
 import { formatDecimalHours } from '../utils/dateUtils';
+import api from '../src/utils/api';
+import { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 
 interface TimeLogViewerProps {
   timeLogs: Record<string, Record<string, TimeLog>>; // empId -> date -> Log
@@ -151,41 +153,47 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
 
       const tId = `T-${log.empId}-${log.date}`;
       const aId = `A-${log.empId}-${log.date}`;
-      try {
-        await fetch(`/api/timelogs/${encodeURIComponent(tId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endTime: clockOutIso }) });
-        await fetch(`/api/attendance/${encodeURIComponent(aId)}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clockOut: clockOutIso, value: attendanceVal }) });
+            try {
+                await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: clockOutIso }, { withCredentials: true });
+                await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: clockOutIso, value: attendanceVal }, { withCredentials: true });
 
-        // 1. Update TimeLogs locally
-        setTimeLogs(prev => ({
-            ...prev,
-            [log.empId]: {
-                ...(prev[log.empId] || {}),
-                [log.date]: {
-                    ...log, // Keep ID, Date, In time
-                    clockOut: clockOutIso,
-                    durationHours: durationHours
-                }
-            }
-        }));
+                // Refresh timelogs and attendance from server (Task pattern: write then re-fetch authoritative data)
+                try {
+                  const tlRes = await safeGet('/timelogs');
+                  const tlPayload = extractPayload(tlRes);
+                  const tlArr = ensureArray(tlPayload);
+                  const tlMap: Record<string, Record<string, TimeLog>> = {};
+                  tlArr.forEach((t: any) => {
+                    if (!t) return;
+                    const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
+                    if (!tlMap[t.userId]) tlMap[t.userId] = {};
+                    tlMap[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: t.durationHours } as TimeLog;
+                  });
+                  setTimeLogs(tlMap);
+                } catch (e) { console.warn('Failed to refresh timelogs after manual out', e && (e.stack || e.message || e)); }
 
-        // 2. Update Attendance Sheet locally
-        setAttendanceData(prev => ({
-            ...prev,
-            [log.empId]: {
-                ...(prev[log.empId] || {}),
-                [log.date]: attendanceVal
-            }
-        }));
+                try {
+                  const aRes = await safeGet('/attendance');
+                  const aPayload = extractPayload(aRes);
+                  const aArr = ensureArray(aPayload);
+                  const ag: Record<string, AttendanceRecord> = {};
+                  aArr.forEach((a: any) => {
+                    if (!a) return;
+                    if (!ag[a.userId]) ag[a.userId] = {};
+                    ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+                  });
+                  setAttendanceData(ag);
+                } catch (e) { console.warn('Failed to refresh attendance after manual out', e && (e.stack || e.message || e)); }
 
       } catch (err) {
         console.warn('Manual out update failed, falling back to local update', err);
-        // Fallback behavior
+        // Fallback behavior: update local state so UI reflects change until next refresh
         setTimeLogs(prev => ({
             ...prev,
             [log.empId]: {
                 ...(prev[log.empId] || {}),
                 [log.date]: {
-                    ...log, // Keep ID, Date, In time
+                    ...log,
                     clockOut: clockOutIso,
                     durationHours: durationHours
                 }

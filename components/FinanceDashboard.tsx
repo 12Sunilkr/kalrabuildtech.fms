@@ -1,8 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ClientFinancial, VendorFinancial, User, Project } from '../types';
 import { DollarSign, TrendingUp, TrendingDown, Plus, Search, Calendar, X, AlertCircle, Clock, History, Printer, Download, MapPin } from 'lucide-react';
 import { isPast } from 'date-fns';
+import api, { safeGet, safePost, extractPayload, ensureArray } from '../src/utils/api';
 
 interface FinanceDashboardProps {
   clientFinancials: ClientFinancial[];
@@ -41,15 +42,18 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectLocation, setNewProjectLocation] = useState('');
 
-  // --- Calculations ---
-  
-  const totalReceivables = clientFinancials.reduce((acc, curr) => acc + curr.totalDealValue, 0);
-  const totalReceived = clientFinancials.reduce((acc, curr) => acc + curr.receivedAmount, 0);
-  const totalPendingIn = totalReceivables - totalReceived;
+    // --- Calculations ---
 
-  const totalPayables = vendorFinancials.reduce((acc, curr) => acc + curr.totalAmount, 0);
-  const totalPaid = vendorFinancials.reduce((acc, curr) => acc + curr.paidAmount, 0);
-  const totalPendingOut = totalPayables - totalPaid;
+    const safeClientFinancials = ensureArray(clientFinancials);
+    const safeVendorFinancials = ensureArray(vendorFinancials);
+
+    const totalReceivables = safeClientFinancials.reduce((acc, curr) => acc + (curr.totalDealValue || 0), 0);
+    const totalReceived = safeClientFinancials.reduce((acc, curr) => acc + (curr.receivedAmount || 0), 0);
+    const totalPendingIn = totalReceivables - totalReceived;
+
+    const totalPayables = safeVendorFinancials.reduce((acc, curr) => acc + (curr.totalAmount || 0), 0);
+    const totalPaid = safeVendorFinancials.reduce((acc, curr) => acc + (curr.paidAmount || 0), 0);
+    const totalPendingOut = totalPayables - totalPaid;
 
   // --- Helpers ---
 
@@ -74,132 +78,113 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
       someDate.getFullYear() == today.getFullYear();
   };
 
-  const handleAddPayment = () => {
-      if (!paymentAmount || !selectedRecordId) return;
+    const handleAddPayment = async () => {
+    if (!paymentAmount || !selectedRecordId) return;
+    const amt = Number(paymentAmount);
+    const today = new Date().toISOString().split('T')[0];
 
-      const amt = Number(paymentAmount);
-      const today = new Date().toISOString().split('T')[0];
+    try {
+      const desc = activeTab === 'CLIENT'
+        ? JSON.stringify({ for: 'CLIENT', targetId: selectedRecordId, mode: paymentMode, remarks: paymentRemarks })
+        : JSON.stringify({ for: 'VENDOR', targetId: selectedRecordId, mode: paymentMode, remarks: paymentRemarks });
 
-      if (activeTab === 'CLIENT') {
-          setClientFinancials(prev => prev.map(rec => {
-              if (rec.id === selectedRecordId) {
-                  const newReceived = rec.receivedAmount + amt;
-                  const newBalance = rec.totalDealValue - newReceived;
-                  return {
-                      ...rec,
-                      receivedAmount: newReceived,
-                      balance: newBalance,
-                      lastPaymentDate: today,
-                      status: newBalance <= 0 ? 'Paid' : 'Pending',
-                      transactions: [
-                          ...rec.transactions, 
-                          { 
-                              id: `TX-${Date.now()}`,
-                              date: today,
-                              amount: amt,
-                              mode: paymentMode as any,
-                              remarks: paymentRemarks
-                          }
-                      ]
-                  };
-              }
-              return rec;
-          }));
-      } else {
-           setVendorFinancials(prev => prev.map(rec => {
-              if (rec.id === selectedRecordId) {
-                  const newPaid = rec.paidAmount + amt;
-                  const newBalance = rec.totalAmount - newPaid;
-                  return {
-                      ...rec,
-                      paidAmount: newPaid,
-                      balance: newBalance,
-                      status: newBalance <= 0 ? 'Paid' : (newPaid > 0 ? 'Partially Paid' : 'Pending'),
-                      transactions: [
-                          ...rec.transactions, 
-                          { 
-                              id: `TX-${Date.now()}`,
-                              date: today,
-                              amount: amt,
-                              mode: paymentMode as any,
-                              remarks: paymentRemarks
-                          }
-                      ]
-                  };
-              }
-              return rec;
-          }));
-      }
-
+      await safePost('/finance', { amount: amt, currency: 'INR', type: 'PAYMENT', description: desc, date: today }, { withCredentials: true });
+      await loadFinance();
+    } catch (err) {
+      console.error('Failed to record payment on server', err && (err.stack || err.message || err));
+      alert('Failed to record payment on server. Try again later.');
+    } finally {
       setShowPaymentModal(false);
       resetPaymentForm();
+    }
   };
 
-  const handleCreateRecord = () => {
-      if (activeTab === 'CLIENT') {
-          let finalProjectId = newClientFin.projectId;
-
-          // If creating a new project on the fly
-          if (isNewProjectMode && newProjectName) {
-              const newProjId = `P-${Date.now()}`;
-              const newProject: Project = {
-                  id: newProjId,
-                  name: newProjectName,
-                  location: newProjectLocation || 'Main Site',
-                  status: 'ACTIVE',
-                  assignedEmployees: [],
-                  description: 'Created from Finance Dashboard'
-              };
-              
-              // Update projects state
-              setProjects(prev => [...prev, newProject]);
-              finalProjectId = newProjId;
-          }
-
-          if (finalProjectId && newClientFin.clientName && newClientFin.totalDealValue) {
-              const newRec: ClientFinancial = {
-                  id: `FIN-C${Date.now()}`,
-                  projectId: finalProjectId,
-                  clientName: newClientFin.clientName,
-                  totalDealValue: Number(newClientFin.totalDealValue),
-                  receivedAmount: 0,
-                  balance: Number(newClientFin.totalDealValue),
-                  registrationDate: newClientFin.registrationDate || new Date().toISOString().split('T')[0],
-                  status: 'Pending',
-                  transactions: []
-              };
-              setClientFinancials([...clientFinancials, newRec]);
-              
-              // Reset
-              setShowCreateModal(false);
-              setNewClientFin({});
-              setIsNewProjectMode(false);
-              setNewProjectName('');
-              setNewProjectLocation('');
-          } else {
-              alert("Please select a project and enter client details.");
-          }
-      } else {
-          if (newVendorFin.vendorName && newVendorFin.totalAmount) {
-              const newRec: VendorFinancial = {
-                  id: `FIN-V${Date.now()}`,
-                  vendorName: newVendorFin.vendorName!,
-                  category: newVendorFin.category || 'General',
-                  invoiceNo: newVendorFin.invoiceNo || '-',
-                  invoiceDate: newVendorFin.invoiceDate || '',
-                  dueDate: newVendorFin.dueDate || '',
-                  totalAmount: Number(newVendorFin.totalAmount),
-                  paidAmount: 0,
-                  balance: Number(newVendorFin.totalAmount),
-                  status: 'Pending',
-                  transactions: []
-              };
-              setVendorFinancials([...vendorFinancials, newRec]);
-              setShowCreateModal(false);
-              setNewVendorFin({});
-          }
-      }
+    const handleCreateRecord = async () => {
+        const today = new Date().toISOString().split('T')[0];
+        try {
+            if (activeTab === 'CLIENT') {
+                let finalProjectId = newClientFin.projectId;
+                if (isNewProjectMode && newProjectName) {
+                    const newProjId = `P-${Date.now()}`;
+                    const newProject: Project = { id: newProjId, name: newProjectName, location: newProjectLocation || 'Main Site', status: 'ACTIVE', assignedEmployees: [], description: 'Created from Finance Dashboard' };
+                    setProjects(prev => [...prev, newProject]);
+                    finalProjectId = newProjId;
+                }
+                if (!finalProjectId || !newClientFin.clientName || !newClientFin.totalDealValue) { alert('Please select a project and enter client details.'); return; }
+                const desc = JSON.stringify({ clientName: newClientFin.clientName, projectId: finalProjectId });
+                await safePost('/finance', { amount: Number(newClientFin.totalDealValue), currency: 'INR', type: 'CLIENT', description: desc, date: newClientFin.registrationDate || today }, { withCredentials: true });
+            } else {
+                if (!newVendorFin.vendorName || !newVendorFin.totalAmount) { alert('Please enter vendor details.'); return; }
+                const desc = JSON.stringify({ vendorName: newVendorFin.vendorName, invoiceNo: newVendorFin.invoiceNo || '-' });
+                await safePost('/finance', { amount: Number(newVendorFin.totalAmount), currency: 'INR', type: 'VENDOR', description: desc, date: newVendorFin.invoiceDate || today }, { withCredentials: true });
+            }
+            await loadFinance();
+            setShowCreateModal(false);
+            setNewClientFin({}); setIsNewProjectMode(false); setNewProjectName(''); setNewProjectLocation('');
+            setNewVendorFin({});
+        } catch (err) {
+            console.error('Failed to create finance record', err && (err.stack || err.message || err));
+            alert('Failed to create finance record on server.');
+        }
   };
+
+    // Load finance rows and rebuild client/vendor summaries
+    const loadFinance = async () => {
+        try {
+            const res = await safeGet('/finance');
+            const payload = extractPayload(res);
+            const rows = ensureArray(payload);
+            const clientsMap: Record<string, ClientFinancial> = {};
+            const vendorsMap: Record<string, VendorFinancial> = {};
+            rows.forEach((r: any) => {
+                const descRaw = r.description;
+                let desc: any = null;
+                try { desc = typeof descRaw === 'string' ? JSON.parse(descRaw) : descRaw; } catch (e) { desc = null; }
+                if (r.type === 'CLIENT' && desc && desc.clientName && desc.projectId) {
+                    const key = `${desc.clientName}::${desc.projectId}`;
+                    if (!clientsMap[key]) {
+                        clientsMap[key] = { id: key, projectId: desc.projectId, clientName: desc.clientName, totalDealValue: Number(r.amount || 0), receivedAmount: 0, balance: Number(r.amount || 0), registrationDate: r.date || '', lastPaymentDate: undefined, status: 'Pending', transactions: [] };
+                    }
+                } else if (r.type === 'VENDOR' && desc && desc.vendorName) {
+                    const key = `${desc.vendorName}::${desc.invoiceNo || '-'}::${r.date || ''}`;
+                    if (!vendorsMap[key]) {
+                        vendorsMap[key] = { id: key, vendorName: desc.vendorName, category: 'General', invoiceNo: desc.invoiceNo || '-', invoiceDate: r.date || '', dueDate: '', totalAmount: Number(r.amount || 0), paidAmount: 0, balance: Number(r.amount || 0), status: 'Pending', transactions: [] };
+                    }
+                } else if (r.type === 'PAYMENT') {
+                    if (desc && desc.for === 'CLIENT' && desc.targetId) {
+                        const key = desc.targetId;
+                        const client = clientsMap[key];
+                        if (client) {
+                            client.receivedAmount += Number(r.amount || 0);
+                            client.balance = client.totalDealValue - client.receivedAmount;
+                            client.lastPaymentDate = r.date || client.lastPaymentDate;
+                            client.transactions.push({ id: `TX-${r.id || Date.now()}`, date: r.date || '', amount: Number(r.amount || 0), mode: desc.mode || 'Cheque', remarks: desc.remarks || '' });
+                        }
+                    } else if (desc && desc.for === 'VENDOR' && desc.targetId) {
+                        const key = desc.targetId;
+                        const vendor = vendorsMap[key];
+                        if (vendor) {
+                            vendor.paidAmount += Number(r.amount || 0);
+                            vendor.balance = vendor.totalAmount - vendor.paidAmount;
+                            vendor.transactions.push({ id: `TX-${r.id || Date.now()}`, date: r.date || '', amount: Number(r.amount || 0), mode: desc.mode || 'Cheque', remarks: desc.remarks || '' });
+                        }
+                    }
+                }
+            });
+            const clientsArr = Object.values(clientsMap);
+            const vendorsArr = Object.values(vendorsMap);
+            setClientFinancials(clientsArr);
+            setVendorFinancials(vendorsArr);
+        } catch (err) {
+            console.warn('Failed to load finance rows', err && (err.stack || err.message || err));
+        }
+    };
+
+        // Load finance initially when component mounts
+        useEffect(() => {
+            loadFinance();
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, []);
 
   const handlePrint = () => {
       window.print();
@@ -264,14 +249,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
 
   // --- Filtering ---
 
-  const filteredClientData = clientFinancials.filter(c => 
-      c.clientName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      c.projectId.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredClientData = safeClientFinancials.filter(c => 
+      (c.clientName || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+      (c.projectId || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const filteredVendorData = vendorFinancials.filter(v => 
-      v.vendorName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      v.category.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredVendorData = safeVendorFinancials.filter(v => 
+      (v.vendorName || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+      (v.category || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (

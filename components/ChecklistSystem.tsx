@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import api, { safeGet, safePost, extractPayload, ensureArray } from '../src/utils/api';
 import { ChecklistTemplate, ChecklistInstance, Employee, User, FrequencyType, Notification, Holiday, ChecklistConfig } from '../types';
 import { ListChecks, Plus, Calendar, CheckCircle2, Clock, Trash2, X, RefreshCw, AlertCircle, Loader2, Info, ShieldCheck, Sun, ArrowRight, Zap, Target, Users, Filter, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { format, addDays, addMonths, addYears, addWeeks, isSunday, isBefore, getDay } from 'date-fns';
@@ -42,6 +43,43 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
   useEffect(() => {
     setCurrentPage(1);
   }, [monitorLeadId, monitorStatus, monitorSearch, activeTab]);
+
+    // Load checklist templates and instances from server
+    useEffect(() => {
+        let mounted = true;
+        const load = async () => {
+            try {
+                const r = await safeGet('/checklist-templates');
+                const t = extractPayload(r) || [];
+                const templatesArr = ensureArray(t);
+                if (!mounted) return;
+                // Map server templates to local shape
+                const mapped = templatesArr.map((x: any) => ({ id: x.id, taskName: x.data.taskName, doerId: x.data.doerId, department: x.data.department, startDate: x.data.startDate, config: x.data.config, active: x.data.active }));
+                setTemplates(mapped);
+
+                // Load instances for each template from checklists table
+                const insts: any[] = [];
+                for (const tpl of mapped) {
+                    try {
+                        const ir = await safeGet(`/checklists/${encodeURIComponent(tpl.id)}`);
+                        const list = ensureArray(extractPayload(ir));
+                        list.forEach((it: any) => {
+                            try {
+                                const parsed = JSON.parse(it.item);
+                                insts.push(parsed);
+                            } catch (e) {
+                                // if item is plain text date, convert
+                                insts.push({ id: it.id, templateId: tpl.id, date: it.item, status: it.done ? 'COMPLETED' : 'PENDING' });
+                            }
+                        });
+                    } catch (e) { /* ignore per-template errors */ }
+                }
+                if (mounted) setInstances(insts);
+            } catch (e) { console.warn('Failed to load checklist templates/instances', e && (e.stack || e.message || e)); }
+        };
+        load();
+        return () => { mounted = false; };
+    }, []);
 
   // --- Core Scheduling Logic ---
 
@@ -153,12 +191,37 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                   active: true
               };
 
-              const newGenerated = generateInstances(template);
-              setTemplates(prev => [...prev, template]);
-              setInstances(prev => [...prev, ...newGenerated]);
-              setShowCreateModal(false);
-              setNewTemplate({ active: true, config: { frequency: 'DAILY', particularDateType: 'EVERY-MONTH' } });
-              addNotification('Checklist Ready', `5-year schedule generated for "${template.taskName}".`, 'CHECKLIST', template.doerId);
+                            const newGenerated = generateInstances(template);
+                            // Persist template and instances to server
+                            (async () => {
+                                try {
+                                    const tplRes = await safePost('/checklist-templates', { taskName: template.taskName, doerId: template.doerId, department: template.department, startDate: template.startDate, config: template.config, active: template.active });
+                                    const tplPayload = extractPayload(tplRes) || {};
+                                    const tplId = tplPayload.id || template.id;
+                                    // Insert generated instances as checklists items (store full instance JSON in item)
+                                    for (let i = 0; i < newGenerated.length; i++) {
+                                        const inst = newGenerated[i];
+                                        try {
+                                            await safePost('/checklists', { refId: tplId, refType: 'TEMPLATE_INSTANCE', item: JSON.stringify(inst) });
+                                        } catch (e) { console.warn('Failed to persist checklist instance', e && (e.stack || e.message || e)); }
+                                    }
+                                    // Refresh local state from server
+                                    try {
+                                        const tr = await safeGet('/checklist-templates');
+                                        const mapped = ensureArray(extractPayload(tr)).map((x: any) => ({ id: x.id, taskName: x.data.taskName, doerId: x.data.doerId, department: x.data.department, startDate: x.data.startDate, config: x.data.config, active: x.data.active }));
+                                        setTemplates(mapped);
+                                        const ir = await safeGet(`/checklists/${encodeURIComponent(tplId)}`);
+                                        const items = ensureArray(extractPayload(ir));
+                                        const newInsts: any[] = items.map((it: any) => { try { return JSON.parse(it.item); } catch (e) { return { id: it.id, templateId: tplId, date: it.item, status: it.done ? 'COMPLETED' : 'PENDING' }; } });
+                                        setInstances(prev => [...prev, ...newInsts]);
+                                    } catch (e) { console.warn('Failed to refresh templates/instances', e && (e.stack || e.message || e)); }
+                                } catch (e) {
+                                    console.error('Failed to create template on server', e && (e.stack || e.message || e));
+                                }
+                            })();
+                            setShowCreateModal(false);
+                            setNewTemplate({ active: true, config: { frequency: 'DAILY', particularDateType: 'EVERY-MONTH' } });
+                            addNotification('Checklist Ready', `5-year schedule generated for "${template.taskName}".`, 'CHECKLIST', String(template.doerId));
           } finally {
               setIsProcessing(false);
           }

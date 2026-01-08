@@ -14,27 +14,39 @@ export const HolidayManager: React.FC<HolidayManagerProps> = ({ holidays, setHol
   const [newHolidayName, setNewHolidayName] = useState('');
 
   const handleAdd = () => {
-    if (newDate && newHolidayName) {
-      // Check if date already exists
-      if (!holidays.some(h => h.date === newDate)) {
-        const newHoliday: Holiday = {
-            id: `H-${Date.now()}`,
-            date: newDate,
-            name: newHolidayName
-        };
-        setHolidays([...holidays, newHoliday].sort((a, b) => a.date.localeCompare(b.date)));
-        setNewDate('');
-        setNewHolidayName('');
-      } else {
-          alert("A holiday for this date already exists.");
+    (async () => {
+      if (!newDate || !newHolidayName) { alert('Please enter both date and holiday name.'); return; }
+      try {
+        // Persist to server
+        const res = await fetch('/api/holidays', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newHolidayName, date: newDate }) });
+        if (!res.ok) throw new Error('Server rejected holiday creation');
+        // Refresh from server
+        const listRes = await fetch('/api/holidays', { credentials: 'include' });
+        const wrapper = await listRes.json();
+        const data = wrapper && wrapper.data !== undefined ? wrapper.data : wrapper;
+        setHolidays(Array.isArray(data) ? data : []);
+        setNewDate(''); setNewHolidayName('');
+      } catch (e) {
+        console.error('Failed to add holiday', e && (e.message || e));
+        alert('Failed to add holiday on server');
       }
-    } else {
-        alert("Please enter both date and holiday name.");
-    }
+    })();
   };
 
   const handleRemove = (idToRemove: string) => {
-    setHolidays(holidays.filter(h => h.id !== idToRemove));
+    (async () => {
+      try {
+        await fetch(`/api/holidays/${encodeURIComponent(idToRemove)}`, { method: 'DELETE', credentials: 'include' });
+      } catch (e) {
+        console.error('Failed to remove holiday', e && (e.message || e));
+      }
+      try {
+        const listRes = await fetch('/api/holidays', { credentials: 'include' });
+        const wrapper = await listRes.json();
+        const data = wrapper && wrapper.data !== undefined ? wrapper.data : wrapper;
+        setHolidays(Array.isArray(data) ? data : []);
+      } catch (e) { console.error('Failed to refresh holidays', e && (e.message || e)); }
+    })();
   };
 
   const parseDate = (dateStr: string) => {
