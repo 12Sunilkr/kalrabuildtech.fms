@@ -13,6 +13,7 @@ interface EmployeeMasterProps {
   setArchivedEmployees: (v: Employee[]) => void;
   onNavigate: (mode: ViewMode) => void;
   onSwitchUser: (u: User) => void;
+  currentUser: User; // Current authenticated user (used for admin actions)
 }
 
 const extractPayload = apiExtractPayload;
@@ -23,7 +24,8 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   users, setUsers, 
   archivedEmployees, setArchivedEmployees,
   onNavigate,
-  onSwitchUser
+  onSwitchUser,
+  currentUser
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
@@ -432,6 +434,34 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                       >
                         <Edit2 size={16} />
                       </button>
+
+                      {/* Promote / Revoke Admin (admin-only) */}
+                      {currentUser && currentUser.role === 'ADMIN' ? (() => {
+                          const linkedUser = users.find(u => u.employeeId === emp.id);
+                          const isAdmin = !!linkedUser && linkedUser.role === 'ADMIN';
+                          return (
+                            <button
+                                onClick={async () => {
+                                    if (!linkedUser || !(linkedUser as any).id) return alert('No user account linked to this member');
+                                    const confirmMsg = isAdmin ? 'Revoke admin rights from this user?' : 'Grant admin rights to this user?';
+                                    if (!window.confirm(confirmMsg)) return;
+                                    try {
+                                        const newRole = isAdmin ? 'EMPLOYEE' : 'ADMIN';
+                                        await api.put(`/users/${(linkedUser as any).id}`, { role: newRole }, { withCredentials: true });
+                                        const ures = await safeGet('/users');
+                                        setUsers(ensureArray(extractPayload(ures)));
+                                        alert(isAdmin ? 'Admin rights revoked.' : 'Admin rights granted.');
+                                    } catch (e) {
+                                        console.error('Failed to update user role', e && (e.stack || e.message || e));
+                                        alert('Failed to update user role. See console for details.');
+                                    }
+                                }}
+                                className={`p-2 ${isAdmin ? 'text-yellow-700 hover:bg-yellow-50' : 'text-slate-600 hover:bg-slate-50'} rounded-lg transition-colors`} title={isAdmin ? 'Revoke Admin' : 'Make Admin'}>
+                                <ShieldCheck size={16} />
+                            </button>
+                          );
+                      })() : null}
+
                       <button 
                         onClick={() => handleArchive(emp.id)} 
                         className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -671,8 +701,15 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                       value={currentEmp.birthDate || ''}
                       onChange={e => setCurrentEmp({...currentEmp, birthDate: e.target.value})}
                     />
-                  </div>
-              </div>
+                  </div>                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Joining Date</label>
+                    <input
+                      type="date"
+                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+                      value={currentEmp.joiningDate || ''}
+                      onChange={e => setCurrentEmp({...currentEmp, joiningDate: e.target.value})}
+                    />
+                  </div>              </div>
               
               <hr className="border-slate-100 my-2"/>
               <div className="grid grid-cols-2 gap-4">

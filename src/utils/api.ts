@@ -71,8 +71,30 @@ export async function safeGet(path: string, opts?: { cacheBust?: boolean, header
 
 // Safe write helpers: post/put/delete that return extracted payload when available.
 export async function safePost(path: string, body?: any, opts?: any) {
-  const res = await api.post(path, body, opts);
-  return res;
+  // Clone opts to avoid mutating caller provided object
+  const cfg: any = opts ? { ...opts } : {};
+  cfg.headers = { ...(cfg.headers || {}) };
+  // If body is FormData, ensure Content-Type header is unset so the browser/axios sets it with boundary
+  try {
+    if (typeof FormData !== 'undefined' && body instanceof FormData) {
+      // Explicitly unset Content-Type to override axios default 'application/json'
+      cfg.headers['Content-Type'] = undefined;
+      cfg.headers['content-type'] = undefined;
+    }
+  } catch (e) {
+    // ignore environment where FormData is not available
+  }
+
+  try {
+    const res = await api.post(path, body, cfg);
+    return res;
+  } catch (err: any) {
+    // Add richer error logging for debugging upload failures
+    try {
+      console.error('safePost failed', { path, status: err && err.response && err.response.status, data: err && err.response && err.response.data });
+    } catch (e) { /* ignore */ }
+    throw err;
+  }
 }
 
 export async function safePut(path: string, body?: any, opts?: any) {

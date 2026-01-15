@@ -21,7 +21,7 @@ export interface Employee {
   compOffBalance?: number;
 }
 
-export type Role = 'ADMIN' | 'EMPLOYEE';
+export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN';
 
 export interface User {
   id?: any;
@@ -193,7 +193,7 @@ export interface Project {
   id: string;
   name: string;
   location: string;
-  status: 'ACTIVE' | 'COMPLETED';
+  status: 'ACTIVE' | 'COMPLETED' | 'CLOSED';
   assignedEmployees: string[]; // List of Employee IDs
   description?: string;
 }
@@ -273,6 +273,16 @@ export interface ChatMessage {
   timestamp: string; // ISO
   attachment?: string; // URL/Name
   fileType?: 'image' | 'file';
+  teamId?: string; // Optional canonical team id (e.g., DM-... or G-...)
+  // Optional flags
+  isDeleted?: boolean;
+  isPinned?: boolean;
+  edited?: boolean;
+  replyTo?: string;
+  updatedAt?: string;
+  // Read receipts
+  isSeen?: boolean;
+  seenAt?: string;
 }
 
 export interface ChatGroup {

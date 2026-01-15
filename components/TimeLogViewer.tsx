@@ -167,7 +167,17 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
                     if (!t) return;
                     const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
                     if (!tlMap[t.userId]) tlMap[t.userId] = {};
-                    tlMap[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: t.durationHours } as TimeLog;
+                    
+                    // Calculate duration if not provided by server
+                    let duration = t.durationHours;
+                    if (!duration && t.startTime && t.endTime) {
+                      const start = new Date(t.startTime).getTime();
+                      const end = new Date(t.endTime).getTime();
+                      const diffMs = end - start;
+                      duration = Math.max(0, diffMs / (1000 * 60 * 60));
+                    }
+                    
+                    tlMap[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration } as TimeLog;
                   });
                   setTimeLogs(tlMap);
                 } catch (e) { console.warn('Failed to refresh timelogs after manual out', e && (e.stack || e.message || e)); }

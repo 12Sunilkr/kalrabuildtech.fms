@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { MaterialOrder, Employee, User, OrderStatus, Notification, TATUnit } from '../types';
 import { MATERIAL_TAT_LIST } from '../constants';
@@ -6,7 +5,8 @@ import { Package, Plus, MapPin, Search, CheckCircle2, Clock, Truck, Camera, Uplo
 import { format, addHours, addDays, addMonths, differenceInDays } from 'date-fns';
 import { AITextEnhancer } from './AITextEnhancer';
 import { convertFileToBase64 } from '../utils/fileHelper';
-import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
+import api, { safeGet, safePost, extractPayload, ensureArray } from '../src/utils/api';
+import { normalizeO2dEntry } from '../src/utils/o2d';
 
 interface MaterialOrdersProps {
   orders: MaterialOrder[];
@@ -34,7 +34,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
   const [loadingLoc, setLoadingLoc] = useState(false);
 
   const isAdmin = currentUser.role === 'ADMIN';
-    const safeOrders = ensureArray(orders);
+    // Normalize server-shaped rows (where order is wrapped under `data`) into MaterialOrder objects
+    const safeOrders = ensureArray(orders).map(o => normalizeO2dEntry(o));
 
   // --- Logic Helpers ---
 
@@ -165,18 +166,39 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
       if (e.target.files && e.target.files[0]) {
           setLoadingLoc(true);
           try {
-             const base64 = await convertFileToBase64(e.target.files[0]);
-             
-             // Get GPS
-             navigator.geolocation.getCurrentPosition(
-                 (pos) => {
-                     submitDelivery(base64, { lat: pos.coords.latitude, lng: pos.coords.longitude });
-                 },
-                 (err) => {
-                     alert("Location access denied. Uploading without GPS.");
-                     submitDelivery(base64, undefined);
-                 }
-             );
+             const file = e.target.files[0];
+             // Upload file as multipart/form-data to server endpoint
+             const fd = new FormData();
+             fd.append('file', file);
+             try {
+               console.log('O2D upload: starting', { name: file.name, size: file.size, type: file.type });
+               // Let axios set the multipart Content-Type (so it can include boundary)
+               const upl = await safePost('/o2d/upload', fd);
+               console.log('O2D upload response', upl && (upl.data || upl));
+               const payload = extractPayload(upl);
+               const imageUrl = (payload && (payload.imageUrl || payload)) || (upl && upl.data && upl.data.imageUrl) || null;
+               if (!imageUrl) {
+                 console.error('O2D upload returned invalid response', upl);
+                 throw new Error('Upload returned no imageUrl');
+               }
+
+               // Get GPS and submit delivery with returned image URL
+               navigator.geolocation.getCurrentPosition(
+                   (pos) => {
+                       submitDelivery(imageUrl, { lat: pos.coords.latitude, lng: pos.coords.longitude });
+                   },
+                   (err) => {
+                       alert("Location access denied. Uploading without GPS.");
+                       submitDelivery(imageUrl, undefined);
+                   }
+               );
+
+             } catch (err: any) {
+               // Log axios error details when available
+               console.error('Upload failed', { message: err && (err.message || err), status: err && err.response && err.response.status, data: err && err.response && err.response.data });
+               alert('Upload failed, please try again.');
+               setLoadingLoc(false);
+             }
           } catch (err) {
               console.error(err);
               setLoadingLoc(false);
@@ -217,6 +239,22 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
             setAdminDetailId(null);
     };
 
+    const handleDelete = async (orderId: string) => {
+        if (!confirm('Delete this order? This action cannot be undone.')) return;
+        try {
+            // Prefer dev-safe delete endpoint that accepts nested or primary IDs
+            await safePost('/_o2d_delete', { id: orderId }, { withCredentials: true });
+            const listRes = await safeGet('/o2d');
+            setOrders(ensureArray(extractPayload(listRes)));
+            addNotification('Order Deleted', `Order ${orderId} was deleted.`, 'ORDER', String('ADMIN'));
+        } catch (err:any) {
+            console.warn('O2D delete failed', err && (err.stack || err.message || err));
+            const status = err && err.response && err.response.status;
+            const serverMsg = err && err.response && (err.response.data && (err.response.data.message || err.response.data.error)) ? (err.response.data.message || err.response.data.error) : null;
+            alert(`Failed to delete order: ${status || ''} ${serverMsg || (err && err.message) || ''}`);
+        }
+    };
+
   // --- Filter Logic ---
 
   const getFilteredOrders = () => {
@@ -224,16 +262,20 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
               return safeOrders;
           }
       
-      const myId = currentUser.employeeId;
+      const myId = String(currentUser.employeeId || currentUser.id || '');
       
       if (activeTab === 'MY_REQUESTS') {
-          // Orders created BY me
-          return safeOrders.filter(o => o && o.orderedBy === myId);
+          // Orders created BY me (match as strings)
+          return safeOrders.filter(o => o && String(o.orderedBy) === myId);
       }
       if (activeTab === 'ACTION_REQUIRED') {
-          return safeOrders.filter(o => 
-             (o && ((o.assignedApprover === myId && (o.status === 'PENDING_APPROVAL' || o.status === 'APPROVED_FOR_VENDOR')) || (o.orderedBy === myId && o.status === 'ORDERED_TO_VENDOR')))
-          );
+          return safeOrders.filter(o => {
+             try {
+               const assignedMatch = String(o.assignedApprover || '') === myId && (o.status === 'PENDING_APPROVAL' || o.status === 'APPROVED_FOR_VENDOR');
+               const myOrdered = String(o.orderedBy || '') === myId && o.status === 'ORDERED_TO_VENDOR';
+               return assignedMatch || myOrdered;
+             } catch (e) { return false; }
+          });
       }
       return safeOrders;
   };
@@ -291,8 +333,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {displayedOrders.map(order => {
-                                const requester = employees.find(e => e.id === order.orderedBy);
-                                const approver = employees.find(e => e.id === order.assignedApprover);
+                                const requester = employees.find(e => e.id === String(order.orderedBy) || String(e.id) === String(order.orderedBy));
+                                const approver = employees.find(e => e.id === String(order.assignedApprover) || String(e.id) === String(order.assignedApprover));
                                 
                                 return (
                                     <tr key={order.id} className="hover:bg-slate-50">
@@ -306,14 +348,20 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                         <td className="p-4 text-slate-500">{order.tatValue} {order.tatUnit}</td>
                                         <td className="p-4 text-slate-500">{order.isMonsoon ? 'Yes (+3 Days)' : 'No'}</td>
                                         <td className="p-4 font-bold text-indigo-600">{calculateFinalTAT(order)}</td>
-                                        <td className="p-4 font-bold text-slate-800">{order.expectedDeliveryDate || '-'}</td>
+                                        <td className="p-4 font-bold text-slate-800">{order.expectedDeliveryDate || calculateExpectedDate(new Date(order.createdDate || new Date()), order.tatValue, order.tatUnit, !!order.isMonsoon)}</td>
                                         <td className="p-4">{getStatusBadge(order.status)}</td>
                                         <td className="p-4 text-right">
+                                            <div className="flex items-center justify-end gap-2">
                                             {order.status === 'DELIVERED_AWAITING_ADMIN' ? (
                                                 <button onClick={() => setAdminDetailId(order.id)} className="px-3 py-1 bg-orange-500 text-white rounded text-xs font-bold shadow hover:bg-orange-600">Review</button>
                                             ) : (
                                                  <button onClick={() => setAdminDetailId(order.id)} className="text-blue-600 hover:underline text-xs font-bold">Details</button>
                                             )}
+
+                                            {(isAdmin || String(order.orderedBy) === String(currentUser.employeeId)) && (isAdmin || order.status !== 'COMPLETED') && (
+                                              <button onClick={() => handleDelete(order.id)} className="px-3 py-1 bg-red-600 text-white rounded text-xs font-bold hover:bg-red-700">Delete</button>
+                                            )}
+                                            </div>
                                         </td>
                                     </tr>
                                 );
@@ -332,10 +380,12 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                             <button onClick={() => setAdminDetailId(null)}><X size={20} className="text-slate-400"/></button>
                         </div>
                         {(() => {
-                            const order = orders.find(o => o.id === adminDetailId);
+                            const order = safeOrders.find(o => o.id === adminDetailId);
                             if (!order) return null;
-                            const reqName = employees.find(e => e.id === order.orderedBy)?.name;
-                            const appName = employees.find(e => e.id === order.assignedApprover)?.name;
+                            const reqMatch = employees.find(e => e.id === String(order.orderedBy) || String(e.id) === String(order.orderedBy));
+                            const appMatch = employees.find(e => e.id === String(order.assignedApprover) || String(e.id) === String(order.assignedApprover));
+                            const reqName = reqMatch ? reqMatch.name : (order.orderedBy || 'Unknown');
+                            const appName = appMatch ? appMatch.name : (order.assignedApprover || 'Unknown');
 
                             return (
                                 <div className="p-6 overflow-y-auto max-h-[70vh]">
@@ -346,6 +396,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                         <div><span className="text-slate-400 block text-xs uppercase">To</span> <span className="font-bold">{appName}</span></div>
                                         <div><span className="text-slate-400 block text-xs uppercase">Vendor</span> <span className="font-bold">{order.vendorName || '-'}</span></div>
                                         <div><span className="text-slate-400 block text-xs uppercase">Site</span> <span className="font-bold">{order.siteLocation}</span></div>
+                                        <div><span className="text-slate-400 block text-xs uppercase">Expected Delivery</span> <span className="font-bold">{order.expectedDeliveryDate || calculateExpectedDate(new Date(order.createdDate || new Date()), order.tatValue, order.tatUnit, !!order.isMonsoon)}</span></div>
                                     </div>
 
                                     {order.status === 'DELIVERED_AWAITING_ADMIN' || order.status === 'COMPLETED' ? (
@@ -425,8 +476,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
               <div className="col-span-full p-12 text-center text-slate-400 italic">No orders found in this section.</div>
           ) : (
              displayedOrders.map(order => {
-              const requester = employees.find(e => e.id === order.orderedBy);
-              const approver = employees.find(e => e.id === order.assignedApprover);
+              const requester = employees.find(e => String(e.id) === String(order.orderedBy));
+              const approver = employees.find(e => String(e.id) === String(order.assignedApprover));
               
               return (
                   <div key={order.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col h-full">
@@ -453,7 +504,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
 
                       <div className="pt-4 border-t border-slate-100">
                           {/* Step 2: Approval Actions (By Assigned Approver) */}
-                          {order.assignedApprover === currentUser.employeeId && order.status === 'PENDING_APPROVAL' && (
+                          {String(order.assignedApprover) === String(currentUser.employeeId) && order.status === 'PENDING_APPROVAL' && (
                               <div className="flex gap-2">
                                   <button onClick={() => handleApprove(order.id, true)} className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-bold text-xs hover:bg-blue-700">Approve</button>
                                   <button onClick={() => handleApprove(order.id, false)} className="flex-1 py-2 bg-red-50 text-red-600 border border-red-100 rounded-lg font-bold text-xs hover:bg-red-100">Reject</button>
@@ -461,7 +512,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                           )}
 
                           {/* Step 3: Place Vendor Order (By Assigned Approver after approval) */}
-                          {order.status === 'APPROVED_FOR_VENDOR' && order.assignedApprover === currentUser.employeeId && (
+                          {order.status === 'APPROVED_FOR_VENDOR' && String(order.assignedApprover) === String(currentUser.employeeId) && (
                               <button onClick={() => setShowVendorModal(order.id)} className="w-full py-2 bg-purple-600 text-white rounded-lg font-bold text-xs hover:bg-purple-700 flex items-center justify-center gap-2">
                                   <Truck size={14}/> Place Order to Vendor
                               </button>
@@ -469,7 +520,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
 
                           {/* Step 5: Site Delivery (Only Initiator can upload proof) */}
                           {order.status === 'ORDERED_TO_VENDOR' && (
-                              order.orderedBy === currentUser.employeeId ? (
+                              String(order.orderedBy) === String(currentUser.employeeId) ? (
                                <button onClick={() => setShowDeliveryModal(order.id)} className="w-full py-2 bg-orange-500 text-white rounded-lg font-bold text-xs hover:bg-orange-600 flex items-center justify-center gap-2">
                                   <Camera size={14}/> Mark Delivered (Photo)
                                </button>
@@ -533,8 +584,12 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                         onChange={e => setNewOrder({...newOrder, assignedApprover: e.target.value})}
                     >
                         <option value="">-- Select Manager / Team Member --</option>
-                        {employees.filter(e => e.id !== currentUser.employeeId && e.id !== 'ADMIN').map(e => (
-                            <option key={e.id} value={e.id}>{e.name} ({e.department})</option>
+                        {employees
+                          .filter(e => String(e.id) !== String(currentUser.employeeId) && String(e.id) !== 'ADMIN' && !(e as any).is_archived)
+                          .map(e => (
+                            <option key={e.id} value={e.id}>
+                              {`${e.name} (${e.id})${e.department ? ' - ' + e.department : ''}`}
+                            </option>
                         ))}
                     </select>
                 </div>

@@ -34,6 +34,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
         return [];
     };
   const [activeTab, setActiveTab] = useState<'PROJECTS' | 'PHOTOS'>('PROJECTS');
+    const [showClosedList, setShowClosedList] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
   
   // Create Project State
@@ -83,6 +84,22 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
       }
   };
 
+    const closeProject = async (projectId: string) => {
+        if (!confirm('Close this project? This will make it read-only and block uploads and updates.')) return;
+        try {
+            const res = await api.put(`/projects/${encodeURIComponent(projectId)}/close`, {}, { withCredentials: true });
+            // Refresh projects
+            const listRes = await safeGet('/projects');
+            setProjects(ensureArray(extractPayload(listRes)));
+            alert('Project closed successfully.');
+        } catch (e:any) {
+            console.error('Failed to close project', e && (e.stack || e.message || e));
+            const status = e && e.response && e.response.status;
+            const dataMsg = e && e.response && (e.response.data && (e.response.data.message || e.response.data.error)) ? (e.response.data.message || e.response.data.error) : null;
+            alert(`Failed to close project: ${status || ''} ${dataMsg || (e && e.message) || ''}`);
+        }
+    };
+
   // --- LIVE PHOTO UPLOAD LOGIC ---
   
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -130,42 +147,54 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
 
   const processUpload = async (file: File, gps: { lat: number, lng: number, accuracy: number } | null) => {
       try {
-          const base64 = await convertFileToBase64(file);
-          const newPhoto: SitePhoto = {
+          // Optimistic placeholder while upload proceeds
+          const placeholder: SitePhoto = {
               id: `IMG-${Date.now()}`,
               projectId: selectedProjectId!,
               uploadedBy: currentUser.employeeId || 'UNKNOWN',
               timestamp: new Date().toISOString(),
               date: new Date().toISOString().split('T')[0],
-              imageUrl: base64,
+              imageUrl: URL.createObjectURL(file),
               gps: gps || undefined
           };
-          
-                    // Optimistic update so user sees photo immediately
-                    setPhotos(prev => [newPhoto, ...prev]);
-                    addNotification('Site Photo', `New photo uploaded for project.`, 'PROJECT', String('ADMIN'));
+          setPhotos(prev => [placeholder, ...prev]);
+          addNotification('Site Photo', `New photo uploaded for project.`, 'PROJECT', String('ADMIN'));
 
-                    // Persist photo to server (use O2D endpoint as generic store for uploads)
-                    try {
-                        const payload = { id: newPhoto.id, data: newPhoto, status: 'NEW' };
-                        await safePost('/o2d', payload, { withCredentials: true });
-                        // Refresh photos from server (map o2d.data -> SitePhoto)
-                        const listRes = await safeGet('/o2d');
-                        const listPayload = extractPayload(listRes) || [];
-                        const arr = ensureArray(listPayload).map((r: any) => {
-                            try { return typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch { return r.data || null; }
-                        }).filter(Boolean) as SitePhoto[];
-                        setPhotos(arr);
-                    } catch (e) {
-                        console.error('Failed to upload photo to server', e && (e.stack || e.message || e));
-                        alert('Failed to upload photo to server. It will be added locally until retry.');
-                        // optimistic photo already added above
-                    }
+          // Convert file to base64
+          const reader = new FileReader();
+          reader.onload = async () => {
+              try {
+                  const base64Data = reader.result as string;
+                  
+                  // Send as JSON with base64 data
+                  const res = await api.post('/sitephotos', {
+                      imageData: base64Data,
+                      projectId: selectedProjectId || null,
+                      gps: gps || null
+                  }, { withCredentials: true });
+                  
+                  const payload: any = res && res.data ? res.data : res;
+                  // Refresh from server to get canonical records
+                  try {
+                    const listRes = await safeGet('/sitephotos');
+                    const listPayload = extractPayload(listRes) || [];
+                    const arr = ensureArray(listPayload).map((r: any) => ({ ...r, imageUrl: r.imageUrl } as SitePhoto));
+                    setPhotos(arr);
+                  } catch (fetchErr) {
+                    console.warn('/sitephotos fetch failed', fetchErr && (fetchErr.stack || fetchErr.message || fetchErr));
+                  }
+              } catch (err) {
+                  console.error('Upload failed', err && (err.stack || err.message || err));
+                  // Remove placeholder on error
+                  setPhotos(prev => prev.filter(p => p.id !== placeholder.id));
+                  alert('Failed to upload photo to server');
+              }
+          };
+          reader.readAsDataURL(file);
+
       } catch (err) {
-          console.error(err);
+          console.error('Upload processing failed', err && (err.stack || err.message || err));
           alert("Failed to process image.");
-      } finally {
-          setUploadLoading(false);
       }
   };
 
@@ -179,14 +208,22 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                 console.warn('Projects API unreachable', e && (e.stack || e.message || e));
             }
             try {
-                const o = await safeGet('/o2d');
+                const o = await safeGet('/sitephotos');
                 const listPayload = extractPayload(o) || [];
-                const arr = ensureArray(listPayload).map((r: any) => {
-                    try { return typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch { return r.data || null; }
-                }).filter(Boolean) as SitePhoto[];
+                const arr = ensureArray(listPayload).map((r: any) => ({ ...r, imageUrl: r.imageUrl } as SitePhoto));
                 setPhotos(arr);
             } catch (e) {
-                console.warn('O2D API unreachable', e && (e.stack || e.message || e));
+                console.warn('/sitephotos not available, falling back to /o2d', e && (e.stack || e.message || e));
+                try {
+                  const o = await safeGet('/o2d');
+                  const listPayload = extractPayload(o) || [];
+                  const arr = ensureArray(listPayload).map((r: any) => {
+                    try { return typeof r.data === 'string' ? JSON.parse(r.data) : r.data; } catch { return r.data || null; }
+                  }).filter(Boolean) as SitePhoto[];
+                  setPhotos(arr);
+                } catch (oErr) {
+                  console.warn('Fallback /o2d fetch also failed', oErr && (oErr.stack || oErr.message || oErr));
+                }
             }
         };
         fetchData();
@@ -196,8 +233,8 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
   // --- RENDERING ---
 
   // Employee View: List of assigned projects
-  if (!isAdmin && !selectedProjectId) {
-    const myProjects = (projects || []).filter(p => getAssignedEmployees(p).includes(currentUser.employeeId || ''));
+    if (!isAdmin && !selectedProjectId) {
+        const myProjects = (projects || []).filter(p => getAssignedEmployees(p).includes(currentUser.employeeId || '') && String(p.status) !== 'CLOSED');
       
       return (
           <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
@@ -269,21 +306,25 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                               ⚠️ Minimum 5 photos required daily.
                           </div>
                       )}
-                      {todayPhotos.length >= 15 ? (
-                           <div className="text-green-600 font-bold py-3 bg-green-50 rounded-xl border border-green-200">Daily Limit Reached ✅</div>
-                      ) : (
-                          <label className={`w-full py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-white shadow-lg transition-all cursor-pointer ${uploadLoading ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/30'}`}>
-                              <input 
-                                type="file" 
-                                accept="image/*" 
-                                capture="environment" 
-                                onChange={handlePhotoUpload} 
-                                disabled={uploadLoading} 
-                                className="hidden"
-                              />
-                              {uploadLoading ? 'Uploading...' : <><Camera size={20}/> Take Live Photo</>}
-                          </label>
-                      )}
+                                            {todayPhotos.length >= 15 ? (
+                                                     <div className="text-green-600 font-bold py-3 bg-green-50 rounded-xl border border-green-200">Daily Limit Reached ✅</div>
+                                            ) : (
+                                                project && project.status === 'CLOSED' ? (
+                                                    <div className="text-sm font-bold text-red-600">Project closed — uploads disabled.</div>
+                                                ) : (
+                                                                            <label className={`w-full py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-white shadow-lg transition-all cursor-pointer ${uploadLoading ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/30'}`}>
+                                                            <input 
+                                                                type="file" 
+                                                                accept="image/*" 
+                                                                capture="environment" 
+                                                                onChange={handlePhotoUpload} 
+                                                                disabled={uploadLoading} 
+                                                                className="hidden"
+                                                            />
+                                                            {uploadLoading ? 'Uploading...' : <><Camera size={20}/> Take Live Photo</>}
+                                                    </label>
+                                                )
+                                            )}
                   </div>
               </div>
 
@@ -345,7 +386,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
 
       {activeTab === 'PROJECTS' && (
            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-               {(projects || []).map(project => (
+               {((projects || []).filter(pr => showClosedList ? String(pr.status) === 'CLOSED' : String(pr.status) !== 'CLOSED')).map(project => (
                    <div key={project.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
                        <div className="flex justify-between items-start mb-4">
                            <div>
@@ -372,14 +413,32 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                            </div>
                        </div>
                        
-                       <div className="flex items-center justify-between text-xs font-bold text-slate-400">
-                           <span>ID: {project.id}</span>
-                           <button onClick={() => { setActiveTab('PHOTOS'); setSelectedProjectId(project.id); }} className="text-indigo-600 hover:underline">View Photos →</button>
-                       </div>
+                                             <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                                                     <span>ID: {project.id}</span>
+                                                     <div className="flex items-center gap-3">
+                                                         <button onClick={() => { setActiveTab('PHOTOS'); setSelectedProjectId(project.id); }} className="text-indigo-600 hover:underline">View Photos →</button>
+                                                                                                                 {String(project.status) !== 'CLOSED' && (
+                                                                                                                         <button onClick={() => closeProject(project.id)} className="text-sm bg-red-600 text-white px-3 py-1 rounded-lg hover:bg-red-700">Close Project</button>
+                                                                                                                 )}
+                                                                                                                 {String(project.status) === 'CLOSED' && (
+                                                                                                                         <span className="text-xs font-bold text-red-600">CLOSED</span>
+                                                                                                                 )}
+                                                     </div>
+                                             </div>
                    </div>
                ))}
            </div>
       )}
+
+            {/* Toggle to show closed projects for admin */}
+            {activeTab === 'PROJECTS' && isAdmin && (
+                <div className="mt-4 mb-6">
+                    <label className="inline-flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={showClosedList} onChange={e => setShowClosedList(e.target.checked)} className="form-checkbox" />
+                        <span className="text-sm font-bold">Show Closed Projects</span>
+                    </label>
+                </div>
+            )}
 
       {activeTab === 'PHOTOS' && (
           <div className="space-y-6">

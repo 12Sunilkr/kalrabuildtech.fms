@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { ClientFinancial, VendorFinancial, User, Project } from '../types';
-import { DollarSign, TrendingUp, TrendingDown, Plus, Search, Calendar, X, AlertCircle, Clock, History, Printer, Download, MapPin } from 'lucide-react';
+import { DollarSign, TrendingUp, TrendingDown, Plus, Search, Calendar, X, AlertCircle, Clock, History, Printer, Download, MapPin, Trash2 } from 'lucide-react';
 import { isPast } from 'date-fns';
-import api, { safeGet, safePost, extractPayload, ensureArray } from '../src/utils/api';
+import api, { safeGet, safePost, safeDelete, extractPayload, ensureArray } from '../src/utils/api';
 
 interface FinanceDashboardProps {
   clientFinancials: ClientFinancial[];
@@ -28,9 +28,12 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState<string | null>(null); // ID of record to show history for
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null); // To attach payment to
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null); // ID of client to confirm deletion
+  const [deleting, setDeleting] = useState(false); // Prevent duplicate submits while deleting
   const [paymentAmount, setPaymentAmount] = useState<number | ''>('');
   const [paymentMode, setPaymentMode] = useState('Cheque');
   const [paymentRemarks, setPaymentRemarks] = useState('');
+  const [paymentDate, setPaymentDate] = useState<string>('');
   
   // Create New Record State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -79,16 +82,17 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
   };
 
     const handleAddPayment = async () => {
-    if (!paymentAmount || !selectedRecordId) return;
+    if (!paymentAmount || !selectedRecordId || !paymentDate) { alert('Please enter amount and payment date.'); return; }
     const amt = Number(paymentAmount);
-    const today = new Date().toISOString().split('T')[0];
+    if (isNaN(amt) || amt <= 0) { alert('Please enter a valid amount.'); return; }
+    const date = paymentDate || new Date().toISOString().split('T')[0];
 
     try {
       const desc = activeTab === 'CLIENT'
         ? JSON.stringify({ for: 'CLIENT', targetId: selectedRecordId, mode: paymentMode, remarks: paymentRemarks })
         : JSON.stringify({ for: 'VENDOR', targetId: selectedRecordId, mode: paymentMode, remarks: paymentRemarks });
 
-      await safePost('/finance', { amount: amt, currency: 'INR', type: 'PAYMENT', description: desc, date: today }, { withCredentials: true });
+      await safePost('/finance', { amount: amt, currency: 'INR', type: 'PAYMENT', description: desc, date }, { withCredentials: true });
       await loadFinance();
     } catch (err) {
       console.error('Failed to record payment on server', err && (err.stack || err.message || err));
@@ -134,12 +138,16 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
             const res = await safeGet('/finance');
             const payload = extractPayload(res);
             const rows = ensureArray(payload);
+
             const clientsMap: Record<string, ClientFinancial> = {};
             const vendorsMap: Record<string, VendorFinancial> = {};
-            rows.forEach((r: any) => {
+
+            // First pass: create CLIENT and VENDOR entries (independent of order)
+            for (const r of rows) {
                 const descRaw = r.description;
                 let desc: any = null;
                 try { desc = typeof descRaw === 'string' ? JSON.parse(descRaw) : descRaw; } catch (e) { desc = null; }
+
                 if (r.type === 'CLIENT' && desc && desc.clientName && desc.projectId) {
                     const key = `${desc.clientName}::${desc.projectId}`;
                     if (!clientsMap[key]) {
@@ -150,27 +158,40 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                     if (!vendorsMap[key]) {
                         vendorsMap[key] = { id: key, vendorName: desc.vendorName, category: 'General', invoiceNo: desc.invoiceNo || '-', invoiceDate: r.date || '', dueDate: '', totalAmount: Number(r.amount || 0), paidAmount: 0, balance: Number(r.amount || 0), status: 'Pending', transactions: [] };
                     }
-                } else if (r.type === 'PAYMENT') {
-                    if (desc && desc.for === 'CLIENT' && desc.targetId) {
-                        const key = desc.targetId;
-                        const client = clientsMap[key];
-                        if (client) {
-                            client.receivedAmount += Number(r.amount || 0);
-                            client.balance = client.totalDealValue - client.receivedAmount;
-                            client.lastPaymentDate = r.date || client.lastPaymentDate;
-                            client.transactions.push({ id: `TX-${r.id || Date.now()}`, date: r.date || '', amount: Number(r.amount || 0), mode: desc.mode || 'Cheque', remarks: desc.remarks || '' });
-                        }
-                    } else if (desc && desc.for === 'VENDOR' && desc.targetId) {
-                        const key = desc.targetId;
-                        const vendor = vendorsMap[key];
-                        if (vendor) {
-                            vendor.paidAmount += Number(r.amount || 0);
-                            vendor.balance = vendor.totalAmount - vendor.paidAmount;
-                            vendor.transactions.push({ id: `TX-${r.id || Date.now()}`, date: r.date || '', amount: Number(r.amount || 0), mode: desc.mode || 'Cheque', remarks: desc.remarks || '' });
-                        }
+                }
+            }
+
+            // Second pass: attach PAYMENTS to their targets (clients/vendors)
+            for (const r of rows) {
+                if (r.type !== 'PAYMENT') continue;
+                const descRaw = r.description;
+                let desc: any = null;
+                try { desc = typeof descRaw === 'string' ? JSON.parse(descRaw) : descRaw; } catch (e) { desc = null; }
+
+                if (desc && desc.for === 'CLIENT' && desc.targetId) {
+                    const key = desc.targetId;
+                    const client = clientsMap[key];
+                    if (client) {
+                        client.receivedAmount += Number(r.amount || 0);
+                        client.balance = client.totalDealValue - client.receivedAmount;
+                        client.lastPaymentDate = r.date || client.lastPaymentDate;
+                        client.status = client.balance <= 0 ? 'Paid' : 'Pending';
+                        client.transactions.push({ id: `TX-${r.id || Date.now()}`, date: r.date || '', amount: Number(r.amount || 0), mode: desc.mode || 'Cheque', remarks: desc.remarks || '' });
                     }
                 }
-            });
+
+                if (desc && desc.for === 'VENDOR' && desc.targetId) {
+                    const key = desc.targetId;
+                    const vendor = vendorsMap[key];
+                    if (vendor) {
+                        vendor.paidAmount += Number(r.amount || 0);
+                        vendor.balance = vendor.totalAmount - vendor.paidAmount;
+                        vendor.status = vendor.balance <= 0 ? 'Paid' : 'Pending';
+                        vendor.transactions.push({ id: `TX-${r.id || Date.now()}`, date: r.date || '', amount: Number(r.amount || 0), mode: desc.mode || 'Cheque', remarks: desc.remarks || '' });
+                    }
+                }
+            }
+
             const clientsArr = Object.values(clientsMap);
             const vendorsArr = Object.values(vendorsMap);
             setClientFinancials(clientsArr);
@@ -239,11 +260,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
       setPaymentAmount('');
       setPaymentRemarks('');
       setPaymentMode('Cheque');
+      setPaymentDate('');
       setSelectedRecordId(null);
   };
 
   const openPaymentModal = (id: string) => {
       setSelectedRecordId(id);
+      const today = new Date().toISOString().split('T')[0];
+      setPaymentDate(today);
       setShowPaymentModal(true);
   };
 
@@ -423,6 +447,26 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                               >
                                                   <Plus size={14}/> Add Pay
                                               </button>
+                                              {(currentUser.role === 'ADMIN' || currentUser.role === 'SUPER_ADMIN') ? (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setShowDeleteConfirm(rec.id)}
+                                                  className="text-red-600 font-bold text-xs hover:underline flex items-center gap-1 pointer-events-auto z-40 cursor-pointer px-2 py-0.5 rounded"
+                                                  title="Delete Client and History"
+                                                  aria-label={`Delete client ${rec.clientName || rec.id}`}
+                                                >
+                                                  <Trash2 size={14}/> Delete
+                                                </button>
+                                              ) : (
+                                                <button
+                                                  type="button"
+                                                  disabled
+                                                  className="text-red-300 font-bold text-xs flex items-center gap-1 cursor-not-allowed"
+                                                  title="Admin only"
+                                                >
+                                                  <Trash2 size={14}/> Delete
+                                                </button>
+                                              )}
                                           </div>
                                       </td>
                                   </tr>
@@ -686,6 +730,18 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                             <option value="Cash">Cash</option>
                         </select>
                     </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Payment Date</label>
+                        <input
+                            type="date"
+                            className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-emerald-500 outline-none"
+                            value={paymentDate}
+                            onChange={e => setPaymentDate(e.target.value)}
+                            aria-label="Payment received date"
+                        />
+                    </div>
+
                      <div>
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Remarks / Ref No.</label>
                         <textarea 
@@ -796,6 +852,69 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                           </>
                       );
                   })()}
+
+                  {/* DELETE CONFIRMATION MODAL (CLIENT ONLY) */}
+                  {showDeleteConfirm && (
+                      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 pointer-events-auto">
+                          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title">
+                              <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                                  <h3 id="confirm-delete-title" className="text-lg font-extrabold text-slate-800">Confirm Deletion</h3>
+                                  <button onClick={() => setShowDeleteConfirm(null)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20}/></button>
+                              </div>
+                              <div className="p-6">
+                                  <p className="text-sm text-slate-600 mb-4">Are you sure you want to <b>delete this client</b> and <b>all associated history (payments)</b>? This action cannot be undone.</p>
+                                  <div className="text-sm text-slate-500 italic mb-2">Client: <b>{(() => {
+                                      try { const parts = (showDeleteConfirm || '').split('::'); return parts[0] ? `${parts[0]} (${parts[1] || 'project'})` : showDeleteConfirm; } catch { return showDeleteConfirm; }
+                                  })()}</b></div>
+                                  <div className="flex gap-2 justify-end mt-4">
+                                      <button onClick={() => setShowDeleteConfirm(null)} className="px-4 py-2 rounded-xl bg-white border border-slate-200 font-bold">Cancel</button>
+                                      <button disabled={deleting} onClick={async () => {
+                                          if (!showDeleteConfirm) return;
+
+                                          // Final authorization check on client-side for clarity
+                                          if (!(currentUser.role === 'ADMIN' || currentUser.role === 'SUPER_ADMIN')) {
+                                            alert('Permission denied: only administrators can delete clients.');
+                                            setShowDeleteConfirm(null);
+                                            return;
+                                          }
+
+                                          if (!confirm('Are you sure? This will permanently delete the client and all associated records.')) {
+                                            return;
+                                          }
+
+                                          setDeleting(true);
+                                          try {
+                                              // Use existing delete endpoint with id param (server handles composite key or numeric id)
+                                              await api.delete('/finance/client', { params: { id: showDeleteConfirm } });
+
+                                              // Refresh finance list (same pattern as Task deletion)
+                                              await loadFinance();
+
+                                              alert('Client and associated history deleted successfully.');
+                                          } catch (e: any) {
+                                              console.error('Delete client failed', e && (e.stack || e.message || e));
+                                              if (e && e.response) {
+                                                  const st = e.response.status;
+                                                  if (st === 403) {
+                                                      alert('Permission denied: only administrators can delete clients.');
+                                                  } else if (st === 404) {
+                                                      alert(`No matching records found for id: ${showDeleteConfirm}`);
+                                                  } else {
+                                                      alert(`Failed to delete client (status ${st}). Check console for details.`);
+                                                  }
+                                              } else {
+                                                  alert('Failed to delete client. Network error or server unreachable.');
+                                              }
+                                          } finally {
+                                              setDeleting(false);
+                                              setShowDeleteConfirm(null);
+                                          }
+                                      }} className="px-4 py-2 rounded-xl bg-red-600 text-white font-bold">{deleting ? 'Deleting...' : 'Delete'}</button>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  )}
               </div>
           </div>
       )}

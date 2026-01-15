@@ -98,33 +98,41 @@ const App: React.FC = () => {
 
       const ensureArray = (v: any) => Array.isArray(v) ? v : [];
       try {
-        // Try to restore session via shared axios client
-        try {
-          // Use safeGet with cache-bust fallback to avoid relying on cached 304 responses in production
-          let meRes = await safeGet('/auth/me', { cacheBust: false });
-          let mePayload = extractPayload(meRes);
-          if ((!mePayload || Object.keys(mePayload).length === 0) && meRes && meRes.status === 304) {
-            // Retry with cache busting to force fresh response from backend
-            try {
-              meRes = await safeGet('/auth/me', { cacheBust: true });
-              mePayload = extractPayload(meRes);
-            } catch (e) {
-              console.warn('Retry /auth/me with cacheBust failed', e && (e.stack || e.message || e));
+        // If the user logged out intentionally during this browser session, skip restoring the server session
+        // (this avoids restoring sessions on refresh if logout didn't fully invalidate cookies).
+        if (sessionStorage.getItem('kbt_session_logout')) {
+          console.log('Skipping session restore due to recent logout');
+          try { sessionStorage.removeItem('kbt_session_logout'); } catch (e) { /* ignore */ }
+          setCurrentUser(null);
+        } else {
+          // Try to restore session via shared axios client
+          try {
+            // Use safeGet with cache-bust fallback to avoid relying on cached 304 responses in production
+            let meRes = await safeGet('/auth/me', { cacheBust: false });
+            let mePayload = extractPayload(meRes);
+            if ((!mePayload || Object.keys(mePayload).length === 0) && meRes && meRes.status === 304) {
+              // Retry with cache busting to force fresh response from backend
+              try {
+                meRes = await safeGet('/auth/me', { cacheBust: true });
+                mePayload = extractPayload(meRes);
+              } catch (e) {
+                console.warn('Retry /auth/me with cacheBust failed', e && (e.stack || e.message || e));
+              }
             }
-          }
-          const meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
-          setCurrentUser(meUser || null);
-          if (meUser) {
-            try {
-              const tRes = await safeGet('/tasks', { cacheBust: true });
-              const tasksPayload = extractPayload(tRes);
-              setTasks(ensureArray(tasksPayload));
-            } catch (e) {
-              console.warn('Failed to fetch tasks after restoring session', e && (e.stack || e.message || e));
+            const meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
+            setCurrentUser(meUser || null);
+            if (meUser) {
+              try {
+                const tRes = await safeGet('/tasks', { cacheBust: true });
+                const tasksPayload = extractPayload(tRes);
+                setTasks(ensureArray(tasksPayload));
+              } catch (e) {
+                console.warn('Failed to fetch tasks after restoring session', e && (e.stack || e.message || e));
+              }
             }
+          } catch (e) {
+            console.warn('Auth/me unreachable (axios)', e && (e.stack || e.message || e));
           }
-        } catch (e) {
-          console.warn('Auth/me unreachable (axios)', e && (e.stack || e.message || e));
         }
       } catch (err) {
         console.warn('Auth/me unexpected error', err && (err.stack || err.message || err));
@@ -184,7 +192,17 @@ const App: React.FC = () => {
           if (!t) return;
           const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
           if (!ag[t.userId]) ag[t.userId] = {};
-          ag[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime || undefined, clockOut: t.endTime || undefined } as TimeLog;
+          
+          // Calculate duration if not provided by server
+          let duration = t.durationHours;
+          if (!duration && t.startTime && t.endTime) {
+            const start = new Date(t.startTime).getTime();
+            const end = new Date(t.endTime).getTime();
+            const diffMs = end - start;
+            duration = Math.max(0, diffMs / (1000 * 60 * 60));
+          }
+          
+          ag[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime || undefined, clockOut: t.endTime || undefined, durationHours: duration } as TimeLog;
         });
         setTimeLogs(ag);
       } catch (err) {
@@ -212,7 +230,10 @@ const App: React.FC = () => {
       // Load material orders (O2D)
       try {
         const o2 = await safeGet('/o2d');
-        setOrders(ensureArray(extractPayload(o2)));
+        const raw = ensureArray(extractPayload(o2));
+        // Normalize server rows that may wrap order under `data`
+        const { normalizeO2dArray } = await import('./src/utils/o2d');
+        setOrders(normalizeO2dArray(raw));
       } catch (err) { console.warn('O2D API unreachable', err && (err.stack || err.message || err)); }
 
       // Load notifications for current user if available
@@ -276,8 +297,11 @@ const App: React.FC = () => {
       if (Object.values(ViewMode).includes(hash as ViewMode)) {
         setCurrentView(hash as ViewMode);
       } else {
+        // Default to Dashboard for admins and profile for employees on session restore
         setCurrentView(currentUser.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
       }
+      // Clear any deep-link hash on session restore so refreshing doesn't reopen demo/deep-linked pages
+      if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
     }
   }, [currentUser]);
 
@@ -373,6 +397,10 @@ const App: React.FC = () => {
         setCurrentUser(user);
         // Do not persist full user object in localStorage; session is server-managed.
         setAuthError('');
+        try { sessionStorage.removeItem('kbt_session_logout'); } catch (e) { /* ignore */ }
+        // Clear any deep-link hash left from prior sessions to avoid unexpected demo page on login
+        if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
+        // Default to profile (EMPLOYEE_HOME) for employees, Dashboard for admins
         setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
         // Fetch tasks for this user after login (cache-bust to avoid stale 304)
         try {
@@ -404,7 +432,10 @@ const App: React.FC = () => {
         }
         setCurrentUser(user);
         setAuthError('');
-        // Force initial view after login
+        try { sessionStorage.removeItem('kbt_session_logout'); } catch (e) { /* ignore */ }
+        // Clear any deep-link hash left from prior sessions to avoid unexpected demo page on login
+        if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
+        // Force initial view after login: profile for employees, dashboard for admins
         setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
       } else {
         setAuthError('Invalid credentials. Access Denied.');
@@ -426,6 +457,8 @@ const App: React.FC = () => {
     setAuthError('');
     setIsSidebarOpen(false);
     setTasks([]);
+    // Mark session as intentionally logged out so a subsequent refresh will not restore it
+    try { sessionStorage.setItem('kbt_session_logout', '1'); } catch (e) { /* ignore */ }
     window.location.hash = ''; // Clear hash from URL on logout
   };
 
@@ -607,7 +640,6 @@ const App: React.FC = () => {
       }
     } else {
       switch (currentView) {
-        case ViewMode.EMPLOYEE_HOME: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={(id, data) => setEmployees(prev => prev.map(e => e.id === id ? { ...e, ...data } : e))} {...commonProps} />;
         case ViewMode.EMPLOYEE_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.EMPLOYEE_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.EMPLOYEE_PROJECTS: return <ProjectManager {...commonProps} photos={sitePhotos} setPhotos={setSitePhotos} />;

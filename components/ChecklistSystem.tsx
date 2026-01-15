@@ -66,10 +66,24 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                         list.forEach((it: any) => {
                             try {
                                 const parsed = JSON.parse(it.item);
-                                insts.push(parsed);
+                                // Enrich instance with template's doerId, department, taskName for filtering
+                                insts.push({
+                                    ...parsed,
+                                    doerId: parsed.doerId || tpl.doerId,
+                                    department: parsed.department || tpl.department,
+                                    taskName: parsed.taskName || tpl.taskName
+                                });
                             } catch (e) {
                                 // if item is plain text date, convert
-                                insts.push({ id: it.id, templateId: tpl.id, date: it.item, status: it.done ? 'COMPLETED' : 'PENDING' });
+                                insts.push({ 
+                                    id: it.id, 
+                                    templateId: tpl.id, 
+                                    date: it.item, 
+                                    status: it.done ? 'COMPLETED' : 'PENDING',
+                                    doerId: tpl.doerId,
+                                    department: tpl.department,
+                                    taskName: tpl.taskName
+                                });
                             }
                         });
                     } catch (e) { /* ignore per-template errors */ }
@@ -232,19 +246,42 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
       setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'COMPLETED', completedDate: todayStr } : i));
   };
 
-  const handleDeleteTemplate = (id: string) => {
+  const handleDeleteTemplate = async (id: string) => {
       if (confirm("Terminate this routine? All future pending tasks for this pattern will be removed.")) {
-          setTemplates(prev => prev.filter(t => t.id !== id));
-          setInstances(prev => prev.filter(i => !(i.templateId === id && i.status === 'PENDING')));
+          try {
+              // Send delete request to server
+              await api.delete(`/checklist-templates/${encodeURIComponent(id)}`, { withCredentials: true });
+              
+              // Remove from local state after successful deletion
+              setTemplates(prev => prev.filter(t => t.id !== id));
+              setInstances(prev => prev.filter(i => !(i.templateId === id && i.status === 'PENDING')));
+          } catch (err) {
+              console.error('Failed to delete template', err && (err.stack || err.message || err));
+              alert('Failed to delete template');
+          }
       }
   };
 
   // --- Views Filtering ---
 
   const myMorningAgenda = useMemo(() => {
+    const currentUserId = currentUser.employeeId || String(currentUser.id) || currentUser.name;
+    console.log('DEBUG myMorningAgenda: currentUser=', currentUser, 'currentUserId=', currentUserId);
+    console.log('DEBUG templates:', templates.map(t => ({ id: t.id, doerId: t.doerId, taskName: t.taskName })));
+    console.log('DEBUG instances:', instances.slice(0, 5).map(i => ({ id: i.id, templateId: i.templateId, doerId: i.doerId, date: i.date, status: i.status })));
     return instances.filter(i => {
         const t = templates.find(temp => temp.id === i.templateId);
-        return t?.doerId === currentUser.employeeId && i.status === 'PENDING' && i.date <= todayStr;
+        // Match by employeeId, userId, or employee name
+        const doerMatches = t && (
+          t.doerId === currentUser.employeeId ||
+          t.doerId === String(currentUser.id) ||
+          t.doerId === currentUser.name ||
+          t.doerId === currentUserId
+        );
+        if (i.date === todayStr) {
+          console.log(`Instance ${i.id}: doer=${t?.doerId}, matches=${doerMatches}, status=${i.status}, included=${doerMatches && i.status === 'PENDING' && i.date <= todayStr}`);
+        }
+        return doerMatches && i.status === 'PENDING' && i.date <= todayStr;
     }).sort((a,b) => a.date.localeCompare(b.date));
   }, [instances, templates, currentUser, todayStr]);
 
@@ -266,9 +303,17 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
   const totalPages = Math.ceil(monitorData.length / itemsPerPage);
 
   const stats = useMemo(() => {
+      const currentUserId = currentUser.employeeId || String(currentUser.id) || currentUser.name;
       const myToday = instances.filter(i => {
           const t = templates.find(temp => temp.id === i.templateId);
-          return t?.doerId === currentUser.employeeId && i.date === todayStr;
+          // Match by employeeId, userId, or employee name
+          const doerMatches = t && (
+            t.doerId === currentUser.employeeId ||
+            t.doerId === String(currentUser.id) ||
+            t.doerId === currentUser.name ||
+            t.doerId === currentUserId
+          );
+          return doerMatches && i.date === todayStr;
       });
       const total = myToday.length;
       const done = myToday.filter(i => i.status === 'COMPLETED').length;

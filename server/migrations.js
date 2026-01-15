@@ -111,6 +111,20 @@ export async function runMigrations({ db, dbFile }) {
     createdAt TEXT
   )`);
 
+  // Site photos table (store metadata and server path) - ensure via migrations so older DBs get the table
+  ensureTable('site_photos', `CREATE TABLE site_photos (
+    id TEXT PRIMARY KEY,
+    projectId TEXT,
+    uploadedBy TEXT,
+    filename TEXT,
+    filepath TEXT,
+    imageUrl TEXT,
+    gps TEXT,
+    date TEXT,
+    timestamp TEXT,
+    createdAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_site_photos_projectId ON site_photos(projectId)` ]);
+
   ensureTable('checklists', `CREATE TABLE checklists (
     id TEXT PRIMARY KEY,
     refId TEXT,

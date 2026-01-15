@@ -14,13 +14,20 @@ interface PerformanceReportProps {
 
 export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData }) => {
   const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
+    const [printMode, setPrintMode] = useState(false);
   
   // Date Filters
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
-  const getEmployeeStats = (empId: string) => {
-    let empTasks = tasks.filter(t => t.assignedTo === empId);
+    const getEmployeeStats = (empId: string) => {
+        // Tasks may store assignee in different fields depending on source: assignedTo (employee id string), assignedToEmployeeId, or assigned_to (numeric user id)
+        let empTasks = tasks.filter(t => {
+            const tx: any = t as any;
+            const assigneeCamel = tx.assignedTo || tx.assignedToEmployeeId || tx.assignedToName || '';
+            const assigneeSnake = tx.assigned_to !== undefined && tx.assigned_to !== null ? String(tx.assigned_to) : '';
+            return String(assigneeCamel) === String(empId) || String(assigneeSnake) === String(empId);
+        });
 
     // Filter by Date Range if applied
     if (fromDate && toDate) {
@@ -32,13 +39,29 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
 
     const total = empTasks.length;
     const completed = empTasks.filter(t => t.status === 'COMPLETED').length;
-    const overdue = empTasks.filter(t => t.status === 'OVERDUE').length;
+    const overdueOpen = empTasks.filter(t => t.status === 'OVERDUE').length; // still open overdue
     const pending = empTasks.filter(t => t.status === 'PENDING' || t.status === 'EXTENSION_REQUESTED' || t.status === 'HOLD').length;
-    
-    // Completion Rate: (Completed / Total) * 100
-    const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
-    
-    return { total, completed, overdue, pending, completionRate, empTasks };
+
+    // Timeliness: count how many completed on or before due date
+    const timelyCompleted = empTasks.filter(t => {
+        if (t.status !== 'COMPLETED' || !t.completionDate || !t.dueDate) return false;
+        try {
+            return new Date(t.completionDate).getTime() <= new Date(t.dueDate).getTime();
+        } catch (e) { return false; }
+    }).length;
+    const lateCompleted = completed - timelyCompleted;
+
+    // Scoring logic with penalties for overdue / late tasks:
+    // Each overdue open task is a larger penalty (0.75 equivalent tasks), late completed is smaller penalty (0.35)
+    const overduePenaltyPerTask = 0.75;
+    const latePenaltyPerTask = 0.35;
+
+    let effectiveCompleted = completed - (overdueOpen * overduePenaltyPerTask) - (lateCompleted * latePenaltyPerTask);
+    if (effectiveCompleted < 0) effectiveCompleted = 0;
+
+    const completionRate = total > 0 ? Math.round((effectiveCompleted / total) * 100) : 0;
+
+    return { total, completed, overdue: overdueOpen, pending, completionRate, empTasks, timelyCompleted, lateCompleted };
   };
 
   const getAttendanceStats = (empId: string) => {
@@ -79,8 +102,29 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
   };
 
   const handlePrint = () => {
-    window.print();
+        // allow a brief reflow so large task lists become printable
+        setTimeout(() => window.print(), 150);
   };
+
+    const handlePrintAll = () => {
+        // Show printable reports for all employees, trigger print, then hide
+        setPrintMode(true);
+        // wait for render
+        setTimeout(() => {
+            window.print();
+            // hide printable mode shortly after print dialog
+            setTimeout(() => setPrintMode(false), 500);
+        }, 300);
+    };
+
+    const handlePrintFull = () => {
+        // Ensure the page is at top and DOM is stable before printing full history
+        try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
+        // Give more time for large DOMs to render/paint
+        setTimeout(() => {
+            window.print();
+        }, 500);
+    };
 
   const clearFilters = () => {
       setFromDate('');
@@ -116,6 +160,14 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                     >
                         <Printer size={18} />
                         Print Report
+                    </button>
+                    <button
+                        onClick={handlePrintFull}
+                        className="bg-white text-slate-900 border border-slate-200 px-4 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all font-bold"
+                        title="Print full report with complete task history"
+                    >
+                        <Printer size={16} />
+                        Print Full Report
                     </button>
                 </div>
             </div>
@@ -234,42 +286,92 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                     </div>
                 </div>
 
-                {/* Recent Task Table */}
+                {/* Complete Task History with Pagination for Print */}
                 <div>
-                    <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Recent Task History</h3>
-                    <table className="w-full text-left text-sm border-collapse">
-                        <thead>
-                            <tr className="border-b-2 border-slate-100">
-                                <th className="py-2 text-xs font-bold text-slate-500 uppercase">Task Title</th>
-                                <th className="py-2 text-xs font-bold text-slate-500 uppercase">Assigned</th>
-                                <th className="py-2 text-xs font-bold text-slate-500 uppercase">Due Date</th>
-                                <th className="py-2 text-xs font-bold text-slate-500 uppercase">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).slice(0, 10).map(task => (
-                                <tr key={task.id}>
-                                    <td className="py-3 font-medium text-slate-700">{task.title}</td>
-                                    <td className="py-3 text-slate-500">{task.createdDate}</td>
-                                    <td className="py-3 text-slate-500">{task.dueDate}</td>
-                                    <td className="py-3">
-                                        <span className={`text-xs font-bold uppercase ${
-                                            task.status === 'COMPLETED' ? 'text-green-600' :
-                                            task.status === 'OVERDUE' ? 'text-red-600' :
-                                            'text-orange-600'
-                                        }`}>
-                                            {task.status}
-                                        </span>
-                                    </td>
-                                </tr>
-                            ))}
-                            {selectedStats.empTasks.length === 0 && (
-                                <tr>
-                                    <td colSpan={4} className="py-6 text-center text-slate-400 italic">No tasks found for this period.</td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
+                    <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Complete Task History</h3>
+                    {selectedStats.empTasks.length === 0 ? (
+                        <div className="py-6 text-center text-slate-400 italic">No tasks found for this period.</div>
+                    ) : (
+                        // Render tasks in chunks of 20 per page for print
+                        <div>
+                            {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map((task, idx) => {
+                                const pageIndex = Math.floor(idx / 20);
+                                const isPageStart = idx % 20 === 0;
+                                return (
+                                    <div key={task.id} style={isPageStart && idx > 0 ? { pageBreakBefore: 'always' } : {}}>
+                                        {isPageStart && idx > 0 && (
+                                            <div className="print:block hidden text-sm text-slate-500 mt-8 mb-4 text-center">
+                                                --- Continued on next page ---
+                                            </div>
+                                        )}
+                                        {isPageStart && idx > 0 && (
+                                            <h4 className="print:block hidden text-sm font-bold text-slate-700 mt-8 mb-3">Task History (continued)</h4>
+                                        )}
+                                        {isPageStart && idx === 0 && (
+                                            <table className="w-full text-left text-sm border-collapse">
+                                                <thead>
+                                                    <tr className="border-b-2 border-slate-100">
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Task Title</th>
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Assigned</th>
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Due Date</th>
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100">
+                                                    {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).slice(0, 20).map(t => (
+                                                        <tr key={t.id}>
+                                                            <td className="py-3 font-medium text-slate-700">{t.title}</td>
+                                                            <td className="py-3 text-slate-500">{t.createdDate}</td>
+                                                            <td className="py-3 text-slate-500">{t.dueDate}</td>
+                                                            <td className="py-3">
+                                                                <span className={`text-xs font-bold uppercase ${
+                                                                    t.status === 'COMPLETED' ? 'text-green-600' :
+                                                                    t.status === 'OVERDUE' ? 'text-red-600' :
+                                                                    'text-orange-600'
+                                                                }`}>
+                                                                    {t.status}
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        )}
+                                        {isPageStart && idx > 0 && (
+                                            <table className="w-full text-left text-sm border-collapse">
+                                                <thead>
+                                                    <tr className="border-b-2 border-slate-100">
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Task Title</th>
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Assigned</th>
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Due Date</th>
+                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100">
+                                                    {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).slice(pageIndex * 20, (pageIndex + 1) * 20).map(t => (
+                                                        <tr key={t.id}>
+                                                            <td className="py-3 font-medium text-slate-700">{t.title}</td>
+                                                            <td className="py-3 text-slate-500">{t.createdDate}</td>
+                                                            <td className="py-3 text-slate-500">{t.dueDate}</td>
+                                                            <td className="py-3">
+                                                                <span className={`text-xs font-bold uppercase ${
+                                                                    t.status === 'COMPLETED' ? 'text-green-600' :
+                                                                    t.status === 'OVERDUE' ? 'text-red-600' :
+                                                                    'text-orange-600'
+                                                                }`}>
+                                                                    {t.status}
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
 
                 {/* Footer */}
@@ -301,7 +403,106 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             <p className="text-slate-500 mt-2 font-medium md:ml-14">
                 Select a team member to view and print their detailed performance card.
             </p>
+                        <div className="mt-4 md:ml-14">
+                                <button onClick={handlePrintAll} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-bold">Print All Reports</button>
+                        </div>
         </div>
+
+                {/* Printable all reports view (temporarily shown during print) */}
+                {printMode && (
+                    <div className="hidden print:block" aria-hidden={!printMode}>
+                        {employees.map(emp => {
+                                const stats = getEmployeeStats(emp.id);
+                                const att = getAttendanceStats(emp.id);
+                                const allTasks = stats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
+                                return (
+                                    <div key={emp.id}>
+                                        {/* First page for this employee */}
+                                        <div style={{ pageBreakAfter: 'always' }} className="p-8 bg-white text-slate-800">
+                                            <div className="flex justify-between items-start mb-6">
+                                                <div>
+                                                    <h2 className="text-2xl font-black">{emp.name}</h2>
+                                                    <div className="text-sm text-slate-600">ID: {emp.id} • {emp.designation || emp.department}</div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="text-xs text-slate-400">Generated On</div>
+                                                    <div className="font-bold">{format(new Date(), 'dd MMM yyyy')}</div>
+                                                </div>
+                                            </div>
+                                            <div className="grid grid-cols-4 gap-4 mb-6">
+                                                <div className="p-3 border text-sm"><strong>Assigned:</strong> {stats.total}</div>
+                                                <div className="p-3 border text-sm"><strong>Completed:</strong> {stats.completed}</div>
+                                                <div className="p-3 border text-sm"><strong>Overdue:</strong> {stats.overdue}</div>
+                                                <div className="p-3 border text-sm"><strong>Score:</strong> {stats.completionRate}%</div>
+                                            </div>
+                                            <h4 className="font-bold mb-3 text-sm">Task History (Page 1 of {Math.ceil(allTasks.length / 20)})</h4>
+                                            <table className="w-full text-xs border-collapse">
+                                                <thead>
+                                                    <tr className="border-b">
+                                                        <th className="text-left p-2">Title</th>
+                                                        <th className="text-left p-2">Assigned</th>
+                                                        <th className="text-left p-2">Due</th>
+                                                        <th className="text-left p-2">Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-200">
+                                                    {allTasks.slice(0, 20).map(t => (
+                                                        <tr key={t.id}>
+                                                            <td className="p-2">{t.title}</td>
+                                                            <td className="p-2">{t.createdDate}</td>
+                                                            <td className="p-2">{t.dueDate}</td>
+                                                            <td className="p-2 font-bold text-xs">{t.status}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        {/* Additional pages for overflow tasks */}
+                                        {allTasks.length > 20 && (
+                                            <>
+                                                {Array.from({ length: Math.ceil((allTasks.length - 20) / 20) }).map((_, pageNum) => {
+                                                    const startIdx = 20 + pageNum * 20;
+                                                    const endIdx = Math.min(startIdx + 20, allTasks.length);
+                                                    return (
+                                                        <div key={`${emp.id}-page-${pageNum + 2}`} style={{ pageBreakAfter: 'always' }} className="p-8 bg-white text-slate-800">
+                                                            <div className="flex justify-between items-start mb-6">
+                                                                <h3 className="text-lg font-bold">{emp.name} - Continued</h3>
+                                                                <div className="text-right text-xs">
+                                                                    <div className="font-bold text-sm">Page {pageNum + 2} of {Math.ceil(allTasks.length / 20)}</div>
+                                                                </div>
+                                                            </div>
+                                                            <h4 className="font-bold mb-3 text-sm">Task History (Continued)</h4>
+                                                            <table className="w-full text-xs border-collapse">
+                                                                <thead>
+                                                                    <tr className="border-b">
+                                                                        <th className="text-left p-2">Title</th>
+                                                                        <th className="text-left p-2">Assigned</th>
+                                                                        <th className="text-left p-2">Due</th>
+                                                                        <th className="text-left p-2">Status</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody className="divide-y divide-slate-200">
+                                                                    {allTasks.slice(startIdx, endIdx).map(t => (
+                                                                        <tr key={t.id}>
+                                                                            <td className="p-2">{t.title}</td>
+                                                                            <td className="p-2">{t.createdDate}</td>
+                                                                            <td className="p-2">{t.dueDate}</td>
+                                                                            <td className="p-2 font-bold text-xs">{t.status}</td>
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </>
+                                        )}
+                                    </div>
+                                );
+                        })}
+                    </div>
+                )}
 
         {/* Date Filter Bar */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 mb-8 flex flex-col md:flex-row gap-4 items-center">

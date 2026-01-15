@@ -21,7 +21,7 @@ interface TaskManagerProps {
 }
 
 export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, addNotification }) => {
-  const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'OVERDUE'>('ALL');
+  const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS'>('ALL');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null); // Task ID
   const [showObjectionModal, setShowObjectionModal] = useState<string | null>(null); // Task ID
@@ -352,19 +352,34 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     setIsLoading(true);
     setError(null);
     try {
-      // Instead of hard-deleting tasks, mark them as TERMINATED so reasons remain visible
-      const newStatus = type === 'HOLD' ? 'HOLD' : 'TERMINATED';
-      // Persist change on server
-      await api.put(`/tasks/${taskId}`, { status: newStatus, statusNote: actionReason });
+      if (type === 'DELETE') {
+        // Permanently delete the task from the database
+        await api.delete(`/tasks/${taskId}`);
+        
+        // Optimistically remove from local state
+        let assigned: any = null;
+        setTasks(prev => {
+          const taskToDelete = prev.find(t => t.id === taskId);
+          if (taskToDelete) assigned = taskToDelete.assignedTo;
+          return prev.filter(t => t.id !== taskId);
+        });
 
-      // Optimistically update local tasks so UI reflects immediately and avoid stale-state issues
-      let assigned: any = null;
-      setTasks(prev => prev.map(t => {
-        if (t.id === taskId) { assigned = t.assignedTo; return { ...t, status: newStatus, statusNote: actionReason }; }
-        return t;
-      }));
+        if (assigned) addNotification('Task Deleted', `Task ${taskId} was permanently deleted by Admin.`, 'TASK', String(assigned));
+      } else {
+        // For HOLD and TERMINATE, update status instead
+        const newStatus = type === 'HOLD' ? 'HOLD' : 'TERMINATED';
+        // Persist change on server
+        await api.put(`/tasks/${taskId}`, { status: newStatus, statusNote: actionReason });
 
-      if (assigned) addNotification('Task Update', `Task ${taskId} was ${type.toLowerCase()}ed by Admin.`, 'TASK', String(assigned));
+        // Optimistically update local tasks so UI reflects immediately and avoid stale-state issues
+        let assigned: any = null;
+        setTasks(prev => prev.map(t => {
+          if (t.id === taskId) { assigned = t.assignedTo; return { ...t, status: newStatus, statusNote: actionReason }; }
+          return t;
+        }));
+
+        if (assigned) addNotification('Task Update', `Task ${taskId} was ${type.toLowerCase()}ed by Admin.`, 'TASK', String(assigned));
+      }
 
       // Keep server-authoritative data in sync
       await fetchTasks();
@@ -474,23 +489,32 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     // 1. Tab Filter
     let matchesTab = true;
     if (activeTab === 'PENDING') {
-        // Pending tab should NOT show Overdue items
-        matchesTab = (displayStatus === 'PENDING' || displayStatus === 'EXTENSION_REQUESTED' || displayStatus === 'HOLD');
-    }
-    else if (activeTab === 'COMPLETED') {
+        // Pending tab should show only tasks with status 'PENDING' (exclude HOLD/EXTENSION_REQUESTED)
+        matchesTab = (displayStatus === 'PENDING');
+    } else if (activeTab === 'HOLD') {
+        // Hold tab shows tasks explicitly put on HOLD
+        matchesTab = (displayStatus === 'HOLD' || t.status === 'HOLD');
+    } else if (activeTab === 'COMPLETED') {
         matchesTab = (displayStatus === 'COMPLETED' || displayStatus === 'TERMINATED');
-    }
-    else if (activeTab === 'OVERDUE') {
+    } else if (activeTab === 'OVERDUE') {
         // Overdue tab should show calculated OVERDUE items
         matchesTab = (displayStatus === 'OVERDUE');
+    } else if (activeTab === 'OBJECTIONS') {
+        // Objections tab shows only pending extension/objection requests
+        matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING');
     }
     
     // 2. Search Filter (Text)
     const term = searchTerm.toLowerCase();
+    const assigneeEmp = employees.find(e => e.id === (t.assignedTo || (t as any).assignedToEmployeeId || ''));
+    const assigneeName = assigneeEmp ? (assigneeEmp.name || '').toLowerCase() : '';
+    const assignedByName = (t.assignedByName || '').toString().toLowerCase();
     const matchesSearch = 
-      t.title.toLowerCase().includes(term) ||
-      t.description.toLowerCase().includes(term) ||
-      t.id.toLowerCase().includes(term);
+      (t.title || '').toLowerCase().includes(term) ||
+      (t.description || '').toLowerCase().includes(term) ||
+      (t.id || '').toLowerCase().includes(term) ||
+      assigneeName.includes(term) ||
+      assignedByName.includes(term);
 
     // 3. Search Filter (Date)
     const matchesDate = searchDate 
@@ -499,6 +523,16 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
     return matchesTab && matchesSearch && matchesDate;
   });
+
+  const totalCount = relevantTasks.length;
+  const pendingCount = relevantTasks.filter(t => getDisplayStatus(t) === 'PENDING').length;
+  const holdCount = relevantTasks.filter(t => getDisplayStatus(t) === 'HOLD' || t.status === 'HOLD').length;
+  const completedCount = relevantTasks.filter(t => {
+    const ds = getDisplayStatus(t);
+    return ds === 'COMPLETED' || ds === 'TERMINATED';
+  }).length;
+  const overdueCount = relevantTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
+  const objectionCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'PENDING').length;
 
   const getPriorityColor = (p: string) => {
     switch(p) {
@@ -642,7 +676,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
           
           {/* Top Row: Tabs */}
           <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide w-full">
-            {['ALL', 'PENDING', 'COMPLETED', 'OVERDUE'].map((tab) => (
+            {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -652,7 +686,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                     : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
                 }`}
               >
-                {tab.charAt(0) + tab.slice(1).toLowerCase()}
+                {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Completed (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : `Objections (${objectionCount})`}
               </button>
             ))}
           </div>
@@ -789,7 +823,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                       {task.status === 'COMPLETED' && (
                         <div className="bg-green-50/50 p-4 rounded-xl border border-green-100 text-sm">
                           <p className="font-bold text-green-800 mb-1 flex items-center gap-2"><CheckCircle2 size={16}/> Completed on {task.completionDate}</p>
-                          <p className="text-green-700/80 italic break-words">"{task.completionProcess}"</p>
+                          {task.completionProcess && (
+                            <p className="text-green-700/80 italic break-words">{task.completionProcess}</p>
+                          )}
                           {task.completionAttachment && (
                              <div className="mt-2 text-green-700 flex items-center gap-2">
                                 <FileText size={14} />
@@ -830,7 +866,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                       {(task.status === 'HOLD' || task.status === 'TERMINATED' || task.status === 'REJECTED' || task.extensionRequest?.status === 'REJECTED') && task.statusNote && (
                          <div className={`p-4 rounded-xl border text-sm ${task.status === 'HOLD' ? 'bg-yellow-50 border-yellow-100' : (task.status === 'TERMINATED' ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-100')}`}>
                            <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : (task.status === 'TERMINATED' ? 'text-gray-700' : 'text-red-700')}`}>
-                              <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection Reason')}
+                              <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection')}
                            </p>
                            <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
                          </div>

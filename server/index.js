@@ -208,6 +208,24 @@ try {
       )`);
     }
 
+    // Site photos table (store metadata and server path)
+    const tblSite = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='site_photos'");
+    const hasSite = tblSite.step(); tblSite.free();
+    if (!hasSite) {
+      db.run(`CREATE TABLE site_photos (
+        id TEXT PRIMARY KEY,
+        projectId TEXT,
+        uploadedBy TEXT,
+        filename TEXT,
+        filepath TEXT,
+        imageUrl TEXT,
+        gps TEXT,
+        date TEXT,
+        timestamp TEXT,
+        createdAt TEXT
+      )`);
+    }
+
     // Employee profiles (optional table for storing extended profile info)
     const tblProf = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employees_profile'");
     const hasProf = tblProf.step(); tblProf.free();
@@ -295,6 +313,34 @@ try {
       )`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_chat_teamId ON chat(teamId)`);
     }
+
+    // Ensure chat schema has optional columns for edits/pins/deletes/replies
+    try {
+      const cols = [];
+      const pragma = db.prepare("PRAGMA table_info('chat')");
+      while (pragma.step()) { cols.push(pragma.getAsObject().name); }
+      pragma.free();
+      const needToAdd = (col) => cols.indexOf(col) === -1;
+      if (needToAdd('updatedAt')) db.run("ALTER TABLE chat ADD COLUMN updatedAt TEXT");
+      if (needToAdd('is_deleted')) db.run("ALTER TABLE chat ADD COLUMN is_deleted INTEGER DEFAULT 0");
+      if (needToAdd('is_pinned')) db.run("ALTER TABLE chat ADD COLUMN is_pinned INTEGER DEFAULT 0");
+      if (needToAdd('edited')) db.run("ALTER TABLE chat ADD COLUMN edited INTEGER DEFAULT 0");
+      if (needToAdd('replyTo')) db.run("ALTER TABLE chat ADD COLUMN replyTo TEXT");
+    } catch (e) { console.warn('Chat schema migration warning', e && (e.message || e)); }
+
+    // Ensure chat_reads table exists for read receipts
+    try {
+      const tblReads = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_reads'");
+      const hasReads = tblReads.step(); tblReads.free();
+      if (!hasReads) {
+        db.run(`CREATE TABLE chat_reads (
+          teamId TEXT,
+          userId TEXT,
+          lastReadAt TEXT,
+          PRIMARY KEY(teamId, userId)
+        )`);
+      }
+    } catch (e) { console.warn('Chat reads migration warning', e && (e.message || e)); }
 
     // Queries
     const tblQ = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='queries'");
@@ -581,10 +627,12 @@ app.use(cookieParser());
 const uploadsRoot = path.join(__dirname, 'uploads');
 const profileDir = path.join(uploadsRoot, 'profile');
 const documentsDir = path.join(uploadsRoot, 'documents');
+const sitePhotosDir = path.join(uploadsRoot, 'site_photos');
 try {
   if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot);
   if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir);
   if (!fs.existsSync(documentsDir)) fs.mkdirSync(documentsDir);
+    if (!fs.existsSync(sitePhotosDir)) fs.mkdirSync(sitePhotosDir);
 } catch (e) {
   console.warn('Failed to create uploads directories', e && (e.message || e));
 }
@@ -593,8 +641,11 @@ try {
 const allowedExt = ['.jpg', '.jpeg', '.png', '.pdf'];
 const fileFilter = (req, file, cb) => {
   const ext = path.extname(file.originalname).toLowerCase();
-  if (!allowedExt.includes(ext)) return cb(null, false);
-  return cb(null, true);
+  if (allowedExt.includes(ext)) return cb(null, true);
+  // Accept images by mimetype as fallback (some camera captures may lack extensions)
+  if (file && file.mimetype && typeof file.mimetype === 'string' && file.mimetype.startsWith('image/')) return cb(null, true);
+  console.warn('upload fileFilter rejected file', { originalname: file && file.originalname, mimetype: file && file.mimetype });
+  return cb(null, false);
 };
 
 const storageProfile = multer.diskStorage({
@@ -608,6 +659,16 @@ const storageDocuments = multer.diskStorage({
 
 const uploadProfile = multer({ storage: storageProfile, fileFilter, limits: { fileSize: 10 * 1024 * 1024 } });
 const uploadDocument = multer({ storage: storageDocuments, fileFilter, limits: { fileSize: 20 * 1024 * 1024 } });
+
+// Site photos storage
+const storageSitePhotos = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, sitePhotosDir),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
+});
+const uploadSitePhoto = multer({ storage: storageSitePhotos, fileFilter, limits: { fileSize: 10 * 1024 * 1024 } });
+
+// Serve uploaded files
+app.use('/uploads', express.static(uploadsRoot));
 
 // Production-only API request logging (safe: do NOT print tokens)
 if (process.env.NODE_ENV === 'production') {
@@ -1238,6 +1299,10 @@ app.get('/api/employees', requireAuth, (req, res) => {
     ensureEmployeesTable();
     const archived = req.query.archived === '1' || req.query.archived === 'true';
     const isAdmin = req.user && req.user.role === 'ADMIN';
+
+    // DEBUG: log who is requesting the employees list and query params
+    try { console.log('GET /api/employees requested', { path: req.path, isAdmin, user: req.user && { id: req.user.id, role: req.user.role, employeeId: req.user.employeeId }, archived }); } catch (e) { }
+
     if (isAdmin) {
       console.log('GET /api/employees from', req.headers.origin || 'no-origin');
       const q = archived ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance, archived_at FROM employees WHERE coalesce(is_archived, 0) = 1' : 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
@@ -1251,18 +1316,26 @@ app.get('/api/employees', requireAuth, (req, res) => {
         out.push(row);
       }
       stmt.free();
+      console.log('GET /api/employees -> returning', out.length, 'rows for admin');
       return success(res, out || []);
     } else if (req.user && req.user.employeeId) {
-      const stmt = db.prepare('SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance FROM employees WHERE id = ? AND coalesce(is_archived, 0) = 0');
-      stmt.bind([req.user.employeeId]);
-      if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
-      const row = stmt.getAsObject();
-      if (row.documents) {
-        try { row.documents = JSON.parse(row.documents); } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
+      // Allow non-admin authenticated users to fetch the list of active employees
+      // so features like team chat can display colleagues.
+      const q = 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
+      const stmt = db.prepare(q);
+      const out = [];
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (row.documents) {
+          try { row.documents = JSON.parse(row.documents); } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
+        }
+        out.push(row);
       }
       stmt.free();
-      return success(res, [row]);
+      console.log('GET /api/employees -> returning', out.length, 'rows for non-admin user', req.user && req.user.employeeId);
+      return success(res, out || []);
     } else {
+      console.log('GET /api/employees -> forbidden for unauthenticated user');
       return failure(res, 'Forbidden', 403);
     }
   } catch (err) {
@@ -1605,6 +1678,13 @@ function requireAuth(req, res, next) {
       }
 
       req.user = normalizedUser;
+      // Debug: log authenticated user for API requests to help diagnose missing routes during development
+      try {
+        // Suppress noisy auth logs for frequent chat polling in normal dev runs; enable by setting DEBUG_AUTH=true
+        if (!String(req.path).startsWith('/api/chat') || process.env.DEBUG_AUTH === 'true') {
+          console.log('Auth: user', { id: req.user && req.user.id, role: req.user && req.user.role, path: req.path });
+        }
+      } catch (e) { }
       return next();
     } catch (err) {
       console.warn('Auth: token verification failed', { path: req.path, err: err && (err.message || err) });
@@ -1715,7 +1795,18 @@ app.get('/api/timelogs', requireAuth, (req, res) => {
     const stmt = db.prepare(q);
     stmt.bind(params);
     const out = [];
-    while (stmt.step()) out.push(stmt.getAsObject());
+    while (stmt.step()) {
+      const record = stmt.getAsObject();
+      // Calculate durationHours if both startTime and endTime exist
+      if (record.startTime && record.endTime) {
+        const start = new Date(record.startTime);
+        const end = new Date(record.endTime);
+        const diffMs = end - start;
+        const diffHours = diffMs / (1000 * 60 * 60);
+        record.durationHours = Math.max(0, diffHours); // Ensure non-negative
+      }
+      out.push(record);
+    }
     stmt.free();
     return success(res, out);
   } catch (err) {
@@ -1898,7 +1989,7 @@ app.get('/api/tasks', requireAuth, (req, res) => {
       SELECT t.id, t.title, t.description, t.priority, t.due_date, t.assigned_to, t.assignedTo as assignedToStr, t.status, t.created_at,
              ua.name AS assignedByName, ua.employeeId AS assignedByEmployeeId,
              ub.name AS assignedToName, ub.employeeId AS assignedToEmployeeId,
-             t.extensionHistory, t.extensionRequest
+             t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess, t.completionAttachment, t.statusNote
       FROM tasks t
       LEFT JOIN users ua ON ua.id = t.assigned_by
       LEFT JOIN users ub ON ub.id = t.assigned_to
@@ -2054,7 +2145,7 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
 
       // Build update SQL parts - preserve existing when not provided. Also set snake_case columns accordingly
       // Persist statusNote, extensionRequest and extensionHistory if provided
-      const updateStmt = db.prepare('UPDATE tasks SET title = coalesce(?, title), description = coalesce(?, description), assignedTo = coalesce(?, assignedTo), assignedBy = coalesce(?, assignedBy), priority = coalesce(?, priority), dueDate = coalesce(?, dueDate), assigned_to = coalesce(?, assigned_to), assigned_by = coalesce(?, assigned_by), due_date = coalesce(?, due_date), status = coalesce(?, status), statusNote = coalesce(?, statusNote), extensionRequest = coalesce(?, extensionRequest), extensionHistory = coalesce(?, extensionHistory), createdAt = coalesce(?, createdAt), created_at = coalesce(?, created_at) WHERE id = ?');
+      const updateStmt = db.prepare('UPDATE tasks SET title = coalesce(?, title), description = coalesce(?, description), assignedTo = coalesce(?, assignedTo), assignedBy = coalesce(?, assignedBy), priority = coalesce(?, priority), dueDate = coalesce(?, dueDate), assigned_to = coalesce(?, assigned_to), assigned_by = coalesce(?, assigned_by), due_date = coalesce(?, due_date), status = coalesce(?, status), statusNote = coalesce(?, statusNote), extensionRequest = coalesce(?, extensionRequest), extensionHistory = coalesce(?, extensionHistory), completionDate = coalesce(?, completionDate), completionProcess = coalesce(?, completionProcess), completionAttachment = coalesce(?, completionAttachment), createdAt = coalesce(?, createdAt), created_at = coalesce(?, created_at) WHERE id = ?');
 
       // If assignment changed, set assignedBy/assigned_by to current user
       const assignerCamel = (updates.assignedTo && updates.assignedTo !== existing.assignedTo) ? String(req.user.id) : null;
@@ -2089,6 +2180,9 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
         (updates.statusNote || null),
         extReqStr,
         extHistStr,
+        updates.completionDate || updates.completion_date || null,
+        updates.completionProcess || null,
+        updates.completionAttachment || null,
         updates.createdAt || null,
         updates.created_at || null,
         id
@@ -2100,7 +2194,7 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
       else console.log('Tasks PUT: updated task persisted to DB file');
       console.log('Tasks PUT: updated task', { id, assigned_to_val, assignedToEmp, assignerNumeric: assignerNumeric });
 
-      const outStmt = db.prepare('SELECT id, title, description, assignedTo, assigned_to, priority, dueDate, due_date, status, createdAt, created_at, assignedBy FROM tasks WHERE id = ?');
+      const outStmt = db.prepare('SELECT id, title, description, assignedTo, assigned_to, priority, dueDate, due_date, status, createdAt, created_at, assignedBy, completionDate, completionProcess, completionAttachment, statusNote FROM tasks WHERE id = ?');
       outStmt.bind([id]);
       outStmt.step();
       const updated = outStmt.getAsObject();
@@ -2244,6 +2338,107 @@ app.get('/api/finance', requireAuth, (req, res) => {
   } catch (err) { console.error('Finance GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
+// DELETE client and associated history (admin-only)
+app.delete('/api/finance/client', requireAuth, (req, res) => {
+  try {
+    // Log the incoming request and actor for debugging
+    const id = (req.query && req.query.id) || (req.body && req.body.id);
+    console.log('DELETE /api/finance/client requested', { id: id || null, user: req.user });
+
+    if (!req.user || req.user.role !== 'ADMIN') {
+      console.warn('Finance DELETE client: forbidden attempt', { user: req.user, id });
+      return failure(res, 'Forbidden', 403);
+    }
+    if (!id) return failure(res, 'Missing client id', 400);
+
+    try {
+      // Read all finance rows and build helper maps so we support either
+      // - id == composite client key (clientName::projectId)
+      // - id == actual finance row id (numeric string)
+      const stmt = db.prepare('SELECT id, type, description FROM finance');
+      const rows = [];
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+      }
+      stmt.free();
+
+      const toDeleteSet = new Set();
+      const matchingClientKeys = new Set();
+
+      // First pass: find client rows that match either by composite key or by row id
+      for (const row of rows) {
+        let desc = null;
+        try { desc = typeof row.description === 'string' ? JSON.parse(row.description) : row.description; } catch (e) { desc = null; }
+        if (row.type === 'CLIENT' && desc && desc.clientName && desc.projectId) {
+          const key = `${desc.clientName}::${desc.projectId}`;
+          if (key === id || String(row.id) === String(id)) {
+            toDeleteSet.add(row.id);
+            matchingClientKeys.add(key);
+          }
+        }
+      }
+
+      // Second pass: include any PAYMENT rows that reference the matching client keys or whose targetId equals the passed id
+      for (const row of rows) {
+        let desc = null;
+        try { desc = typeof row.description === 'string' ? JSON.parse(row.description) : row.description; } catch (e) { desc = null; }
+        if (row.type === 'PAYMENT' && desc && desc.for === 'CLIENT' && desc.targetId) {
+          if (matchingClientKeys.has(desc.targetId) || String(desc.targetId) === String(id)) {
+            toDeleteSet.add(row.id);
+          }
+        }
+      }
+
+      const toDelete = Array.from(toDeleteSet);
+
+      if (toDelete.length === 0) {
+        console.warn('Finance DELETE client: no matching records found', { id, rowsChecked: rows.length });
+        return failure(res, 'No matching records found', 404);
+      }
+
+      // Perform deletion transactionally
+      db.run('BEGIN TRANSACTION');
+      const del = db.prepare('DELETE FROM finance WHERE id = ?');
+      toDelete.forEach(tid => del.run([tid]));
+      del.free();
+      db.run('COMMIT');
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+
+      // Try to fetch actor email for audit info
+      let actorEmail = null;
+      try {
+        const s = db.prepare('SELECT email FROM users WHERE id = ?');
+        s.bind([Number(req.user.id)]);
+        if (s.step()) {
+          const r = s.getAsObject();
+          actorEmail = r.email || null;
+        }
+        s.free();
+      } catch (e) {
+        // ignore
+      }
+
+      // Append a simple audit entry to server/deletes.log for traceability
+      try {
+        const auditEntry = { ts: new Date().toISOString(), actorId: req.user.id, actorRole: req.user.role, actorEmail, target: id, deletedCount: toDelete.length, deletedIds: toDelete };
+        const auditPath = path.join(__dirname || '.', 'deletes.log');
+        try { fs.appendFileSync(auditPath, JSON.stringify(auditEntry) + '\n'); } catch (e) { console.warn('Failed to write audit log', e && e.message); }
+      } catch (e) {
+        console.warn('Audit logging failed', e && e.message);
+      }
+
+      return success(res, { deleted: toDelete.length, actor: { id: req.user.id, role: req.user.role, email: actorEmail }, deletedIds: toDelete }, 'Deleted');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      console.error('Finance DELETE client error', e && (e.stack || e.message || e));
+      return failure(res, 'Internal server error', 500);
+    }
+  } catch (err) {
+    console.error('Finance DELETE client unexpected error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
 // Notifications
 app.post('/api/notifications', requireAuth, (req, res) => {
   try {
@@ -2304,10 +2499,11 @@ app.get('/api/notifications/:userId', requireAuth, (req, res) => {
     // Attempt to select full row; fallback to simpler select if columns missing
     let stmt;
     try {
-      stmt = db.prepare('SELECT id, userId, message, meta, isRead, createdAt FROM notifications WHERE userId = ? ORDER BY createdAt DESC');
+      // Return notifications for the requested user *and* global/admin broadcasts
+      stmt = db.prepare("SELECT id, userId, message, meta, isRead, createdAt FROM notifications WHERE (userId = ? OR userId = 'ALL' OR userId = 'ADMIN') ORDER BY createdAt DESC");
       stmt.bind([userId]);
     } catch (e) {
-      stmt = db.prepare('SELECT id, userId, message, createdAt FROM notifications WHERE userId = ? ORDER BY createdAt DESC');
+      stmt = db.prepare("SELECT id, userId, message, createdAt FROM notifications WHERE (userId = ? OR userId = 'ALL' OR userId = 'ADMIN') ORDER BY createdAt DESC");
       stmt.bind([userId]);
     }
 
@@ -2428,6 +2624,63 @@ app.get('/api/checklists/:refId', requireAuth, (req, res) => {
   } catch (err) { console.error('Checklists GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
+// PUT /api/checklists/:id - update a checklist item (mark done/undone, update item)
+app.put('/api/checklists/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const { item, done } = req.body || {};
+    
+    // Check if checklist item exists
+    const check = db.prepare('SELECT id FROM checklists WHERE id = ?');
+    check.bind([id]);
+    if (!check.step()) { check.free(); return failure(res, 'Checklist item not found', 404); }
+    check.free();
+    
+    try {
+      db.run('BEGIN TRANSACTION');
+      const updates = [];
+      const values = [];
+      if (item) { updates.push('item = ?'); values.push(item); }
+      if (done !== undefined && done !== null) { updates.push('done = ?'); values.push(done ? 1 : 0); }
+      values.push(id);
+      
+      if (updates.length > 0) {
+        const query = `UPDATE checklists SET ${updates.join(', ')} WHERE id = ?`;
+        const stmt = db.prepare(query);
+        stmt.run(values);
+        stmt.free();
+      }
+      db.run('COMMIT');
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      return success(res, { id, message: 'Checklist item updated' });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      throw e;
+    }
+  } catch (err) { console.error('Checklists PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// DELETE /api/checklists/:id - delete a checklist item
+app.delete('/api/checklists/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    
+    try {
+      db.run('BEGIN TRANSACTION');
+      const del = db.prepare('DELETE FROM checklists WHERE id = ?');
+      del.run([id]);
+      del.free();
+      db.run('COMMIT');
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      return success(res, { message: 'Checklist item deleted' });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      throw e;
+    }
+  } catch (err) { console.error('Checklists DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+console.log('Registered API routes: /api/checklists (POST/GET/PUT/DELETE)');
+
 // Checklist templates endpoints
 app.post('/api/checklist-templates', requireAuth, (req, res) => {
   try {
@@ -2458,6 +2711,62 @@ app.get('/api/checklist-templates', requireAuth, (req, res) => {
   } catch (err) { console.error('Checklist templates GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
+// PUT /api/checklist-templates/:id - update a checklist template
+app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const { taskName, doerId, department, startDate, config, active } = req.body || {};
+    
+    // Check if template exists
+    const check = db.prepare('SELECT id FROM checklist_templates WHERE id = ?');
+    check.bind([id]);
+    if (!check.step()) { check.free(); return failure(res, 'Template not found', 404); }
+    check.free();
+    
+    try {
+      db.run('BEGIN TRANSACTION');
+      const data = JSON.stringify({ taskName, doerId, department, startDate, config, active });
+      const update = db.prepare('UPDATE checklist_templates SET data = ? WHERE id = ?');
+      update.run([data, id]);
+      update.free();
+      db.run('COMMIT');
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      return success(res, { id, message: 'Template updated' });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      throw e;
+    }
+  } catch (err) { console.error('Checklist templates PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// DELETE /api/checklist-templates/:id - delete a checklist template and all its instances
+app.delete('/api/checklist-templates/:id', requireAuth, (req, res) => {
+  try {
+    console.log('DELETE checklist-template endpoint called', { id: req.params.id });
+    const id = req.params.id;
+    
+    // Delete all checklist items that reference this template first
+    const delItems = db.prepare('DELETE FROM checklists WHERE refId = ?');
+    delItems.run([id]);
+    delItems.free();
+    
+    // Delete the template itself
+    const delTemplate = db.prepare('DELETE FROM checklist_templates WHERE id = ?');
+    delTemplate.run([id]);
+    delTemplate.free();
+    
+    // Persist to DB file
+    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('DB persist failed', e); }
+    
+    console.log('DELETE checklist-template succeeded', { id });
+    return success(res, { message: 'Template deleted successfully', id });
+  } catch (err) { 
+    console.error('DELETE checklist-template failed', { id: req.params.id, err: err && (err.stack || err.message || err) }); 
+    return failure(res, 'Failed to delete template: ' + (err && err.message || err), 500); 
+  }
+});
+console.log('Registered API routes: /api/checklist-templates (POST/GET/PUT/DELETE)');
+
 // O2D
 app.post('/api/o2d', requireAuth, (req, res) => {
   try {
@@ -2487,6 +2796,346 @@ app.get('/api/o2d', requireAuth, (req, res) => {
   } catch (err) { console.error('O2D GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
+// DELETE /api/o2d/:id - delete an order (admin or owner can delete; owners cannot delete COMPLETED orders)
+function handleDeleteO2d(req, res) {
+  try {
+    console.log('API: DELETE O2D handler invoked', { path: req.path, url: req.originalUrl, user: req.user && req.user.id });
+    if (!req.user) { console.warn('O2D DELETE: no user', { path: req.path }); return failure(res, 'Unauthorized', 401); }
+    let id = req.params.id;
+    try { id = decodeURIComponent(id); } catch (e) { /* ignore */ }
+
+    console.log('O2D DELETE: requested id', { id });
+
+    let s = db.prepare('SELECT id, status, createdBy FROM o2d WHERE id = ?');
+    s.bind([id]);
+    if (!s.step()) {
+      s.free();
+      console.warn('O2D DELETE: id not found, attempting to match by nested data.id', { id });
+      // Try find by nested data.id (some entries store the order id inside data JSON)
+      try {
+        const p = db.prepare('SELECT id, data, status, createdBy FROM o2d');
+        let matched = null;
+        while (p.step()) {
+          const row = p.getAsObject();
+          try {
+            const d = JSON.parse(row.data || '{}');
+            if (d && (d.id === id || String(d.id) === String(id))) { matched = row; break; }
+            // Also try matching on legacy fields like orderId or refId
+            if (d && (d.orderId === id || d.refId === id)) { matched = row; break; }
+          } catch (e) { /* ignore parse errors */ }
+        }
+        p.free();
+        if (matched) {
+          console.log('O2D DELETE: matched by nested data.id', { matchedId: matched.id, originalRequested: id });
+          id = matched.id; // replace id with actual DB id and continue
+        } else {
+          console.warn('O2D DELETE: not found even after nested match', { id });
+          return failure(res, 'Not found', 404);
+        }
+      } catch (e) {
+        console.error('O2D DELETE: nested match failed', e && (e.stack || e.message || e));
+        return failure(res, 'Not found', 404);
+      }
+    } else {
+      const r = s.getAsObject(); s.free();
+      // keep going with found record
+    }
+
+    // Now fetch record by resolved id to check permissions
+    const s2 = db.prepare('SELECT id, status, createdBy FROM o2d WHERE id = ?');
+    s2.bind([id]);
+    if (!s2.step()) { s2.free(); console.warn('O2D DELETE: resolved id not found', { id }); return failure(res, 'Not found', 404); }
+    const rec = s2.getAsObject(); s2.free();
+    const creator = rec.createdBy;
+    const status = rec.status;
+    const isAdmin = req.user.role === 'ADMIN';
+    const isOwner = (req.user.employeeId && req.user.employeeId === creator) || String(req.user.id) === String(creator);
+    console.log('O2D DELETE check', { id, creator, status, isAdmin, isOwner, reqUser: req.user });
+    if (!isAdmin && !isOwner) { console.warn('O2D DELETE: forbidden', { id, creator, reqUser: req.user }); return failure(res, 'Forbidden', 403); }
+    if (!isAdmin && status === 'COMPLETED') { console.warn('O2D DELETE: completed protected', { id, status, reqUser: req.user }); return failure(res, 'Cannot delete completed order', 403); }
+
+    try {
+      db.run('BEGIN TRANSACTION');
+      const del = db.prepare('DELETE FROM o2d WHERE id = ?');
+      del.run([id]); del.free();
+      db.run('COMMIT');
+      console.log('O2D DELETE success', { id, deletedBy: req.user && (req.user.employeeId || req.user.id) });
+      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after o2d delete', e && (e.message || e)); }
+      return success(res, null, 'Deleted');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) {}
+      console.error('O2D DELETE failed', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to delete', 500);
+    }
+  } catch (err) { console.error('O2D DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+}
+
+// Register both variants to support hosting mounts that strip or keep the /api prefix
+app.delete('/api/o2d/:id', requireAuth, handleDeleteO2d);
+app.delete('/o2d/:id', requireAuth, handleDeleteO2d);
+
+// POST /api/sitephotos - upload a site photo (JSON with base64 or multipart/form-data)
+app.post('/api/sitephotos', requireAuth, (req, res) => {
+  try {
+    console.log('API: POST /api/sitephotos', { path: req.path, user: req.user && req.user.id, hasImageData: !!req.body?.imageData });
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    
+    const projectId = req.body?.projectId || null; // Make projectId optional
+    const imageData = req.body?.imageData || null; // Base64 image data from JSON
+    
+    if (!imageData) return failure(res, 'Missing imageData', 400);
+
+    // Check project exists and not closed if projectId provided
+    if (projectId) {
+      try {
+        const stmt = db.prepare('SELECT id, status FROM projects WHERE id = ?');
+        stmt.bind([projectId]);
+        if (!stmt.step()) { stmt.free(); return failure(res, 'Project not found', 404); }
+        const proj = stmt.getAsObject(); stmt.free();
+        if (proj.status && String(proj.status).toUpperCase() === 'CLOSED') return failure(res, 'Project is closed', 403);
+      } catch (e) { console.error('Project lookup failed', e && (e.stack || e.message || e)); }
+    }
+
+    const id = genId('IMG-');
+    const uploadedBy = req.user.employeeId || String(req.user.id || 'UNKNOWN');
+    const gps = req.body?.gps || null;
+    const date = new Date().toISOString().split('T')[0];
+    const timestamp = new Date().toISOString();
+    
+    // Store base64 directly as imageUrl
+    const imageUrl = imageData;
+    const filename = 'base64-' + id;
+    const filepath = 'base64';
+
+    try {
+      db.run('BEGIN TRANSACTION');
+      const insert = db.prepare('INSERT INTO site_photos (id, projectId, uploadedBy, filename, filepath, imageUrl, gps, date, timestamp, createdAt) VALUES (?,?,?,?,?,?,?,?,?,?)');
+      insert.run([id, projectId, uploadedBy, filename, filepath, imageUrl, gps ? JSON.stringify(gps) : null, date, timestamp, timestamp]);
+      insert.free();
+      db.run('COMMIT');
+      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after site photo insert', e && (e.message || e)); }
+      return success(res, { id, projectId, imageUrl, filename, uploadedBy, date, timestamp });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) {}
+      console.error('Site photo insert failed', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to persist site photo', 500);
+    }
+  } catch (err) { console.error('Sitephotos POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// GET /api/sitephotos - list site photos (optional projectId filter)
+app.get('/api/sitephotos', requireAuth, (req, res) => {
+  try {
+    const projectId = req.query.projectId;
+    let stmt;
+    if (projectId) {
+      stmt = db.prepare('SELECT id, projectId, uploadedBy, filename, filepath, imageUrl, gps, date, timestamp FROM site_photos WHERE projectId = ? ORDER BY createdAt DESC');
+      stmt.bind([projectId]);
+    } else {
+      stmt = db.prepare('SELECT id, projectId, uploadedBy, filename, filepath, imageUrl, gps, date, timestamp FROM site_photos ORDER BY createdAt DESC');
+    }
+    const out = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject();
+      try { r.gps = r.gps ? (typeof r.gps === 'string' ? JSON.parse(r.gps) : r.gps) : undefined; } catch (e) { r.gps = undefined; }
+      out.push(r);
+    }
+    stmt.free();
+    return success(res, out);
+  } catch (err) { console.error('Sitephotos GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+console.log('Registered API routes: /api/sitephotos (POST/GET)');
+
+// --- Leaves API (CRUD) ---
+// GET /api/leaves - list all leaves for user or admin view
+app.get('/api/leaves', requireAuth, (req, res) => {
+  try {
+    const userId = req.query.userId;
+    let stmt;
+    if (userId) {
+      stmt = db.prepare('SELECT id, userId, startDate, endDate, days, status, reason, createdAt FROM leaves WHERE userId = ? ORDER BY createdAt DESC');
+      stmt.bind([userId]);
+    } else {
+      stmt = db.prepare('SELECT id, userId, startDate, endDate, days, status, reason, createdAt FROM leaves ORDER BY createdAt DESC');
+    }
+    const out = [];
+    while (stmt.step()) out.push(stmt.getAsObject());
+    stmt.free();
+    return success(res, out);
+  } catch (err) { console.error('Leaves GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// POST /api/leaves - create a new leave application
+app.post('/api/leaves', requireAuth, (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { startDate, endDate, reason } = req.body;
+    if (!startDate || !endDate || !reason) return failure(res, 'Missing required fields', 400);
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (end < start) return failure(res, 'End date must be after start date', 400);
+    
+    // Calculate days (inclusive)
+    const diffTime = Math.abs(end - start);
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    
+    const id = genId('LEAVE-');
+    const timestamp = new Date().toISOString();
+    
+    try {
+      db.run('BEGIN TRANSACTION');
+      const insert = db.prepare('INSERT INTO leaves (id, userId, startDate, endDate, days, status, reason, createdAt) VALUES (?,?,?,?,?,?,?,?)');
+      insert.run([id, userId, startDate, endDate, diffDays, 'PENDING', reason, timestamp]);
+      insert.free();
+      db.run('COMMIT');
+      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave insert', e && (e.message || e)); }
+      return success(res, { id, userId, startDate, endDate, days: diffDays, status: 'PENDING', reason, createdAt: timestamp });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) {}
+      console.error('Leave insert failed', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to create leave application', 500);
+    }
+  } catch (err) { console.error('Leaves POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// PUT /api/leaves/:id - update leave status or details
+app.put('/api/leaves/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const { status, reason, startDate, endDate } = req.body;
+    
+    // Check if leave exists
+    const check = db.prepare('SELECT id FROM leaves WHERE id = ?');
+    check.bind([id]);
+    if (!check.step()) { check.free(); return failure(res, 'Leave not found', 404); }
+    check.free();
+    
+    try {
+      db.run('BEGIN TRANSACTION');
+      const updates = [];
+      const values = [];
+      if (status) { updates.push('status = ?'); values.push(status); }
+      if (reason) { updates.push('reason = ?'); values.push(reason); }
+      if (startDate && endDate) {
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        const diffTime = Math.abs(end - start);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+        updates.push('startDate = ?');
+        updates.push('endDate = ?');
+        updates.push('days = ?');
+        values.push(startDate);
+        values.push(endDate);
+        values.push(diffDays);
+      }
+      values.push(id);
+      
+      if (updates.length > 0) {
+        const query = `UPDATE leaves SET ${updates.join(', ')} WHERE id = ?`;
+        const stmt = db.prepare(query);
+        stmt.run(values);
+        stmt.free();
+      }
+      db.run('COMMIT');
+      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave update', e && (e.message || e)); }
+      return success(res, { id, message: 'Leave updated successfully' });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) {}
+      console.error('Leave update failed', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to update leave', 500);
+    }
+  } catch (err) { console.error('Leaves PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// DELETE /api/leaves/:id - delete a leave application
+app.delete('/api/leaves/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    
+    try {
+      db.run('BEGIN TRANSACTION');
+      const del = db.prepare('DELETE FROM leaves WHERE id = ?');
+      del.run([id]);
+      del.free();
+      db.run('COMMIT');
+      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave delete', e && (e.message || e)); }
+      return success(res, { message: 'Leave deleted successfully' });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) {}
+      console.error('Leave delete failed', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to delete leave', 500);
+    }
+  } catch (err) { console.error('Leaves DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+console.log('Registered API routes: /api/leaves (GET/POST/PUT/DELETE)');
+
+// Upload O2D attachment (for delivery proof) - accepts multipart/form-data 'file' field
+app.post('/api/o2d/upload', requireAuth, uploadDocument.single('file'), (req, res) => {
+  try {
+    console.log('O2D upload request', { path: req.path, user: req.user && req.user.id, contentType: req.headers && req.headers['content-type'] });
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (!req.file) {
+      console.warn('O2D upload: missing file', { contentType: req.headers && req.headers['content-type'], bodyPresent: !!req.body });
+      return failure(res, 'Missing file or incorrect Content-Type (expected multipart/form-data with field "file")', 400);
+    }
+    const filename = path.basename(req.file.path);
+    const filepath = path.join('uploads', 'documents', filename);
+    const imageUrl = `/uploads/documents/${filename}`;
+    console.log('O2D upload saved', { filename, filepath, uploadedBy: req.user && (req.user.employeeId || req.user.id) });
+    try { return success(res, { imageUrl, filename }, 'Uploaded', 201); } catch (e) { return success(res, { imageUrl, filename }, 'Uploaded', 201); }
+  } catch (err) { console.error('O2D Upload error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// Also support the non-/api path for clients that POST to /o2d/upload
+app.post('/o2d/upload', requireAuth, uploadDocument.single('file'), (req, res) => {
+  try {
+    console.log('O2D upload request (non-api)', { path: req.path, user: req.user && req.user.id, contentType: req.headers && req.headers['content-type'] });
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (!req.file) {
+      console.warn('O2D upload (non-api): missing file', { contentType: req.headers && req.headers['content-type'], bodyPresent: !!req.body });
+      return failure(res, 'Missing file or incorrect Content-Type (expected multipart/form-data with field "file")', 400);
+    }
+    const filename = path.basename(req.file.path);
+    const filepath = path.join('uploads', 'documents', filename);
+    const imageUrl = `/uploads/documents/${filename}`;
+    console.log('O2D upload saved (non-api)', { filename, filepath, uploadedBy: req.user && (req.user.employeeId || req.user.id) });
+    return success(res, { imageUrl, filename }, 'Uploaded', 201);
+  } catch (err) {
+    console.error('O2D Upload error (non-api path)', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+
+// Admin-only: close a project (set status = 'CLOSED')
+app.put('/api/projects/:id/close', requireAuth, (req, res) => {
+  try {
+    console.log('API: PUT /api/projects/:id/close', { path: req.path, user: req.user && req.user.id, role: req.user && req.user.role });
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    const id = req.params.id;
+    try {
+      const stmt = db.prepare('SELECT id FROM projects WHERE id = ?');
+      stmt.bind([id]);
+      if (!stmt.step()) { stmt.free(); return failure(res, 'Project not found', 404); }
+      stmt.free();
+
+      db.run('BEGIN TRANSACTION');
+      const upd = db.prepare("UPDATE projects SET status = ? WHERE id = ?");
+      upd.run(['CLOSED', id]); upd.free && upd.free();
+      db.run('COMMIT');
+      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after project close', e && (e.message || e)); }
+      return success(res, null, 'Project closed');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) {}
+      console.error('Project close failed', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to close project', 500);
+    }
+  } catch (err) { console.error('Project close unexpected error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+console.log('Registered API route: /api/projects/:id/close (PUT)');
+
 // Update O2D entry
 app.put('/api/o2d/:id', requireAuth, (req, res) => {
   try {
@@ -2500,41 +3149,272 @@ app.put('/api/o2d/:id', requireAuth, (req, res) => {
       upd.free();
       db.run('COMMIT');
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after o2d update', e && (e.stack || e.message || e)); }
+
+      // If this update indicates a delivery proof was uploaded and is awaiting admin review,
+      // create a notification for admins so they can review the proof promptly.
+      try {
+        if (status === 'DELIVERED_AWAITING_ADMIN') {
+          const nid = genId('NT-');
+          const message = `Delivery proof uploaded for order ${id}`;
+          const meta = JSON.stringify({ orderId: id });
+          const createdAt = new Date().toISOString();
+          const ins = db.prepare('INSERT INTO notifications (id, userId, message, meta, isRead, createdAt) VALUES (?,?,?,?,?,?)');
+          ins.run([nid, 'ADMIN', message, meta, 0, createdAt]);
+          ins.free && ins.free();
+          try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after notification insert', e && (e.stack || e.message || e)); }
+          console.log('O2D PUT: notification created for admin', { id, nid });
+        }
+      } catch (e) {
+        console.warn('O2D PUT: failed to create admin notification', e && (e.stack || e.message || e));
+      }
+
       return success(res, { id }, 'Updated');
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('O2D PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
 // Chat
+// Debug middleware for chat routes to aid diagnosing missing endpoints / 404s
+app.use('/api/chat', (req, res, next) => {
+  try { console.log('CHAT: incoming', req.method, req.path); } catch (e) { }
+  return next();
+});
+
 app.post('/api/chat', requireAuth, (req, res) => {
   try {
     const { teamId, message, meta } = req.body || {};
     if (!teamId || !message) return failure(res, 'Missing fields', 400);
     try {
+      // Normalize DM team ids: if teamId is a raw employee id (not starting with DM- or G-),
+      // convert to canonical DM-<a>-<b> using sorted participant ids so both sides share same team id.
+      let savedTeamId = teamId;
+      try {
+        const isDM = String(teamId).startsWith('DM-');
+        const isGroup = String(teamId).startsWith('G-');
+        if (!isDM && !isGroup) {
+          const a = req.user && (req.user.employeeId || String(req.user.id));
+          const b = String(teamId);
+          if (a && b) savedTeamId = 'DM-' + [a, b].sort().join('-');
+        }
+      } catch (e) { /* ignore normalizing errors */ }
+
       db.run('BEGIN TRANSACTION');
       const id = genId('CH-');
       const createdAt = new Date().toISOString();
       const insert = db.prepare('INSERT INTO chat (id, teamId, senderId, message, meta, createdAt) VALUES (?,?,?,?,?,?)');
-      insert.run([id, teamId, req.user && (req.user.employeeId || req.user.id) || null, message, meta ? JSON.stringify(meta) : null, createdAt]);
+      // Ensure message is stored as a string (avoid storing Date objects or other types that may stringify to 'Invalid Date')
+      insert.run([id, savedTeamId, req.user && (req.user.employeeId || req.user.id) || null, message != null ? String(message) : null, meta ? JSON.stringify(meta) : null, createdAt]);
       insert.free();
       db.run('COMMIT');
       fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      console.log('Chat POST: saved message', { id, teamId: savedTeamId, sender: req.user && req.user.employeeId });
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Chat POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
 app.get('/api/chat/:teamId', requireAuth, (req, res) => {
+// Also support GET /api/chat/employee/:employeeId to fetch all messages where an employee participates
+app.get('/api/chat/employee/:employeeId', requireAuth, (req, res) => {
+  try {
+    const emp = String(req.params.employeeId);
+    const limit = parseInt(req.query.limit) || 500;
+    const stmt = db.prepare('SELECT id, teamId, senderId, message, meta, createdAt, updatedAt, is_deleted, is_pinned, edited, replyTo FROM chat WHERE senderId = ? OR receiverId = ? OR teamId LIKE ? OR teamId = ? ORDER BY createdAt DESC LIMIT ?');
+    stmt.bind([emp, emp, '%-' + emp + '-%', emp, limit]);
+    const out = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject();
+      try { r.meta = r.meta ? JSON.parse(r.meta) : undefined; } catch (e) { r.meta = undefined; }
+      out.push({
+        id: r.id,
+        teamId: r.teamId,
+        senderId: r.senderId,
+        content: (r.message && String(r.message) !== 'Invalid Date') ? String(r.message) : '',
+        timestamp: r.createdAt,
+        updatedAt: r.updatedAt || undefined,
+        isDeleted: r.is_deleted ? true : false,
+        isPinned: r.is_pinned ? true : false,
+        edited: r.edited ? true : false,
+        replyTo: r.replyTo || undefined,
+        attachment: r.meta && r.meta.attachment ? r.meta.attachment : undefined
+      });
+    }
+    stmt.free();
+    const enriched = out.reverse();
+    console.log('Chat EMP GET: returning', enriched.length, 'messages for employee', emp);
+    return success(res, enriched);
+  } catch (err) { console.error('Chat EMP GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
   try {
     const teamId = req.params.teamId;
     const limit = parseInt(req.query.limit) || 200;
-    const stmt = db.prepare('SELECT id, teamId, senderId, message, meta, createdAt FROM chat WHERE teamId = ? ORDER BY createdAt DESC LIMIT ?');
-    stmt.bind([teamId, limit]);
+
+    // Determine canonical DM participant ids when applicable
+    let a, b;
+    if (String(teamId).startsWith('DM-')) {
+      const parts = String(teamId).split('-').slice(1);
+      a = parts[0];
+      b = parts[1];
+    }
+
+    // If canonical DM id is provided (DM-a-b), also include legacy messages stored under either participant id.
+    let stmt;
+    if (a && b) {
+      // Query messages where teamId is canonical DM id OR equal to either participant id (legacy)
+      stmt = db.prepare('SELECT id, teamId, senderId, message, meta, createdAt, updatedAt, is_deleted, is_pinned, edited, replyTo FROM chat WHERE teamId IN (?,?,?) ORDER BY createdAt DESC LIMIT ?');
+      stmt.bind([teamId, a, b, limit]);
+    } else {
+      stmt = db.prepare('SELECT id, teamId, senderId, message, meta, createdAt, updatedAt, is_deleted, is_pinned, edited, replyTo FROM chat WHERE teamId = ? ORDER BY createdAt DESC LIMIT ?');
+      stmt.bind([teamId, limit]);
+    }
+
     const out = [];
-    while (stmt.step()) { const r = stmt.getAsObject(); try { r.meta = r.meta ? JSON.parse(r.meta) : undefined; } catch (e) { r.meta = undefined; } out.push(r); }
+    while (stmt.step()) {
+      const r = stmt.getAsObject();
+      try { r.meta = r.meta ? JSON.parse(r.meta) : undefined; } catch (e) { r.meta = undefined; }
+      // Normalize to frontend shape: content, timestamp, attachment, plus flags
+      out.push({
+        id: r.id,
+        teamId: r.teamId,
+        senderId: r.senderId,
+        content: (r.message && String(r.message) !== 'Invalid Date') ? String(r.message) : '',
+        timestamp: r.createdAt,
+        updatedAt: r.updatedAt || undefined,
+        isDeleted: r.is_deleted ? true : false,
+        isPinned: r.is_pinned ? true : false,
+        edited: r.edited ? true : false,
+        replyTo: r.replyTo || undefined,
+        attachment: r.meta && r.meta.attachment ? r.meta.attachment : undefined
+      });
+    }
     stmt.free();
-    return success(res, out.reverse());
+
+    // Read receipts: compute seenAt/isSeen for DM conversations
+    let lastReads = {};
+    try {
+      const readStmt = db.prepare('SELECT userId, lastReadAt FROM chat_reads WHERE teamId = ?');
+      // Use canonical teamId if DM, else use teamId
+      const canonical = (a && b) ? teamId : teamId;
+      readStmt.bind([canonical]);
+      while (readStmt.step()) {
+        const rr = readStmt.getAsObject(); lastReads[rr.userId] = rr.lastReadAt;
+      }
+      readStmt.free();
+    } catch (e) { /* ignore */ }
+
+    const enriched = out.reverse().map(msg => {
+      let isSeen = false;
+      let seenAt = undefined;
+      try {
+        // For DM, check other participant's lastReadAt
+        if (a && b) {
+          const me = req.user && (req.user.employeeId || String(req.user.id));
+          const other = a === me ? b : (b === me ? a : null);
+          if (other && lastReads[other]) {
+            const lr = Date.parse(lastReads[other]);
+            const mtime = Date.parse(msg.timestamp);
+            if (!isNaN(lr) && !isNaN(mtime) && lr >= mtime) { isSeen = true; seenAt = lastReads[other]; }
+          }
+        }
+      } catch (e) { }
+      return { ...msg, isSeen, seenAt };
+    });
+
+    console.log('Chat GET: returning', enriched.length, 'messages for', teamId);
+    return success(res, enriched);
   } catch (err) { console.error('Chat GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// Mark messages in a team as read for the current user
+app.post('/api/chat/:teamId/read', requireAuth, (req, res) => {
+  try {
+    let teamId = req.params.teamId;
+    // Normalize DM canonical id if needed
+    try {
+      if (!String(teamId).startsWith('DM-') && req.user && req.user.employeeId) {
+        // If teamId is a raw employee id, convert to DM canonical
+        const a = String(teamId);
+        const b = req.user.employeeId || String(req.user.id);
+        teamId = 'DM-' + [a, b].sort().join('-');
+      }
+    } catch (e) { }
+
+    const userId = req.user && (req.user.employeeId || String(req.user.id));
+    if (!userId) return failure(res, 'Unauthorized', 401);
+    const lastReadAt = new Date().toISOString();
+
+    // Upsert lastReadAt
+    const up = db.prepare('INSERT OR REPLACE INTO chat_reads (teamId, userId, lastReadAt) VALUES (?,?,?)');
+    up.run([teamId, userId, lastReadAt]);
+    up.free();
+    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after chat read', e && (e.message || e)); }
+
+    // For debugging: fetch last message in this team and print content so we can confirm which message was marked read
+    try {
+      const s = db.prepare('SELECT id, message, createdAt FROM chat WHERE teamId = ? ORDER BY createdAt DESC LIMIT 1');
+      s.bind([teamId]);
+      if (s.step()) {
+        const last = s.getAsObject();
+        console.log('Chat READ: user', userId, 'read chat', teamId, 'at', lastReadAt, 'lastMessage:', { id: last.id, message: last.message, createdAt: last.createdAt });
+      } else {
+        console.log('Chat READ: user', userId, 'read chat', teamId, 'at', lastReadAt, 'no messages found');
+      }
+      s.free();
+    } catch (e) { console.warn('Chat READ debug fetch failed', e && (e.message || e)); }
+
+    return success(res, { teamId, userId, lastReadAt }, 'Marked read');
+  } catch (err) { console.error('Chat READ error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// Edit a chat message (sender or admin)
+app.put('/api/chat/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const { message, meta, isPinned } = req.body || {};
+    const stmt = db.prepare('SELECT id, teamId, senderId FROM chat WHERE id = ?');
+    stmt.bind([id]);
+    if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
+    const row = stmt.getAsObject();
+    stmt.free();
+
+    const isAdmin = req.user && req.user.role === 'ADMIN';
+    const isOwner = req.user && (req.user.employeeId || String(req.user.id)) === row.senderId;
+    if (!isAdmin && !isOwner) return failure(res, 'Forbidden', 403);
+
+    const updatedAt = new Date().toISOString();
+    const upd = db.prepare('UPDATE chat SET message = coalesce(?, message), meta = coalesce(?, meta), edited = 1, updatedAt = ?, is_pinned = coalesce(?, is_pinned) WHERE id = ?');
+    upd.run([message || null, meta ? JSON.stringify(meta) : null, updatedAt, isPinned == null ? null : (isPinned ? 1 : 0), id]);
+    upd.free();
+    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after chat edit', e && (e.message || e)); }
+    console.log('Chat PUT: edited', id, 'by', req.user && req.user.employeeId);
+    return success(res, { id }, 'Updated');
+  } catch (err) { console.error('Chat PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// Delete (soft) a chat message (sender or admin)
+app.delete('/api/chat/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const stmt = db.prepare('SELECT id, senderId FROM chat WHERE id = ?');
+    stmt.bind([id]);
+    if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
+    const row = stmt.getAsObject();
+    stmt.free();
+
+    const isAdmin = req.user && req.user.role === 'ADMIN';
+    const isOwner = req.user && (req.user.employeeId || String(req.user.id)) === row.senderId;
+    if (!isAdmin && !isOwner) return failure(res, 'Forbidden', 403);
+
+    const deletedAt = new Date().toISOString();
+    const upd = db.prepare('UPDATE chat SET is_deleted = 1, meta = coalesce(meta, json(?)) WHERE id = ?');
+    // Keep existing meta but add deletedAt under a simple wrapper if meta missing
+    let deletedMeta = JSON.stringify({ deletedAt });
+    upd.run([deletedMeta, id]);
+    upd.free();
+    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after chat delete', e && (e.message || e)); }
+    console.log('Chat DELETE: soft-deleted', id, 'by', req.user && req.user.employeeId);
+    return success(res, { id }, 'Deleted');
+  } catch (err) { console.error('Chat DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
 // --- Notepad CRUD Endpoints ---
@@ -2720,159 +3600,7 @@ app.get('/api/queries', requireAuth, (req, res) => {
     return success(res, out || []);
   } catch (err) { console.error('Queries GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
-
-// Notepad - Replaced with comprehensive CRUD supporting structured notes
-app.get('/api/notepad/:userId', requireAuth, (req, res) => {
-  try {
-    const userId = req.params.userId;
-    if (!req.user) return failure(res, 'Unauthorized', 401);
-
-    // Authorization: admin or owner only
-    const isAdmin = req.user.role === 'ADMIN';
-    const isOwner = req.user.employeeId === userId || String(req.user.id) === String(userId);
-    if (!isAdmin && !isOwner) return failure(res, 'Forbidden', 403);
-
-    // Fetch notes for this user (support both numeric ID and employeeId)
-    const stmt = db.prepare('SELECT id, userId, content, createdAt, updatedAt FROM notepad WHERE userId = ? OR userId = ? ORDER BY updatedAt DESC');
-    stmt.bind([String(userId), String(req.user.id)]);
-    const out = [];
-    while (stmt.step()) {
-      const r = stmt.getAsObject();
-      // Parse content as JSON if it contains structured note data
-      try {
-        const parsed = JSON.parse(r.content);
-        out.push({ ...r, ...parsed });
-      } catch (e) {
-        // If content is not JSON, return as-is
-        out.push(r);
-      }
-    }
-    stmt.free();
-    return success(res, out || []);
-  } catch (err) {
-    console.error('Notepad GET error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
-  }
-});
-
-app.post('/api/notepad', requireAuth, (req, res) => {
-  try {
-    if (!req.user) return failure(res, 'Unauthorized', 401);
-    const { content, title, category, color } = req.body || {};
-    if (!content) return failure(res, 'Missing content', 400);
-
-    try {
-      db.run('BEGIN TRANSACTION');
-      const id = genId('N-');
-      const now = new Date().toISOString();
-      const userId = req.user.employeeId || String(req.user.id);
-
-      // Store as structured JSON to support title, category, color
-      const noteData = { title: title || 'Untitled', content, category: category || 'Work', color: color || 'yellow' };
-      const contentStr = JSON.stringify(noteData);
-
-      const insert = db.prepare('INSERT INTO notepad (id, userId, content, createdAt, updatedAt) VALUES (?,?,?,?,?)');
-      insert.run([id, userId, contentStr, now, now]);
-      insert.free();
-
-      db.run('COMMIT');
-      if (!persistDB()) console.warn('Notepad POST: commit succeeded but failed to persist DB file');
-      else console.log('Notepad POST: note persisted to DB file');
-
-      return success(res, { id, userId, ...noteData, createdAt: now, updatedAt: now }, 'Created', 201);
-    } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) { console.error('Notepad POST: rollback failed', er && (er.stack || er.message || er)); }
-      console.error('Notepad POST transactional error', e && (e.stack || e.message || e));
-      return failure(res, 'Internal server error while creating note', 500);
-    }
-  } catch (err) {
-    console.error('Notepad POST error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
-  }
-});
-
-app.put('/api/notepad/:id', requireAuth, (req, res) => {
-  try {
-    if (!req.user) return failure(res, 'Unauthorized', 401);
-    const id = req.params.id;
-    const { content, title, category, color } = req.body || {};
-
-    // Check note exists and get owner
-    const getStmt = db.prepare('SELECT userId FROM notepad WHERE id = ?');
-    getStmt.bind([id]);
-    if (!getStmt.step()) { getStmt.free(); return failure(res, 'Not found', 404); }
-    const existing = getStmt.getAsObject();
-    getStmt.free();
-
-    // Authorization: admin or owner only
-    const isAdmin = req.user.role === 'ADMIN';
-    const isOwner = existing.userId === req.user.employeeId || existing.userId === String(req.user.id);
-    if (!isAdmin && !isOwner) return failure(res, 'Forbidden', 403);
-
-    try {
-      db.run('BEGIN TRANSACTION');
-      const now = new Date().toISOString();
-
-      // Update with structured data
-      const noteData = { title, content, category, color };
-      const contentStr = JSON.stringify(noteData);
-
-      const update = db.prepare('UPDATE notepad SET content = ?, updatedAt = ? WHERE id = ?');
-      update.run([contentStr, now, id]);
-      update.free();
-
-      db.run('COMMIT');
-      if (!persistDB()) console.warn('Notepad PUT: commit succeeded but failed to persist DB file');
-      else console.log('Notepad PUT: note updated in DB file');
-
-      return success(res, { id, ...noteData, updatedAt: now }, 'Updated');
-    } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) { }
-      console.error('Notepad PUT transactional error', e && (e.stack || e.message || e));
-      return failure(res, 'Internal server error while updating note', 500);
-    }
-  } catch (err) {
-    console.error('Notepad PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
-  }
-});
-
-app.delete('/api/notepad/:id', requireAuth, (req, res) => {
-  try {
-    if (!req.user) return failure(res, 'Unauthorized', 401);
-    const id = req.params.id;
-
-    // Check note exists and get owner
-    const getStmt = db.prepare('SELECT userId FROM notepad WHERE id = ?');
-    getStmt.bind([id]);
-    if (!getStmt.step()) { getStmt.free(); return failure(res, 'Not found', 404); }
-    const existing = getStmt.getAsObject();
-    getStmt.free();
-
-    // Authorization: admin or owner only
-    const isAdmin = req.user.role === 'ADMIN';
-    const isOwner = existing.userId === req.user.employeeId || existing.userId === String(req.user.id);
-    if (!isAdmin && !isOwner) return failure(res, 'Forbidden', 403);
-
-    try {
-      db.run('BEGIN TRANSACTION');
-      const del = db.prepare('DELETE FROM notepad WHERE id = ?');
-      del.run([id]);
-      del.free();
-      db.run('COMMIT');
-      if (!persistDB()) console.warn('Notepad DELETE: commit succeeded but failed to persist DB file');
-      else console.log('Notepad DELETE: note deleted from DB file');
-      return success(res, null, 'Deleted');
-    } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) { }
-      console.error('Notepad DELETE transactional error', e && (e.stack || e.message || e));
-      return failure(res, 'Internal server error while deleting note', 500);
-    }
-  } catch (err) {
-    console.error('Notepad DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
-  }
-});
+console.log('Registered API routes: /api/notepad (GET/POST/PUT/DELETE)');
 
 // Calendar Events CRUD
 app.get('/api/calendar', requireAuth, (req, res) => {
@@ -3231,18 +3959,123 @@ app.delete('/api/timelogs/:id', requireAuth, (req, res) => {
 
 // Duplicate users endpoints removed; handlers defined above with safer error handling
 
-// Catch-all for any unmatched API routes — return JSON 404 instead of falling through to static host/index.html
-app.use('/api', (req, res) => {
-  return failure(res, 'Not found', 404);
-});
-
 // Developer-friendly request logging (only in non-production)
 if (process.env.NODE_ENV !== 'production') {
   app.use((req, res, next) => {
     console.log('[API]', req.method, req.path, req.headers.origin || 'no-origin');
     next();
   });
+
+  // Dev-only route: enumerate registered routes to help debug missing endpoints
+  app.get('/api/_routes', (req, res) => {
+    try {
+      const routes = [];
+      const stack = app._router && app._router.stack ? app._router.stack : [];
+      stack.forEach((layer) => {
+        try {
+          if (layer && layer.route && layer.route.path) {
+            const methods = Object.keys(layer.route.methods || {}).join(',');
+            routes.push({ path: layer.route.path, methods });
+          }
+        } catch (e) { /* ignore */ }
+      });
+      return success(res, routes);
+    } catch (e) {
+      console.error('Failed to enumerate routes', e && (e.stack || e.message || e));
+      return failure(res, 'Failed to enumerate routes', 500);
+    }
+  });
+
+  // Dev-only DB info: verify site_photos table exists and count rows
+  app.get('/api/_dbinfo', (req, res) => {
+    try {
+      const tbl = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='site_photos'");
+      const exists = tbl.step(); tbl.free();
+      let count = 0;
+      if (exists) {
+        try {
+          const s = db.prepare('SELECT COUNT(*) as c FROM site_photos');
+          if (s.step()) { const r = s.getAsObject(); count = r.c || 0; }
+          s.free();
+        } catch (e) { console.warn('Failed to count site_photos', e && (e.message || e)); }
+      }
+      return success(res, { hasSitePhotosTable: !!exists, sitePhotosCount: count });
+    } catch (e) {
+      console.error('DBInfo error', e && (e.stack || e.message || e));
+      return failure(res, 'Internal server error', 500);
+    }
+  });
+
+  // Dev-only: seed a sample O2D order to help visual verification
+  app.post('/api/_seed_o2d', requireAuth, (req, res) => {
+    try {
+      if (process.env.NODE_ENV === 'production') return failure(res, 'Not allowed', 403);
+      const id = 'ORD-7898';
+      const now = new Date().toISOString().split('T')[0];
+      const sample = {
+        itemName: 'Bricks',
+        quantity: '48',
+        siteLocation: 'Jass to abhi',
+        description: 'Concrete construction - bricks',
+        priority: 'High',
+        isMonsoon: false,
+        tatValue: 48,
+        tatUnit: 'Hours',
+        expectedDeliveryDate: null,
+        orderedBy: req.user && req.user.employeeId ? req.user.employeeId : 'ADMIN',
+        assignedApprover: req.user && req.user.employeeId ? req.user.employeeId : 'ADMIN',
+        createdDate: now,
+        status: 'PENDING_APPROVAL'
+      };
+      try {
+        const insert = db.prepare('INSERT OR IGNORE INTO o2d (id, data, status, createdBy, createdAt) VALUES (?,?,?,?,?)');
+        insert.run([id, JSON.stringify(sample), sample.status, req.user && (req.user.employeeId || req.user.id) || null, new Date().toISOString()]);
+        insert.free();
+        fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      } catch (e) { console.error('Seed o2d insert failed', e && (e.stack || e.message || e)); return failure(res, 'Seed failed', 500); }
+      return success(res, { seededId: id }, 'Seeded');
+    } catch (err) { console.error('Seed o2d error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+  });
+
+  // Dev-only debug: list o2d rows (id, nested data.id, status, createdBy)
+  app.get('/api/_o2d_list', requireAuth, (req, res) => {
+    try {
+      const out = [];
+      const s = db.prepare('SELECT id, data, status, createdBy, createdAt FROM o2d ORDER BY createdAt DESC');
+      while (s.step()) {
+        const r = s.getAsObject();
+        let nestedId = null;
+        try { const d = JSON.parse(r.data || '{}'); nestedId = d && (d.id || d.orderId || d.refId) ? String(d.id || d.orderId || d.refId) : null; } catch (e) {}
+        out.push({ id: r.id, nestedId, status: r.status, createdBy: r.createdBy, createdAt: r.createdAt });
+      }
+      s.free();
+      return success(res, out);
+    } catch (e) { console.error('O2D list debug failed', e && (e.stack || e.message || e)); return failure(res, 'Internal server error', 500); }
+  });
+
+  // Dev convenience: delete an o2d row by id (in body) or nested id; useful when clients send nested IDs
+  app.post('/api/_o2d_delete', requireAuth, (req, res) => {
+    try {
+      const id = req.body && req.body.id;
+      if (!id) return failure(res, 'Missing id', 400);
+      // Reuse existing delete logic by setting req.params.id and calling handler
+      req.params = req.params || {};
+      req.params.id = id;
+      return handleDeleteO2d(req, res);
+    } catch (err) {
+      console.error('Dev delete by id failed', err && (err.stack || err.message || err));
+      return failure(res, 'Internal server error', 500);
+    }
+  });
+
+  console.log('Registered dev o2d helpers: /api/_o2d_list, /api/_o2d_delete');
 }
+
+// Catch-all for any unmatched API routes — return JSON 404 instead of falling through to static host/index.html
+app.use('/api', (req, res) => {
+  console.warn('Unmatched API request', { method: req.method, path: req.path, origin: req.headers.origin || null, cookies: req.headers.cookie || null });
+  return failure(res, 'Not found', 404);
+});
 
 // Central error handler (catches errors passed with next(err))
 app.use((err, req, res, next) => {

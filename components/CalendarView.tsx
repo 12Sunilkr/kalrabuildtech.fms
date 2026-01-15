@@ -148,7 +148,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
         // 4. Orders (Expected Delivery)
         const daysOrders = orders.filter(o => o.expectedDeliveryDate === dateKey && o.status !== 'COMPLETED' && o.status !== 'REJECTED');
         // For Admin: All. For Employee: Ordered By Me or Assigned To Me
-        const visibleOrders = currentUser.role === 'ADMIN' ? daysOrders : daysOrders.filter(o => o.orderedBy === currentUser.employeeId || o.assignedApprover === currentUser.employeeId);
+        const visibleOrders = currentUser.role === 'ADMIN' ? daysOrders : daysOrders.filter(o => String(o.orderedBy) === String(currentUser.employeeId) || String(o.assignedApprover) === String(currentUser.employeeId));
         visibleOrders.forEach(o => events.push({ type: 'ORDER', data: o }));
 
         // 5. Leaves (On this day) - Admin sees all, Employee sees own
