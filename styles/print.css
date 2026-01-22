@@ -11,10 +11,37 @@
     print-color-adjust: exact;
   }
 
+  html,
   body {
-    margin: 0;
-    padding: 0;
-    background: white;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    height: auto !important;
+    width: 100% !important;
+  }
+
+  /* CRITICAL: Reset all height constraints that block multi-page printing */
+  * {
+    height: auto !important;
+    max-height: none !important;
+    min-height: auto !important;
+  }
+
+  /* CRITICAL: Allow content to overflow naturally for pagination */
+  body,
+  div,
+  section,
+  article,
+  main {
+    overflow: visible !important;
+    overflow-y: visible !important;
+    overflow-x: visible !important;
+  }
+
+  /* CRITICAL: Convert flex layouts to block for print flow */
+  .flex,
+  [class*="flex"] {
+    display: block !important;
   }
 
   /* ===== CONTAINER STYLES ===== */
