@@ -64,12 +64,17 @@
     border-collapse: collapse;
     page-break-inside: auto !important;
     break-inside: auto !important;
+    table-layout: fixed;
   }
 
   /* Allow tbody to break across pages */
   .print-table thead {
-    display: table-header-group;
+    display: table-header-group !important;
     /* Headers repeat on every page automatically */
+    page-break-after: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 
   .print-table tbody {
@@ -80,24 +85,28 @@
 
   /* TABLE HEADER: Stick on every page */
   .print-table thead tr {
-    page-break-inside: avoid;
-    break-inside: avoid;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-after: avoid;
+    break-after: avoid;
   }
 
   .print-table thead th {
-    background-color: #f1f5f9;
-    color: #334155;
-    font-weight: bold;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    padding: 0.5rem;
-    border-bottom: 2px solid #cbd5e1;
+    background-color: #f1f5f9 !important;
+    color: #334155 !important;
+    font-weight: bold !important;
+    font-size: 0.75rem !important;
+    text-transform: uppercase !important;
+    padding: 0.5rem !important;
+    border-bottom: 2px solid #cbd5e1 !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 
   /* TABLE BODY: Allow rows to break across pages, but keep individual rows together */
   .print-table tbody tr {
-    page-break-inside: avoid;
-    break-inside: avoid;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
     border-bottom: 1px solid #e2e8f0;
   }
 
@@ -198,12 +207,23 @@
   }
 
   /* ===== ORPHAN & WIDOW PREVENTION ===== */
+  /* Prevent orphaned rows at bottom/top of pages */
   .print-table tbody tr:first-child {
     orphans: 3;
+    page-break-before: avoid;
+    break-before: avoid;
   }
 
   .print-table tbody tr:last-child {
     widows: 3;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* Prevent completely empty pages - browser won't create them if content fits */
+  .print-table {
+    orphans: 1;
+    widows: 1;
   }
 }
 
