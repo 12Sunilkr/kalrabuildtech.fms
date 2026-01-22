@@ -1,0 +1,261 @@
+/**
+ * Print Styles for PerformanceReport Component
+ * Uses native browser pagination with @media print rules
+ * Browser automatically handles page breaks - no manual calculation needed
+ */
+
+@media print {
+  /* ===== PAGE SETUP ===== */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+
+  /* ===== CONTAINER STYLES ===== */
+  .print-container {
+    page-break-inside: avoid;
+    page-break-after: always;
+    break-inside: avoid;
+    break-after: always;
+  }
+
+  .print-section {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* ===== TABLE PAGINATION ===== */
+  /* TABLE: Repeat headers on every page */
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .print-table thead {
+    display: table-header-group;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .print-table tbody {
+    display: table-row-group;
+  }
+
+  /* TABLE HEADER: Stick on every page */
+  .print-table thead tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .print-table thead th {
+    background-color: #f1f5f9;
+    color: #334155;
+    font-weight: bold;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    padding: 0.5rem;
+    border-bottom: 2px solid #cbd5e1;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* TABLE BODY: Prevent row breaks */
+  .print-table tbody tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .print-table td {
+    padding: 0.75rem 0.5rem;
+    font-size: 0.875rem;
+    color: #475569;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* ===== PAGE BREAKS ===== */
+  /* Force page break before elements with page-break-before class */
+  .page-break-before {
+    page-break-before: always;
+    break-before: page;
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+  }
+
+  /* Avoid breaking headers, KPI cards, attendance section */
+  .kpi-card,
+  .attendance-section,
+  .task-execution-section {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* ===== CONTENT VISIBILITY ===== */
+  /* Hide screen-only elements */
+  .print-hidden {
+    display: none !important;
+  }
+
+  /* Show print-only elements */
+  .print-only {
+    display: block !important;
+  }
+
+  /* ===== SPACING & LAYOUT ===== */
+  h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  p {
+    page-break-after: avoid;
+    break-after: avoid;
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* ===== BORDERS & COLORS ===== */
+  .border-b-2 {
+    border-color: #1e293b !important;
+  }
+
+  .bg-slate-50 {
+    background-color: #f8fafc !important;
+  }
+
+  .bg-green-50 {
+    background-color: #f0fdf4 !important;
+  }
+
+  .bg-red-50 {
+    background-color: #fef2f2 !important;
+  }
+
+  .bg-blue-50 {
+    background-color: #eff6ff !important;
+  }
+
+  /* ===== REMOVE SHADOWS & ANIMATIONS ===== */
+  .shadow-xl,
+  .shadow-lg,
+  .shadow-sm {
+    box-shadow: none !important;
+  }
+
+  /* ===== FOOTER ===== */
+  .print-footer {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #cbd5e1;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* ===== SIGNATURE AREA ===== */
+  .signature-area {
+    margin-top: 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* ===== ORPHAN & WIDOW PREVENTION ===== */
+  .print-table tbody tr:first-child {
+    orphans: 3;
+  }
+
+  .print-table tbody tr:last-child {
+    widows: 3;
+  }
+}
+
+/* ===== SCREEN VIEW (DEFAULT) ===== */
+.print-container {
+  display: block;
+}
+
+.print-hidden {
+  display: block;
+}
+
+.print-only {
+  display: none;
+}
+
+/* ===== TAILWIND OVERRIDES FOR PRINT ===== */
+@media print {
+  /* Override Tailwind's responsive utilities */
+  .print\:hidden {
+    display: none !important;
+  }
+
+  .print\:block {
+    display: block !important;
+  }
+
+  .print\:p-0 {
+    padding: 0 !important;
+  }
+
+  .print\:bg-white {
+    background-color: white !important;
+  }
+
+  .print\:overflow-visible {
+    overflow: visible !important;
+  }
+
+  .print\:h-auto {
+    height: auto !important;
+  }
+
+  .print\:static {
+    position: static !important;
+  }
+
+  .print\:w-full {
+    width: 100% !important;
+  }
+
+  .print\:max-w-none {
+    max-width: none !important;
+  }
+
+  .print\:shadow-none {
+    box-shadow: none !important;
+  }
+
+  .print\:border-none {
+    border: none !important;
+  }
+
+  .print\:border-slate-300 {
+    border-color: #cbd5e1 !important;
+  }
+
+  .print\:border-slate-200 {
+    border-color: #e2e8f0 !important;
+  }
+
+  .print\:bg-transparent {
+    background-color: transparent !important;
+  }
+
+  .print\:page-break-before {
+    page-break-before: always !important;
+    break-before: page !important;
+  }
+}
