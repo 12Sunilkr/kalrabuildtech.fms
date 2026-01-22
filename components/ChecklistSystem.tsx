@@ -268,7 +268,10 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
     const currentUserId = currentUser.employeeId || String(currentUser.id) || currentUser.name;
     console.log('DEBUG myMorningAgenda: currentUser=', currentUser, 'currentUserId=', currentUserId);
     console.log('DEBUG templates:', templates.map(t => ({ id: t.id, doerId: t.doerId, taskName: t.taskName })));
-    console.log('DEBUG instances:', instances.slice(0, 5).map(i => ({ id: i.id, templateId: i.templateId, doerId: i.doerId, date: i.date, status: i.status })));
+    console.log('DEBUG instances:', instances.slice(0, 5).map(i => {
+      const t = templates.find(temp => temp.id === i.templateId);
+      return { id: i.id, templateId: i.templateId, doerId: t?.doerId, date: i.date, status: i.status };
+    }));
     return instances.filter(i => {
         const t = templates.find(temp => temp.id === i.templateId);
         // Match by employeeId, userId, or employee name

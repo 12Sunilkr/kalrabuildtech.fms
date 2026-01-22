@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Employee, Task, AttendanceRecord } from '../types';
-import { BarChart, Printer, UserCircle, Star, CheckCircle2, TrendingUp, ArrowLeft, Clock, XCircle, CalendarCheck, ClipboardList, AlertTriangle, Filter, X, Calendar } from 'lucide-react';
+import { BarChart, Printer, UserCircle, Star, CheckCircle2, TrendingUp, ArrowLeft, Clock, XCircle, CalendarCheck, ClipboardList, AlertTriangle, Filter, X, Calendar, CheckCircle, AlertCircle, Pause, XOctagon } from 'lucide-react';
 /* Fix: Removed unused imports isAfter, isBefore, parseISO to resolve module export errors */
 import { format } from 'date-fns';
 import { COMPANY_LOGO, LEAVE_QUOTA_YEARLY } from '../constants';
@@ -12,9 +12,64 @@ interface PerformanceReportProps {
   attendanceData: Record<string, AttendanceRecord>;
 }
 
+// Helper function to get status color and icon
+const getStatusColor = (status: string) => {
+  switch (status?.toUpperCase()) {
+    case 'PENDING':
+      return { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: AlertCircle };
+    case 'HOLD':
+      return { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: Pause };
+    case 'OVERDUE':
+      return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: AlertTriangle };
+    case 'TERMINATED':
+      return { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: XOctagon };
+    case 'EXTENSION_REQUESTED':
+      return { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: Clock };
+    default: // 'COMPLETED' and others
+      return { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: CheckCircle };
+  }
+};
+
+const getStatusBadgeColor = (status: string) => {
+  switch (status?.toUpperCase()) {
+    case 'PENDING':
+      return 'bg-blue-100 text-blue-700';
+    case 'HOLD':
+      return 'bg-yellow-100 text-yellow-700';
+    case 'OVERDUE':
+      return 'bg-red-100 text-red-700';
+    case 'TERMINATED':
+      return 'bg-gray-100 text-gray-700';
+    case 'EXTENSION_REQUESTED':
+      return 'bg-purple-100 text-purple-700';
+    default: // 'COMPLETED' and others
+      return 'bg-green-100 text-green-700';
+  }
+};
+
+// Helper function to get actual task status considering due date
+const getActualTaskStatus = (task: Task): string => {
+  // HOLD tasks should always stay as HOLD, never convert to OVERDUE
+  if (task.status === 'HOLD') {
+    return 'HOLD';
+  }
+  
+  // For PENDING and EXTENSION_REQUESTED, check if overdue
+  if (task.status === 'PENDING' || task.status === 'EXTENSION_REQUESTED') {
+    // Check if task is overdue based on due date
+    const today = new Date().toISOString().split('T')[0];
+    if (task.dueDate && task.dueDate < today) {
+      return 'OVERDUE';
+    }
+  }
+  
+  return task.status || 'PENDING';
+};
+
 export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData }) => {
   const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
     const [printMode, setPrintMode] = useState(false);
+    const [printTasksOnly, setPrintTasksOnly] = useState(false);
   
   // Date Filters
   const [fromDate, setFromDate] = useState('');
@@ -38,13 +93,30 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
     }
 
     const total = empTasks.length;
-    const completed = empTasks.filter(t => t.status === 'COMPLETED').length;
-    const overdueOpen = empTasks.filter(t => t.status === 'OVERDUE').length; // still open overdue
-    const pending = empTasks.filter(t => t.status === 'PENDING' || t.status === 'EXTENSION_REQUESTED' || t.status === 'HOLD').length;
+    const completed = empTasks.filter(t => t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
+    
+    // Calculate overdue: check both status field and due date (but NOT for HOLD tasks)
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const overdueOpen = empTasks.filter(t => {
+        if (t.status?.toUpperCase() === 'COMPLETED') return false; // Completed tasks are not overdue
+        if (t.status === 'HOLD') return false; // HOLD tasks are not overdue, they're on hold
+        // Check if status is marked as OVERDUE or if due date has passed
+        if (t.status === 'OVERDUE') return true;
+        if (t.dueDate && t.dueDate < today) return true;
+        return false;
+    }).length;
+    
+    const pending = empTasks.filter(t => {
+        if (t.status?.toUpperCase() === 'COMPLETED') return false;
+        if (t.status === 'OVERDUE') return false;
+        if (t.status === 'HOLD') return false; // HOLD tasks are not pending
+        if (t.dueDate && t.dueDate < today) return false; // Don't count overdue tasks as pending
+        return t.status === 'PENDING' || t.status === 'EXTENSION_REQUESTED';
+    }).length;
 
     // Timeliness: count how many completed on or before due date
     const timelyCompleted = empTasks.filter(t => {
-        if (t.status !== 'COMPLETED' || !t.completionDate || !t.dueDate) return false;
+        if (t.status?.toUpperCase() !== 'COMPLETED' || !t.completionDate || !t.dueDate) return false;
         try {
             return new Date(t.completionDate).getTime() <= new Date(t.dueDate).getTime();
         } catch (e) { return false; }
@@ -126,6 +198,16 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
         }, 500);
     };
 
+    const handlePrintTaskHistory = () => {
+        // Print only the task history section
+        setPrintTasksOnly(true);
+        setTimeout(() => {
+            window.print();
+            // Reset after print dialog closes
+            setTimeout(() => setPrintTasksOnly(false), 500);
+        }, 150);
+    };
+
   const clearFilters = () => {
       setFromDate('');
       setToDate('');
@@ -162,18 +244,18 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                         Print Report
                     </button>
                     <button
-                        onClick={handlePrintFull}
-                        className="bg-white text-slate-900 border border-slate-200 px-4 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all font-bold"
-                        title="Print full report with complete task history"
+                        onClick={handlePrintTaskHistory}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 transition-all active:scale-95 font-bold"
+                        title="Print only the Complete Task History"
                     >
-                        <Printer size={16} />
-                        Print Full Report
+                        <Printer size={18} />
+                        Print Tasks
                     </button>
                 </div>
             </div>
 
             {/* Printable KPI Card */}
-            <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-8 md:p-12 max-w-5xl mx-auto print:shadow-none print:border-none print:p-0 print:w-full print:max-w-none">
+            <div className={`bg-white rounded-3xl shadow-xl border border-slate-200 p-8 md:p-12 max-w-5xl mx-auto print:shadow-none print:border-none print:p-0 print:w-full print:max-w-none ${printTasksOnly ? 'print:hidden' : ''}`}>
                 
                 {/* Letterhead */}
                 <div className="flex items-start justify-between border-b-2 border-slate-800 pb-6 mb-8">
@@ -271,111 +353,63 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                             <div className="text-xs font-bold text-slate-400 uppercase">Assigned</div>
                             <div className="text-3xl font-black text-slate-800">{selectedStats.total}</div>
                         </div>
-                        <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between h-24 border-b-4 border-b-green-500">
+                        <div className="p-4 rounded-xl border border-green-200 bg-green-50 shadow-sm flex flex-col justify-between h-24">
                             <div className="text-xs font-bold text-green-600 uppercase">Completed</div>
-                            <div className="text-3xl font-black text-slate-800">{selectedStats.completed}</div>
+                            <div className="text-3xl font-black text-green-700">{selectedStats.completed}</div>
                         </div>
-                        <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between h-24 border-b-4 border-b-orange-500">
-                            <div className="text-xs font-bold text-orange-600 uppercase">Pending</div>
-                            <div className="text-3xl font-black text-slate-800">{selectedStats.pending}</div>
+                        <div className="p-4 rounded-xl border border-blue-200 bg-blue-50 shadow-sm flex flex-col justify-between h-24">
+                            <div className="text-xs font-bold text-blue-600 uppercase">Pending</div>
+                            <div className="text-3xl font-black text-blue-700">{selectedStats.pending}</div>
                         </div>
-                        <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between h-24 border-b-4 border-b-red-500">
+                        <div className="p-4 rounded-xl border border-red-200 bg-red-50 shadow-sm flex flex-col justify-between h-24">
                             <div className="text-xs font-bold text-red-600 uppercase">Overdue</div>
-                            <div className="text-3xl font-black text-slate-800">{selectedStats.overdue}</div>
+                            <div className="text-3xl font-black text-red-700">{selectedStats.overdue}</div>
                         </div>
                     </div>
                 </div>
 
-                {/* Complete Task History with Pagination for Print */}
-                <div>
-                    <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Complete Task History</h3>
+                {/* Complete Task History - Browser Handles Pagination */}
+                <div className={printTasksOnly ? 'hidden' : ''}>
+                    <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2 mt-8">Complete Task History</h3>
                     {selectedStats.empTasks.length === 0 ? (
                         <div className="py-6 text-center text-slate-400 italic">No tasks found for this period.</div>
                     ) : (
-                        // Render tasks in chunks of 20 per page for print
-                        <div>
-                            {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map((task, idx) => {
-                                const pageIndex = Math.floor(idx / 20);
-                                const isPageStart = idx % 20 === 0;
-                                return (
-                                    <div key={task.id} style={isPageStart && idx > 0 ? { pageBreakBefore: 'always' } : {}}>
-                                        {isPageStart && idx > 0 && (
-                                            <div className="print:block hidden text-sm text-slate-500 mt-8 mb-4 text-center">
-                                                --- Continued on next page ---
-                                            </div>
-                                        )}
-                                        {isPageStart && idx > 0 && (
-                                            <h4 className="print:block hidden text-sm font-bold text-slate-700 mt-8 mb-3">Task History (continued)</h4>
-                                        )}
-                                        {isPageStart && idx === 0 && (
-                                            <table className="w-full text-left text-sm border-collapse">
-                                                <thead>
-                                                    <tr className="border-b-2 border-slate-100">
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Task Title</th>
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Assigned</th>
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Due Date</th>
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Status</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-100">
-                                                    {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).slice(0, 20).map(t => (
-                                                        <tr key={t.id}>
-                                                            <td className="py-3 font-medium text-slate-700">{t.title}</td>
-                                                            <td className="py-3 text-slate-500">{t.createdDate}</td>
-                                                            <td className="py-3 text-slate-500">{t.dueDate}</td>
-                                                            <td className="py-3">
-                                                                <span className={`text-xs font-bold uppercase ${
-                                                                    t.status === 'COMPLETED' ? 'text-green-600' :
-                                                                    t.status === 'OVERDUE' ? 'text-red-600' :
-                                                                    'text-orange-600'
-                                                                }`}>
-                                                                    {t.status}
-                                                                </span>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        )}
-                                        {isPageStart && idx > 0 && (
-                                            <table className="w-full text-left text-sm border-collapse">
-                                                <thead>
-                                                    <tr className="border-b-2 border-slate-100">
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Task Title</th>
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Assigned</th>
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Due Date</th>
-                                                        <th className="py-2 text-xs font-bold text-slate-500 uppercase">Status</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-100">
-                                                    {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).slice(pageIndex * 20, (pageIndex + 1) * 20).map(t => (
-                                                        <tr key={t.id}>
-                                                            <td className="py-3 font-medium text-slate-700">{t.title}</td>
-                                                            <td className="py-3 text-slate-500">{t.createdDate}</td>
-                                                            <td className="py-3 text-slate-500">{t.dueDate}</td>
-                                                            <td className="py-3">
-                                                                <span className={`text-xs font-bold uppercase ${
-                                                                    t.status === 'COMPLETED' ? 'text-green-600' :
-                                                                    t.status === 'OVERDUE' ? 'text-red-600' :
-                                                                    'text-orange-600'
-                                                                }`}>
-                                                                    {t.status}
-                                                                </span>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        )}
-                                    </div>
-                                );
-                            })}
-                        </div>
+                        // Browser automatically handles pagination - no manual slicing needed
+                        <table className="print-table w-full text-left text-sm border-collapse">
+                            <thead>
+                                <tr className="border-b-2 border-slate-300">
+                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Task Title</th>
+                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Assigned</th>
+                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Due Date</th>
+                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map(t => {
+                                    const actualStatus = getActualTaskStatus(t);
+                                    const statusInfo = getStatusColor(actualStatus);
+                                    const StatusIcon = statusInfo.icon;
+                                    return (
+                                        <tr key={t.id} className="hover:bg-slate-50 print:hover:bg-transparent">
+                                            <td className="py-3 px-2 font-medium text-slate-700 text-sm">{t.title}</td>
+                                            <td className="py-3 px-2 text-slate-500 text-sm">{t.createdDate}</td>
+                                            <td className="py-3 px-2 text-slate-500 text-sm">{t.dueDate}</td>
+                                            <td className="py-3 px-2">
+                                                <div className={`flex items-center gap-2 w-fit px-3 py-1 rounded-lg font-bold text-xs uppercase ${getStatusBadgeColor(actualStatus)}`}>
+                                                    <StatusIcon size={14} />
+                                                    {actualStatus}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
                     )}
                 </div>
 
                 {/* Footer */}
-                <div className="mt-12 pt-6 border-t border-slate-200 flex justify-between items-end">
+                <div className="mt-12 pt-6 border-t border-slate-200 flex justify-between items-end print:hidden">
                     <div className="text-xs text-slate-400">
                         <p>Authorized Signature</p>
                         <div className="h-12 w-48 border-b border-slate-300 mt-2"></div>
@@ -385,6 +419,83 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                     </div>
                 </div>
 
+            </div>
+
+            {/* Complete Task History - Outside KPI Card for independent printing */}
+            <div className={`${printTasksOnly ? 'bg-white p-8 rounded-xl' : 'hidden'}`} style={printTasksOnly ? {} : { display: 'none' }}>
+                
+                {/* Task Execution KPI Section for Print Tasks */}
+                <div className="mb-8">
+                    <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2 flex items-center gap-2">
+                         <ClipboardList size={20} className="text-indigo-500"/> Task Execution
+                    </h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                         <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between h-24">
+                            <div className="text-xs font-bold text-slate-400 uppercase">Assigned</div>
+                            <div className="text-3xl font-black text-slate-800">{selectedStats.total}</div>
+                        </div>
+                        <div className="p-4 rounded-xl border border-green-200 bg-green-50 shadow-sm flex flex-col justify-between h-24">
+                            <div className="text-xs font-bold text-green-600 uppercase">Completed</div>
+                            <div className="text-3xl font-black text-green-700">{selectedStats.completed}</div>
+                        </div>
+                        <div className="p-4 rounded-xl border border-blue-200 bg-blue-50 shadow-sm flex flex-col justify-between h-24">
+                            <div className="text-xs font-bold text-blue-600 uppercase">Pending</div>
+                            <div className="text-3xl font-black text-blue-700">{selectedStats.pending}</div>
+                        </div>
+                        <div className="p-4 rounded-xl border border-red-200 bg-red-50 shadow-sm flex flex-col justify-between h-24">
+                            <div className="text-xs font-bold text-red-600 uppercase">Overdue</div>
+                            <div className="text-3xl font-black text-red-700">{selectedStats.overdue}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Complete Task History</h3>
+                {selectedStats.empTasks.length === 0 ? (
+                    <div className="py-6 text-center text-slate-400 italic">No tasks found for this period.</div>
+                ) : (
+                    // Browser automatically handles pagination - render all tasks
+                    <table className="print-table w-full text-left text-sm border-collapse">
+                        <thead>
+                            <tr className="border-b-2 border-slate-300">
+                                <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Task Title</th>
+                                <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Assigned</th>
+                                <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Due Date</th>
+                                <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {selectedStats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map(t => {
+                                const actualStatus = getActualTaskStatus(t);
+                                const statusInfo = getStatusColor(actualStatus);
+                                const StatusIcon = statusInfo.icon;
+                                return (
+                                    <tr key={t.id} className="hover:bg-slate-50 print:hover:bg-transparent">
+                                        <td className="py-3 px-2 font-medium text-slate-700 text-sm">{t.title}</td>
+                                        <td className="py-3 px-2 text-slate-500 text-sm">{t.createdDate}</td>
+                                        <td className="py-3 px-2 text-slate-500 text-sm">{t.dueDate}</td>
+                                        <td className="py-3 px-2">
+                                            <div className={`flex items-center gap-2 w-fit px-3 py-1 rounded-lg font-bold text-xs uppercase ${getStatusBadgeColor(actualStatus)}`}>
+                                                <StatusIcon size={14} />
+                                                {actualStatus}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                )}
+                
+                {/* Footer for Task History Print */}
+                <div className="mt-8 pt-6 border-t border-slate-200 flex justify-between items-end">
+                    <div className="text-xs text-slate-400">
+                        <p>Authorized Signature</p>
+                        <div className="h-12 w-48 border-b border-slate-300 mt-2"></div>
+                    </div>
+                    <div className="text-[10px] text-slate-300 uppercase font-bold tracking-widest">
+                        Generated by Kalra FMS
+                    </div>
+                </div>
             </div>
         </div>
       );
@@ -403,9 +514,7 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             <p className="text-slate-500 mt-2 font-medium md:ml-14">
                 Select a team member to view and print their detailed performance card.
             </p>
-                        <div className="mt-4 md:ml-14">
-                                <button onClick={handlePrintAll} className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-bold">Print All Reports</button>
-                        </div>
+                       
         </div>
 
                 {/* Printable all reports view (temporarily shown during print) */}
@@ -416,10 +525,10 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                 const att = getAttendanceStats(emp.id);
                                 const allTasks = stats.empTasks.sort((a,b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
                                 return (
-                                    <div key={emp.id}>
-                                        {/* First page for this employee */}
-                                        <div style={{ pageBreakAfter: 'always' }} className="p-8 bg-white text-slate-800">
-                                            <div className="flex justify-between items-start mb-6">
+                                    <div key={emp.id} className="print-container">
+                                        {/* Employee Report - Browser handles pagination */}
+                                        <div className="page-break-before p-8 bg-white text-slate-800 print-section">
+                                            <div className="flex justify-between items-start mb-6 border-b-2 border-slate-300 pb-4">
                                                 <div>
                                                     <h2 className="text-2xl font-black">{emp.name}</h2>
                                                     <div className="text-sm text-slate-600">ID: {emp.id} • {emp.designation || emp.department}</div>
@@ -429,75 +538,61 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                                     <div className="font-bold">{format(new Date(), 'dd MMM yyyy')}</div>
                                                 </div>
                                             </div>
-                                            <div className="grid grid-cols-4 gap-4 mb-6">
-                                                <div className="p-3 border text-sm"><strong>Assigned:</strong> {stats.total}</div>
-                                                <div className="p-3 border text-sm"><strong>Completed:</strong> {stats.completed}</div>
-                                                <div className="p-3 border text-sm"><strong>Overdue:</strong> {stats.overdue}</div>
-                                                <div className="p-3 border text-sm"><strong>Score:</strong> {stats.completionRate}%</div>
+                                            
+                                            {/* KPI Summary */}
+                                            <div className="grid grid-cols-4 gap-3 mb-6">
+                                                <div className="p-3 border-2 border-slate-200 rounded-lg text-sm bg-slate-50">
+                                                    <div className="font-bold text-slate-800">{stats.total}</div>
+                                                    <div className="text-xs text-slate-600">Assigned</div>
+                                                </div>
+                                                <div className="p-3 border-2 border-green-200 rounded-lg text-sm bg-green-50">
+                                                    <div className="font-bold text-green-700">{stats.completed}</div>
+                                                    <div className="text-xs text-green-600">Completed</div>
+                                                </div>
+                                                <div className="p-3 border-2 border-red-200 rounded-lg text-sm bg-red-50">
+                                                    <div className="font-bold text-red-700">{stats.overdue}</div>
+                                                    <div className="text-xs text-red-600">Overdue</div>
+                                                </div>
+                                                <div className="p-3 border-2 border-blue-200 rounded-lg text-sm bg-blue-50">
+                                                    <div className="font-bold text-blue-700">{stats.completionRate}%</div>
+                                                    <div className="text-xs text-blue-600">Score</div>
+                                                </div>
                                             </div>
-                                            <h4 className="font-bold mb-3 text-sm">Task History (Page 1 of {Math.ceil(allTasks.length / 20)})</h4>
-                                            <table className="w-full text-xs border-collapse">
-                                                <thead>
-                                                    <tr className="border-b">
-                                                        <th className="text-left p-2">Title</th>
-                                                        <th className="text-left p-2">Assigned</th>
-                                                        <th className="text-left p-2">Due</th>
-                                                        <th className="text-left p-2">Status</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-200">
-                                                    {allTasks.slice(0, 20).map(t => (
-                                                        <tr key={t.id}>
-                                                            <td className="p-2">{t.title}</td>
-                                                            <td className="p-2">{t.createdDate}</td>
-                                                            <td className="p-2">{t.dueDate}</td>
-                                                            <td className="p-2 font-bold text-xs">{t.status}</td>
+                                            
+                                            <h4 className="font-bold mb-3 text-sm border-b pb-2">Complete Task History</h4>
+                                            {allTasks.length > 0 && (
+                                                <table className="print-table w-full text-xs border-collapse">
+                                                    <thead>
+                                                        <tr className="border-b-2 border-slate-300 bg-slate-50">
+                                                            <th className="text-left p-2 font-bold">Title</th>
+                                                            <th className="text-left p-2 font-bold">Assigned</th>
+                                                            <th className="text-left p-2 font-bold">Due</th>
+                                                            <th className="text-left p-2 font-bold">Status</th>
                                                         </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-slate-200">
+                                                        {allTasks.map(t => {
+                                                            const actualStatus = getActualTaskStatus(t);
+                                                            const statusInfo = getStatusColor(actualStatus);
+                                                            const StatusIcon = statusInfo.icon;
+                                                            return (
+                                                                <tr key={t.id}>
+                                                                    <td className="p-2">{t.title}</td>
+                                                                    <td className="p-2">{t.createdDate}</td>
+                                                                    <td className="p-2">{t.dueDate}</td>
+                                                                    <td className="p-2">
+                                                                        <div className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold ${getStatusBadgeColor(actualStatus)}`}>
+                                                                            <StatusIcon size={12} />
+                                                                            {actualStatus}
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            )}
                                         </div>
-
-                                        {/* Additional pages for overflow tasks */}
-                                        {allTasks.length > 20 && (
-                                            <>
-                                                {Array.from({ length: Math.ceil((allTasks.length - 20) / 20) }).map((_, pageNum) => {
-                                                    const startIdx = 20 + pageNum * 20;
-                                                    const endIdx = Math.min(startIdx + 20, allTasks.length);
-                                                    return (
-                                                        <div key={`${emp.id}-page-${pageNum + 2}`} style={{ pageBreakAfter: 'always' }} className="p-8 bg-white text-slate-800">
-                                                            <div className="flex justify-between items-start mb-6">
-                                                                <h3 className="text-lg font-bold">{emp.name} - Continued</h3>
-                                                                <div className="text-right text-xs">
-                                                                    <div className="font-bold text-sm">Page {pageNum + 2} of {Math.ceil(allTasks.length / 20)}</div>
-                                                                </div>
-                                                            </div>
-                                                            <h4 className="font-bold mb-3 text-sm">Task History (Continued)</h4>
-                                                            <table className="w-full text-xs border-collapse">
-                                                                <thead>
-                                                                    <tr className="border-b">
-                                                                        <th className="text-left p-2">Title</th>
-                                                                        <th className="text-left p-2">Assigned</th>
-                                                                        <th className="text-left p-2">Due</th>
-                                                                        <th className="text-left p-2">Status</th>
-                                                                    </tr>
-                                                                </thead>
-                                                                <tbody className="divide-y divide-slate-200">
-                                                                    {allTasks.slice(startIdx, endIdx).map(t => (
-                                                                        <tr key={t.id}>
-                                                                            <td className="p-2">{t.title}</td>
-                                                                            <td className="p-2">{t.createdDate}</td>
-                                                                            <td className="p-2">{t.dueDate}</td>
-                                                                            <td className="p-2 font-bold text-xs">{t.status}</td>
-                                                                        </tr>
-                                                                    ))}
-                                                                </tbody>
-                                                            </table>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </>
-                                        )}
                                     </div>
                                 );
                         })}

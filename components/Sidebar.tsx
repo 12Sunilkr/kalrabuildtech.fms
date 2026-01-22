@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database } from 'lucide-react';
+import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, BarChart3, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database } from 'lucide-react';
 import { ViewMode, Role } from '../types';
 import { COMPANY_LOGO } from '../constants';
 
@@ -24,6 +24,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.DATABASE, label: 'Data Hub & Backups', icon: Database },
     { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
     { id: ViewMode.ORGANIZATION_TREE, label: 'Organization Tree', icon: GitGraph }, 
+    { id: ViewMode.PMS_ADMIN, label: 'PMS Admin', icon: BarChart3 },
     { id: ViewMode.PROJECTS, label: 'Project Sites', icon: HardHat },
     { id: ViewMode.TIME_LOGS, label: 'Shift Logs', icon: Clock },
     { id: ViewMode.FMS_TASKS, label: 'Task Management', icon: ClipboardList },
@@ -57,7 +58,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
 
   const isProjectTeam = userDepartment === 'Project Development & Execution';
   if (isProjectTeam && role === 'EMPLOYEE') {
-      employeeItems.splice(3, 0, { id: ViewMode.EMPLOYEE_PROJECTS, label: 'Project Sites', icon: HardHat });
+      employeeItems.splice(3, 0, { id: ViewMode.PMS_EMPLOYEE, label: 'My Work (PMS)', icon: BarChart3 });
+      employeeItems.splice(4, 0, { id: ViewMode.EMPLOYEE_PROJECTS, label: 'Project Sites', icon: HardHat });
   }
 
   const isFinanceOrSales = userDepartment === 'Finance & Accounts' || userDepartment === 'Sales & Marketing';

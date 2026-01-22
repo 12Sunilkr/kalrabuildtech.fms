@@ -24,6 +24,8 @@ import { FinanceDashboard } from './components/FinanceDashboard';
 import { Notepad } from './components/Notepad';
 import { ChecklistSystem } from './components/ChecklistSystem';
 import { DatabaseManager } from './components/DatabaseManager';
+import { PMSAdmin } from './components/PMSAdmin';
+import { PMSEmployee } from './components/PMSEmployee';
 import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, Project, SitePhoto, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance } from './types';
 import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_PROJECTS, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
@@ -634,6 +636,7 @@ const App: React.FC = () => {
         case ViewMode.HOLIDAYS: return <HolidayManager holidays={holidays} setHolidays={setHolidays} />;
         case ViewMode.LEAVES: return <LeaveManagement {...commonProps} />;
         case ViewMode.DATABASE: return <DatabaseManager allData={{ ...commonProps, users }} onRestore={(d) => { }} onReset={() => { }} />;
+        case ViewMode.PMS_ADMIN: return <PMSAdmin currentUser={currentUser} employees={employees} addNotification={addNotification} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role="ADMIN" />;
         default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} />;
@@ -650,6 +653,7 @@ const App: React.FC = () => {
         case ViewMode.NOTEPAD: return <Notepad {...commonProps} />;
         case ViewMode.EMPLOYEE_CHAT: return <ChatSystem messages={chatMessages} setMessages={setChatMessages} groups={chatGroups} setGroups={setChatGroups} {...commonProps} />;
         case ViewMode.EMPLOYEE_QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
+        case ViewMode.PMS_EMPLOYEE: return <PMSEmployee currentUser={currentUser} addNotification={addNotification} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
         default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={() => { }} {...commonProps} />;

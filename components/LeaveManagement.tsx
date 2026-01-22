@@ -27,8 +27,11 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
     currentUser,
     addNotification
 }) => {
-  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'MY_APPLICATIONS' | 'APPROVALS'>('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'MY_APPLICATIONS' | 'APPROVALS' | 'ALL_REQUESTS'>('OVERVIEW');
   const [showApplyModal, setShowApplyModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   
   // Application Form State
   const [newLeave, setNewLeave] = useState<Partial<LeaveRequest>>({ 
@@ -45,6 +48,36 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
   const currentYear = new Date().getFullYear().toString();
   const isAdmin = currentUser?.role === 'ADMIN';
   const myEmpId = currentUser?.employeeId || 'ADMIN';
+
+  // Fetch leaves based on active tab
+  React.useEffect(() => {
+    const fetchLeaves = async () => {
+      try {
+        let url = '/leaves';
+        if (activeTab === 'MY_APPLICATIONS' && !isAdmin) {
+          url = '/leaves?type=my';
+          console.log('DEBUG: Fetching MY applications from', url);
+        } else if (activeTab === 'APPROVALS' && !isAdmin) {
+          url = '/leaves?type=approvals';
+          console.log('DEBUG: Fetching APPROVALS from', url);
+        } else if (isAdmin) {
+          url = '/leaves';
+          console.log('DEBUG: Fetching ALL leaves (admin) from', url);
+        }
+
+        const listRes = await safeGet(url);
+        const leaves = ensureArray(extractPayload(listRes));
+        console.log('DEBUG: Fetched leaves count:', leaves.length, 'for tab:', activeTab);
+        setLeaveRequests(leaves);
+      } catch (err) {
+        console.error('Failed to fetch leaves', err);
+      }
+    };
+
+    if (activeTab === 'MY_APPLICATIONS' || activeTab === 'APPROVALS' || activeTab === 'ALL_REQUESTS') {
+      fetchLeaves();
+    }
+  }, [activeTab, isAdmin]);
 
   // --- Helpers ---
 
@@ -65,45 +98,110 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
   };
 
   const handleApplyLeave = async () => {
+      setErrorMessage('');
+      
       // Logic for Date Mapping
       let start = newLeave.startDate;
       let end = newLeave.endDate;
 
       if (newLeave.durationType !== 'Multiple Days') {
-          if (!singleDate) { alert("Please select a date."); return; }
-          start = singleDate; end = singleDate;
+          if (!singleDate) { 
+              setErrorMessage("Please select a date.");
+              return; 
+          }
+          start = singleDate; 
+          end = singleDate;
       } else {
-          if (!start || !end) { alert("Please select Start and End dates."); return; }
+          if (!start || !end) { 
+              setErrorMessage("Please select Start and End dates.");
+              return; 
+          }
       }
 
-      if (!(newLeave.reason && newLeave.appliedTo)) { alert("Please fill all required fields (Reason & Approver)."); return; }
+      // Validate dates
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          setErrorMessage("Invalid date format. Please select valid dates.");
+          return;
+      }
 
+      if (endDate < startDate) {
+          setErrorMessage("End date must be greater than or equal to start date.");
+          return;
+      }
+
+      if (!newLeave.reason) {
+          setErrorMessage("Please provide a reason for your leave.");
+          return;
+      }
+
+      if (!newLeave.appliedTo) {
+          setErrorMessage("Please select an approver.");
+          return;
+      }
+
+      if (!newLeave.subject) {
+          setErrorMessage("Please select or enter a subject.");
+          return;
+      }
+
+      setIsSubmitting(true);
       const days = 1; // approximate days; frontend keeps lightweight value, server authoritative
       try {
-        const body = { userId: myEmpId, startDate: start, endDate: end, days, reason: newLeave.reason };
-        await safePost('/leave', body, { withCredentials: true });
-        // Refresh list from server (admin will see all, user will see their own via query param)
-        const url = currentUser.role === 'ADMIN' ? '/leave' : `/leave?userId=${encodeURIComponent(myEmpId)}`;
+        const body = { 
+          startDate: start, 
+          endDate: end, 
+          days, 
+          reason: newLeave.reason,
+          leaveType: newLeave.leaveType,
+          subject: newLeave.subject,
+          appliedTo: newLeave.appliedTo,
+          durationType: newLeave.durationType
+        };
+        
+        console.log('DEBUG: Frontend Apply Leave Payload', body, 'User:', currentUser);
+        
+        await safePost('/leaves', body, { withCredentials: true });
+        
+        // Refresh list from server - use ?type=my for employees
+        const url = currentUser.role === 'ADMIN' ? '/leaves' : '/leaves?type=my';
+        console.log('DEBUG: Fetching leaves from URL:', url);
         const listRes = await safeGet(url);
-        setLeaveRequests(ensureArray(extractPayload(listRes)));
+        const fetchedLeaves = ensureArray(extractPayload(listRes));
+        console.log('DEBUG: Fetched leaves count:', fetchedLeaves.length);
+        setLeaveRequests(fetchedLeaves);
+        
         setShowApplyModal(false);
         setNewLeave({ leaveType: 'Casual Leave', subject: '', durationType: 'Multiple Days', appliedTo: '' });
-        setSingleDate(''); setIsCustomSubject(false);
-        addNotification('Leave Request', `New leave application from ${currentUser.name}`, 'LEAVE', String(newLeave.appliedTo));
-      } catch (err) {
+        setSingleDate('');
+        setIsCustomSubject(false);
+        setErrorMessage('');
+        
+        addNotification('Leave Request', `Your leave application has been submitted to ${employees.find(e => e.id === newLeave.appliedTo)?.name || newLeave.appliedTo}`, 'LEAVE', String(newLeave.appliedTo));
+      } catch (err: any) {
+        const errMsg = err?.response?.data?.message || err?.message || 'Failed to submit leave request';
+        setErrorMessage(errMsg);
         console.error('Failed to submit leave to server', err && (err.stack || err.message || err));
-        alert('Failed to submit leave to server. Try again later.');
+      } finally {
+        setIsSubmitting(false);
       }
   };
 
   const handleApproval = async (req: LeaveRequest, approved: boolean) => {
       try {
+        console.log('DEBUG: Approving/Rejecting leave', { id: req.id, approved, appliedBy: req.employeeId });
+        
+        // Optimistic update: update local state immediately
+        const newStatus = approved ? 'APPROVED' : 'REJECTED';
+        const updatedRequests = leaveRequests.map(r => 
+          r.id === req.id ? { ...r, status: newStatus as 'APPROVED' | 'REJECTED' } : r
+        );
+        setLeaveRequests(updatedRequests);
+
         // Update status on server
-        await api.put(`/leave/${encodeURIComponent(req.id)}`, { status: approved ? 'APPROVED' : 'REJECTED' }, { withCredentials: true });
-        // Refresh list
-        const url = currentUser.role === 'ADMIN' ? '/leave' : `/leave?userId=${encodeURIComponent(myEmpId)}`;
-        const listRes = await safeGet(url);
-        setLeaveRequests(ensureArray(extractPayload(listRes)));
+        await api.put(`/leaves/${encodeURIComponent(req.id)}`, { status: approved ? 'APPROVED' : 'REJECTED' }, { withCredentials: true });
 
         // If approved, update attendance on server for each date (best-effort)
         if (approved) {
@@ -124,14 +222,60 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                 }
             }
             // Refresh attendance grid client-side
-            try { const sat = await safeGet('/attendance'); const arr = ensureArray(extractPayload(sat));
-                  const ag: Record<string, AttendanceRecord> = {}; arr.forEach((a: any) => { if (!ag[a.userId]) ag[a.userId] = {}; ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value; }); setAttendanceData(ag); } catch (e) { console.warn('Failed to refresh attendance after approval', e && (e.stack || e.message || e)); }
+            try { 
+              const sat = await safeGet('/attendance'); 
+              const arr = ensureArray(extractPayload(sat));
+              const ag: Record<string, AttendanceRecord> = {}; 
+              arr.forEach((a: any) => { 
+                if (!ag[a.userId]) ag[a.userId] = {}; 
+                ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value; 
+              }); 
+              setAttendanceData(ag); 
+            } catch (e) { 
+              console.warn('Failed to refresh attendance after approval', e && (e.stack || e.message || e)); 
+            }
         }
 
-        addNotification('Leave ' + (approved ? 'Approved' : 'Rejected'), `Your leave request was ${approved ? 'approved' : 'rejected'}.`, 'LEAVE', String(req.employeeId));
-      } catch (err) {
+        addNotification('Leave ' + (approved ? 'Approved' : 'Rejected'), `${req.subject || 'Leave'} request was ${approved ? 'approved' : 'rejected'}.`, 'LEAVE', String(req.employeeId));
+      } catch (err: any) {
+        // Revert optimistic update on error
+        const url = isAdmin ? '/leaves' : '/leaves?type=approvals';
+        console.log('DEBUG: Refetching leaves from:', url, 'on error');
+        const listRes = await safeGet(url);
+        setLeaveRequests(ensureArray(extractPayload(listRes)));
+        
+        const errMsg = err?.response?.data?.message || 'Failed to update leave status';
+        setErrorMessage(errMsg);
         console.error('Failed to update leave on server', err && (err.stack || err.message || err));
-        alert('Failed to update leave status on server. Try again.');
+      }
+  };
+
+  const handleDeleteLeave = async (req: LeaveRequest) => {
+      if (!isAdmin) {
+          setErrorMessage('Only admins can delete leave requests.');
+          return;
+      }
+      if (!confirm(`Are you sure you want to delete the leave request from ${employees.find(e => e.id === req.employeeId)?.name || req.employeeId}?`)) {
+          return;
+      }
+      
+      try {
+        // Optimistic update
+        setLeaveRequests(prev => prev.filter(r => r.id !== req.id));
+        
+        // Delete on server
+        await api.delete(`/leaves/${encodeURIComponent(req.id)}`, { withCredentials: true });
+        
+        addNotification('Leave Deleted', `Leave request from ${employees.find(e => e.id === req.employeeId)?.name || req.employeeId} has been deleted.`, 'LEAVE', String(req.employeeId));
+      } catch (err: any) {
+        // Revert optimistic update on error
+        const url = '/leaves';
+        const listRes = await safeGet(url);
+        setLeaveRequests(ensureArray(extractPayload(listRes)));
+        
+        const errMsg = err?.response?.data?.message || 'Failed to delete leave request';
+        setErrorMessage(errMsg);
+        console.error('Failed to delete leave on server', err && (err.stack || err.message || err));
       }
   };
 
@@ -166,8 +310,11 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
            <button onClick={() => setActiveTab('OVERVIEW')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'OVERVIEW' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-white'}`}>Overview & Quota</button>
            <button onClick={() => setActiveTab('MY_APPLICATIONS')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'MY_APPLICATIONS' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-white'}`}>My Applications</button>
            <button onClick={() => setActiveTab('APPROVALS')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'APPROVALS' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-white'}`}>
-               {isAdmin ? 'All Requests (Admin)' : 'Approvals (Inbox)'}
+               {isAdmin ? 'Approvals (Inbox)' : 'Approvals (Inbox)'}
            </button>
+           {isAdmin && (
+               <button onClick={() => setActiveTab('ALL_REQUESTS')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'ALL_REQUESTS' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-white'}`}>All Requests</button>
+           )}
       </div>
 
       {/* --- OVERVIEW TAB --- */}
@@ -239,106 +386,184 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
 
       {/* --- MY APPLICATIONS TAB --- */}
       {activeTab === 'MY_APPLICATIONS' && (
-           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-               {leaveRequests.filter(r => r.employeeId === myEmpId).length === 0 ? (
-                   <div className="col-span-full text-center py-12 text-slate-400 italic bg-white rounded-3xl border border-slate-100">
-                       No leave applications history.
-                   </div>
-               ) : (
-                   leaveRequests
-                    .filter(r => r.employeeId === myEmpId)
-                    .sort((a,b) => new Date(b.appliedOn).getTime() - new Date(a.appliedOn).getTime())
-                    .map(req => {
-                        const approver = employees.find(e => e.id === req.appliedTo);
-                        return (
-                            <div key={req.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden group">
-                                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${req.status === 'APPROVED' ? 'bg-green-500' : req.status === 'REJECTED' ? 'bg-red-500' : 'bg-yellow-500'}`}></div>
-                                <div className="flex justify-between items-start mb-2 pl-2">
-                                    <span className="px-2 py-1 bg-slate-50 text-slate-500 text-xs font-bold rounded uppercase">{req.leaveType}</span>
-                                    <span className={`px-2 py-1 text-xs font-bold rounded uppercase ${req.status === 'APPROVED' ? 'bg-green-100 text-green-700' : req.status === 'REJECTED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                                        {req.status}
-                                    </span>
+           <div>
+               {/* Status Filters */}
+               <div className="flex flex-wrap gap-2 mb-6">
+                   {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map(status => {
+                       const count = status === 'ALL' 
+                           ? leaveRequests.filter(r => r.employeeId === myEmpId).length
+                           : leaveRequests.filter(r => r.employeeId === myEmpId && r.status === status).length;
+                       return (
+                           <button
+                               key={status}
+                               onClick={() => setStatusFilter(status)}
+                               className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 ${
+                                   statusFilter === status
+                                       ? 'bg-indigo-600 text-white'
+                                       : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
+                               }`}
+                           >
+                               {status === 'ALL' ? 'All' : status}
+                               <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-bold">
+                                   {count}
+                               </span>
+                           </button>
+                       );
+                   })}
+               </div>
+
+               {/* Leave Cards Grid */}
+               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                   {leaveRequests
+                    .filter(r => r.employeeId === myEmpId && (statusFilter === 'ALL' || r.status === statusFilter))
+                    .sort((a, b) => new Date(b.appliedOn || '').getTime() - new Date(a.appliedOn || '').getTime())
+                    .length === 0 ? (
+                       <div className="col-span-full text-center py-12 text-slate-400 italic bg-white rounded-3xl border border-slate-100">
+                           No leave applications found.
+                       </div>
+                   ) : (
+                       leaveRequests
+                        .filter(r => r.employeeId === myEmpId && (statusFilter === 'ALL' || r.status === statusFilter))
+                        .sort((a, b) => new Date(b.appliedOn || '').getTime() - new Date(a.appliedOn || '').getTime())
+                        .map(req => {
+                            const approver = employees.find(e => e.id === req.appliedTo);
+                            return (
+                                <div key={req.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden group">
+                                    <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${req.status === 'APPROVED' ? 'bg-green-500' : req.status === 'REJECTED' ? 'bg-red-500' : 'bg-yellow-500'}`}></div>
+                                    <div className="flex justify-between items-start mb-2 pl-2">
+                                        <span className="px-2 py-1 bg-slate-50 text-slate-500 text-xs font-bold rounded uppercase">{req.leaveType}</span>
+                                        <span className={`px-2 py-1 text-xs font-bold rounded uppercase ${req.status === 'APPROVED' ? 'bg-green-100 text-green-700' : req.status === 'REJECTED' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                            {req.status}
+                                        </span>
+                                    </div>
+                                    <h3 className="font-bold text-slate-800 text-lg mb-1 pl-2">{req.subject}</h3>
+                                    <p className="text-sm text-slate-500 mb-4 pl-2 line-clamp-2">"{req.reason}"</p>
+                                    <div className="pl-2 space-y-2 text-xs font-medium text-slate-500">
+                                        <div className="flex items-center gap-2"><Clock size={14}/> {req.durationType}</div>
+                                        <div className="flex items-center gap-2"><CalendarDays size={14}/> <span className="font-bold text-slate-700">{req.startDate}</span> <span className="text-slate-400">to</span> <span className="font-bold text-slate-700">{req.endDate}</span></div>
+                                        <div className="flex items-center gap-2"><UserIcon size={14}/> Applied To: <span className="font-bold text-slate-700">{approver?.name || req.appliedTo}</span></div>
+                                        <div className="flex items-center gap-2"><ArrowRight size={14}/> Applied: <span className="font-bold text-slate-700">{req.appliedOn?.split('T')[0] || 'N/A'}</span></div>
+                                    </div>
                                 </div>
-                                <h3 className="font-bold text-slate-800 text-lg mb-1 pl-2">{req.subject}</h3>
-                                <p className="text-sm text-slate-500 mb-4 pl-2 line-clamp-2">"{req.reason}"</p>
-                                <div className="pl-2 space-y-1 text-xs font-medium text-slate-500">
-                                    <div className="flex items-center gap-2"><Clock size={14}/> {req.durationType}</div>
-                                    <div className="flex items-center gap-2"><CalendarDays size={14}/> {req.startDate} {req.endDate !== req.startDate && `to ${req.endDate}`}</div>
-                                    <div className="flex items-center gap-2"><ArrowRight size={14}/> Sent To: {approver?.name || req.appliedTo}</div>
-                                </div>
-                            </div>
-                        );
-                    })
-               )}
+                            );
+                        })
+                   )}
+               </div>
            </div>
       )}
 
       {/* --- APPROVALS TAB --- */}
       {activeTab === 'APPROVALS' && (
-          <div className="space-y-4">
-              {/* For Admins: Show ALL requests. For Users: Show requests sent TO them */}
-              {(() => {
-                  const relevantRequests = isAdmin 
-                    ? leaveRequests // Admin sees all
-                    : leaveRequests.filter(r => r.appliedTo === myEmpId); // User sees incoming
-                  
-                  if (relevantRequests.length === 0) {
-                      return <div className="text-center py-12 text-slate-400 italic bg-white rounded-3xl border border-slate-100">No requests found.</div>;
-                  }
-
-                  return relevantRequests.map(req => {
-                      const requester = employees.find(e => e.id === req.employeeId);
-                      const approver = employees.find(e => e.id === req.appliedTo); // To show "To: X" in Admin view
-
+          <div>
+              {/* Status Filters */}
+              <div className="flex flex-wrap gap-2 mb-6">
+                  {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map(status => {
+                      const relevantReqs = isAdmin ? leaveRequests : leaveRequests.filter(r => r.appliedTo === myEmpId);
+                      const count = status === 'ALL' 
+                          ? relevantReqs.length
+                          : relevantReqs.filter(r => r.status === status).length;
                       return (
-                        <div key={req.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col md:flex-row gap-6">
-                             <div className="flex-1">
-                                 <div className="flex items-center gap-2 mb-2">
-                                     <div className="font-bold text-slate-800 text-lg">{requester?.name || req.employeeId}</div>
-                                     <span className="text-xs text-slate-400">({requester?.department})</span>
+                          <button
+                              key={status}
+                              onClick={() => setStatusFilter(status)}
+                              className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 ${
+                                  statusFilter === status
+                                      ? 'bg-indigo-600 text-white'
+                                      : 'bg-white text-slate-600 border border-slate-200 hover:border-slate-300'
+                              }`}
+                          >
+                              {status === 'ALL' ? 'All' : status}
+                              <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-bold">
+                                  {count}
+                              </span>
+                          </button>
+                      );
+                  })}
+              </div>
+
+              {/* Requests List */}
+              <div className="space-y-4">
+                  {(() => {
+                      const relevantRequests = isAdmin 
+                          ? leaveRequests 
+                          : leaveRequests.filter(r => r.appliedTo === myEmpId);
+                      
+                      const filteredRequests = statusFilter === 'ALL' 
+                          ? relevantRequests 
+                          : relevantRequests.filter(r => r.status === statusFilter);
+
+                      const sortedRequests = filteredRequests.sort((a, b) => 
+                          new Date(b.appliedOn || '').getTime() - new Date(a.appliedOn || '').getTime()
+                      );
+                      
+                      if (sortedRequests.length === 0) {
+                          return <div className="text-center py-12 text-slate-400 italic bg-white rounded-3xl border border-slate-100">No requests found.</div>;
+                      }
+
+                      return sortedRequests.map(req => {
+                          const requester = employees.find(e => e.id === req.employeeId);
+                          const approver = employees.find(e => e.id === req.appliedTo);
+
+                          return (
+                            <div key={req.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col md:flex-row gap-6">
+                                 <div className="flex-1">
+                                     <div className="flex items-center gap-2 mb-2">
+                                         <div className="font-bold text-slate-800 text-lg">{requester?.name || req.employeeId}</div>
+                                         <span className="text-xs text-slate-400">({requester?.department})</span>
+                                         {isAdmin && (
+                                             <div className="flex items-center gap-1 text-xs text-slate-400 bg-slate-50 px-2 py-0.5 rounded ml-2">
+                                                 <span>To:</span> <span className="font-bold text-slate-600">{approver?.name || req.appliedTo}</span>
+                                             </div>
+                                         )}
+                                     </div>
+                                     <div className="flex flex-wrap gap-2 mb-3">
+                                         <span className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs font-bold rounded uppercase border border-indigo-100">{req.leaveType}</span>
+                                         <span className="px-2 py-1 bg-slate-50 text-slate-600 text-xs font-bold rounded uppercase border border-slate-200">{req.durationType}</span>
+                                         <span className={`px-2 py-1 text-xs font-bold rounded uppercase border ${req.status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-100' : req.status === 'REJECTED' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-yellow-50 text-yellow-700 border-yellow-100'}`}>
+                                            {req.status}
+                                        </span>
+                                     </div>
+                                     
+                                     <h4 className="font-bold text-slate-700 text-sm mb-1">{req.subject}</h4>
+                                     <p className="text-slate-600 text-sm italic bg-slate-50 p-3 rounded-lg border border-slate-100 mb-3">"{req.reason}"</p>
+                                     
+                                     <div className="flex flex-col gap-2 text-xs font-medium text-slate-500">
+                                         <span className="flex items-center gap-1"><CalendarDays size={14}/> From: <span className="font-bold text-slate-700">{req.startDate}</span> To: <span className="font-bold text-slate-700">{req.endDate}</span></span>
+                                         <span className="flex items-center gap-1"><Clock size={14}/> Applied: <span className="font-bold text-slate-700">{req.appliedOn?.split('T')[0] || 'N/A'}</span></span>
+                                     </div>
+                                 </div>
+
+                                 <div className="flex flex-col justify-center gap-2 min-w-[140px]">
+                                     {req.status === 'PENDING' && (
+                                         <>
+                                             <button 
+                                                onClick={() => handleApproval(req, true)}
+                                                className="py-2 px-4 bg-green-600 text-white rounded-xl font-bold text-sm hover:bg-green-700 shadow-sm flex items-center justify-center gap-2"
+                                             >
+                                                 <CheckCircle2 size={16}/> Approve
+                                             </button>
+                                             <button 
+                                                onClick={() => handleApproval(req, false)}
+                                                className="py-2 px-4 bg-white border border-red-200 text-red-600 rounded-xl font-bold text-sm hover:bg-red-50 flex items-center justify-center gap-2"
+                                             >
+                                                 <XCircle size={16}/> Reject
+                                             </button>
+                                         </>
+                                     )}
                                      {isAdmin && (
-                                         <div className="flex items-center gap-1 text-xs text-slate-400 bg-slate-50 px-2 py-0.5 rounded ml-2">
-                                             <span>To:</span> <span className="font-bold text-slate-600">{approver?.name || req.appliedTo}</span>
-                                         </div>
+                                         <button 
+                                            onClick={() => handleDeleteLeave(req)}
+                                            className="py-2 px-4 bg-white border border-slate-300 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-100 hover:border-slate-400 flex items-center justify-center gap-2"
+                                         >
+                                             <X size={16}/> Delete
+                                         </button>
                                      )}
                                  </div>
-                                 <div className="flex flex-wrap gap-2 mb-3">
-                                     <span className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs font-bold rounded uppercase border border-indigo-100">{req.leaveType}</span>
-                                     <span className="px-2 py-1 bg-slate-50 text-slate-600 text-xs font-bold rounded uppercase border border-slate-200">{req.durationType}</span>
-                                     <span className={`px-2 py-1 text-xs font-bold rounded uppercase border ${req.status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-100' : req.status === 'REJECTED' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-yellow-50 text-yellow-700 border-yellow-100'}`}>
-                                        {req.status}
-                                    </span>
-                                 </div>
-                                 
-                                 <h4 className="font-bold text-slate-700 text-sm mb-1">{req.subject}</h4>
-                                 <p className="text-slate-600 text-sm italic bg-slate-50 p-3 rounded-lg border border-slate-100 mb-3">"{req.reason}"</p>
-                                 
-                                 <div className="flex items-center gap-4 text-xs font-medium text-slate-500">
-                                     <span className="flex items-center gap-1"><CalendarDays size={14}/> {req.startDate} {req.endDate !== req.startDate && `to ${req.endDate}`}</span>
-                                     <span className="flex items-center gap-1"><Clock size={14}/> Applied: {req.appliedOn}</span>
-                                 </div>
-                             </div>
-
-                             {req.status === 'PENDING' && (
-                                 <div className="flex flex-col justify-center gap-2 min-w-[140px]">
-                                     <button 
-                                        onClick={() => handleApproval(req, true)}
-                                        className="py-2 px-4 bg-green-600 text-white rounded-xl font-bold text-sm hover:bg-green-700 shadow-sm flex items-center justify-center gap-2"
-                                     >
-                                         <CheckCircle2 size={16}/> Approve
-                                     </button>
-                                     <button 
-                                        onClick={() => handleApproval(req, false)}
-                                        className="py-2 px-4 bg-white border border-red-200 text-red-600 rounded-xl font-bold text-sm hover:bg-red-50 flex items-center justify-center gap-2"
-                                     >
-                                         <XCircle size={16}/> Reject
-                                     </button>
-                                 </div>
-                             )}
-                        </div>
-                      );
-                  });
-              })()}
+                            </div>
+                          );
+                      });
+                  })()}
+              </div>
           </div>
       )}
 
@@ -351,6 +576,15 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                <button onClick={() => setShowApplyModal(false)} className="p-2 hover:bg-indigo-100 rounded-full text-indigo-800"><X size={20}/></button>
             </div>
             <div className="p-6 space-y-4 overflow-y-auto">
+               {errorMessage && (
+                   <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex gap-2">
+                       <AlertCircle size={18} className="text-red-600 flex-shrink-0 mt-0.5" />
+                       <div>
+                           <p className="text-sm font-bold text-red-700">Error</p>
+                           <p className="text-sm text-red-600">{errorMessage}</p>
+                       </div>
+                   </div>
+               )}
                <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Leave Type</label>
                   <select 
@@ -466,9 +700,9 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                </div>
             </div>
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-               <button onClick={() => setShowApplyModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-               <button onClick={handleApplyLeave} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20 flex items-center gap-2">
-                 <Send size={18} /> Submit Application
+               <button onClick={() => setShowApplyModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl" disabled={isSubmitting}>Cancel</button>
+               <button onClick={handleApplyLeave} disabled={isSubmitting} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                 <Send size={18} /> {isSubmitting ? 'Submitting...' : 'Submit Application'}
                </button>
             </div>
           </div>

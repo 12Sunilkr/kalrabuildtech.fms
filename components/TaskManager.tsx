@@ -21,7 +21,7 @@ interface TaskManagerProps {
 }
 
 export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, addNotification }) => {
-  const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS'>('ALL');
+  const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS' | 'TERMINATE' | 'REJECT'>('ALL');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null); // Task ID
   const [showObjectionModal, setShowObjectionModal] = useState<string | null>(null); // Task ID
@@ -280,6 +280,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   const handleCompleteTask = async (taskId: string) => {
+    if (!processNote.trim()) {
+      setError('Please provide a process description of how you completed this task.');
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -306,6 +310,14 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   const handleRaiseObjection = async (taskId: string) => {
+    if (!extensionDate.trim()) {
+      setError('Please provide a proposed new deadline date.');
+      return;
+    }
+    if (!extensionReason.trim()) {
+      setError('Please provide a reason for the extension request.');
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -368,13 +380,23 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       } else {
         // For HOLD and TERMINATE, update status instead
         const newStatus = type === 'HOLD' ? 'HOLD' : 'TERMINATED';
+        // When terminating, clear extension request so it doesn't appear in objections
+        const updatePayload = type === 'TERMINATE' 
+          ? { status: newStatus, statusNote: actionReason, extensionRequest: null, extensionHistory: [] }
+          : { status: newStatus, statusNote: actionReason };
+        
         // Persist change on server
-        await api.put(`/tasks/${taskId}`, { status: newStatus, statusNote: actionReason });
+        await api.put(`/tasks/${taskId}`, updatePayload);
 
         // Optimistically update local tasks so UI reflects immediately and avoid stale-state issues
         let assigned: any = null;
         setTasks(prev => prev.map(t => {
-          if (t.id === taskId) { assigned = t.assignedTo; return { ...t, status: newStatus, statusNote: actionReason }; }
+          if (t.id === taskId) { 
+            assigned = t.assignedTo; 
+            return type === 'TERMINATE' 
+              ? { ...t, status: newStatus, statusNote: actionReason, extensionRequest: null, extensionHistory: [] }
+              : { ...t, status: newStatus, statusNote: actionReason };
+          }
           return t;
         }));
 
@@ -463,6 +485,37 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       }
   };
 
+  const handleAcknowledgeRejection = async (taskId: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Clear the rejection by removing the extensionRequest and statusNote, set status back to PENDING
+      await api.put(`/tasks/${taskId}`, { 
+        status: 'PENDING',
+        extensionRequest: null, 
+        statusNote: null,
+        extensionHistory: []
+      });
+      
+      // Optimistic UI update - task goes back to normal PENDING status
+      setTasks(prev => prev.map(task => task.id === taskId ? { 
+        ...task, 
+        status: 'PENDING',
+        extensionRequest: null, 
+        statusNote: null,
+        extensionHistory: []
+      } : task));
+      
+      await fetchTasks();
+      addNotification('Acknowledgement', `You acknowledged the extension rejection for Task ${taskId}. Task is now back to normal.`, 'TASK', String(currentUser.id));
+    } catch (e) {
+      console.error('Acknowledge rejection failed', e);
+      setError('Failed to acknowledge rejection');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // --- Filtering ---
   
   // Employees see tasks assigned TO them OR tasks assigned BY them
@@ -501,7 +554,14 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         matchesTab = (displayStatus === 'OVERDUE');
     } else if (activeTab === 'OBJECTIONS') {
         // Objections tab shows only pending extension/objection requests
-        matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING');
+        // Exclude TERMINATED and REJECTED tasks
+        matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED');
+    } else if (activeTab === 'TERMINATE') {
+        // Terminate tab shows tasks with TERMINATED status
+        matchesTab = (t.status === 'TERMINATED');
+    } else if (activeTab === 'REJECT') {
+        // Reject tab shows tasks with rejected extension requests
+        matchesTab = (t.extensionRequest && t.extensionRequest.status === 'REJECTED');
     }
     
     // 2. Search Filter (Text)
@@ -532,7 +592,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     return ds === 'COMPLETED' || ds === 'TERMINATED';
   }).length;
   const overdueCount = relevantTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
-  const objectionCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'PENDING').length;
+  const objectionCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED').length;
+  const terminateCount = relevantTasks.filter(t => t.status === 'TERMINATED').length;
+  const rejectCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'REJECTED').length;
 
   const getPriorityColor = (p: string) => {
     switch(p) {
@@ -676,7 +738,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
           
           {/* Top Row: Tabs */}
           <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide w-full">
-            {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS'].map((tab) => (
+            {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS', 'TERMINATE', 'REJECT'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab as any)}
@@ -686,7 +748,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                     : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
                 }`}
               >
-                {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Completed (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : `Objections (${objectionCount})`}
+                {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Completed (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : tab === 'OBJECTIONS' ? `Objections (${objectionCount})` : tab === 'TERMINATE' ? `Terminate (${terminateCount})` : `Reject (${rejectCount})`}
               </button>
             ))}
           </div>
@@ -735,8 +797,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
             .map(task => {
             const displayStatus = getDisplayStatus(task);
             const isTaskOverdue = displayStatus === 'OVERDUE';
+            const assignedToId = (task.assignedTo || (task as any).assignedToEmployeeId || '').toString();
             const assignedEmp = employees.find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || ''));
             const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
+            const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
             const isNew = isNewTask(task.createdDate);
 
             return (
@@ -865,10 +929,23 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                       {/* Show Status Note (Hold/Terminate Reason) */}
                       {(task.status === 'HOLD' || task.status === 'TERMINATED' || task.status === 'REJECTED' || task.extensionRequest?.status === 'REJECTED') && task.statusNote && (
                          <div className={`p-4 rounded-xl border text-sm ${task.status === 'HOLD' ? 'bg-yellow-50 border-yellow-100' : (task.status === 'TERMINATED' ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-100')}`}>
-                           <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : (task.status === 'TERMINATED' ? 'text-gray-700' : 'text-red-700')}`}>
-                              <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection')}
-                           </p>
-                           <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
+                           <div className="flex justify-between items-start gap-3">
+                             <div className="flex-1">
+                               <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : (task.status === 'TERMINATED' ? 'text-gray-700' : 'text-red-700')}`}>
+                                  <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection')}
+                               </p>
+                               <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
+                             </div>
+                             {task.extensionRequest?.status === 'REJECTED' && (isAssignee || isAdmin) && (
+                               <button
+                                 onClick={() => handleAcknowledgeRejection(task.id)}
+                                 disabled={isLoading}
+                                 className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${isLoading ? 'bg-red-300 text-white cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                               >
+                                 Acknowledge
+                               </button>
+                             )}
+                           </div>
                          </div>
                       )}
                     </div>

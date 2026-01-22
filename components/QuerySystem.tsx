@@ -3,7 +3,7 @@ import { Query, Employee, User, Notification } from '../types';
 import { HelpCircle, Plus, Search, CheckCircle2, X, Send } from 'lucide-react';
 import { format } from 'date-fns';
 import { AITextEnhancer } from './AITextEnhancer';
-import api, { safePost, safeGet, safePut, extractPayload, ensureArray } from '../src/utils/api';
+import api, { safePost, safeGet, safePut, safeDelete, extractPayload, ensureArray } from '../src/utils/api';
 
 interface QuerySystemProps {
   queries: Query[];
@@ -53,6 +53,19 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
       console.error('Failed to resolve query on server', err && (err.stack || err.message || err));
       // Fallback to optimistic local update
       setQueries(safeQueries.map(q => q.id === id ? { ...q, status: 'RESOLVED' } : q));
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this query? This action cannot be undone.')) return;
+    try {
+      await safeDelete(`/queries/${encodeURIComponent(id)}`, { withCredentials: true });
+      // Re-fetch list after delete
+      const res = await safeGet('/queries');
+      setQueries(ensureArray(extractPayload(res)));
+    } catch (err) {
+      console.error('Failed to delete query on server', err && (err.stack || err.message || err));
+      alert('Failed to delete query. Please try again.');
     }
   };
 
@@ -177,9 +190,9 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                                 </div>
                             </div>
                             
-                            {(q.status === 'OPEN') && (q.to === currentUser.employeeId || currentUser.role === 'ADMIN') && (
-                                <div className="flex items-center">
-                                    <button 
+                            <div className="flex items-center gap-2">
+                                {(q.status === 'OPEN') && (q.to === currentUser.employeeId || currentUser.role === 'ADMIN') && (
+                                    <button
                                       onClick={async () => {
                                         if (resolvingIds.includes(q.id)) return;
                                         setResolvingIds(prev => [...prev, q.id]);
@@ -191,8 +204,16 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                                     >
                                       <CheckCircle2 size={16} /> {resolvingIds.includes(q.id) ? 'Resolving…' : 'Mark Resolved'}
                                     </button>
-                                </div>
-                            )}
+                                )}
+                                {currentUser.role === 'ADMIN' && (
+                                    <button
+                                      onClick={() => handleDelete(q.id)}
+                                      className="px-4 py-2 bg-white border border-red-200 text-red-700 font-bold text-sm rounded-xl hover:bg-red-50 flex items-center gap-2 shadow-sm"
+                                    >
+                                      <X size={16} /> Delete
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     </div>
                 );

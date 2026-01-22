@@ -300,7 +300,7 @@ export interface Notification {
   message: string;
   time: string;
   read: boolean;
-  type: 'TASK' | 'ORDER' | 'QUERY' | 'CHAT' | 'SYSTEM' | 'PROJECT' | 'LEAVE' | 'FINANCE' | 'CHECKLIST';
+  type: 'TASK' | 'ORDER' | 'QUERY' | 'CHAT' | 'SYSTEM' | 'PROJECT' | 'LEAVE' | 'FINANCE' | 'CHECKLIST' | 'PMS' | 'error' | 'success' | 'warning' | 'info';
   targetUser: string; // 'ADMIN' | 'ALL' | EmployeeID
 }
 
@@ -395,6 +395,7 @@ export enum ViewMode {
   README = 'README',
   NOTEPAD = 'NOTEPAD',
   DATABASE = 'DATABASE',
+  PMS_ADMIN = 'PMS_ADMIN',
   
   // Employee Views
   EMPLOYEE_HOME = 'EMPLOYEE_HOME',
@@ -403,5 +404,71 @@ export enum ViewMode {
   EMPLOYEE_PROJECTS = 'EMPLOYEE_PROJECTS', 
   EMPLOYEE_QUERIES = 'EMPLOYEE_QUERIES', 
   EMPLOYEE_CHAT = 'EMPLOYEE_CHAT', 
-  EMPLOYEE_HISTORY = 'EMPLOYEE_HISTORY'
+  EMPLOYEE_HISTORY = 'EMPLOYEE_HISTORY',
+  PMS_EMPLOYEE = 'PMS_EMPLOYEE'
+}
+
+// --- PMS (Project Management System) Types ---
+
+export interface PMSProject {
+  id: string;
+  project_name: string;
+  assigned_employee_id: string;
+  assigned_employee_name?: string;
+  start_date: string;
+  status: 'Active' | 'Completed' | 'On-Hold';
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface PMSDailyWorkLog {
+  id: string;
+  project_id: string;
+  employee_id: string;
+  work_date: string; // yyyy-MM-dd
+  session_number: 1 | 2; // Session 1: 10:00-02:00, Session 2: 02:00-06:00
+  work_done: string;
+  work_left: string;
+  approved_work_left?: string; // Admin-approved work_left to carry forward
+  status: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+  createdAt: string;
+}
+
+export interface PMSWorkPhoto {
+  id: string;
+  work_log_id: string;
+  file_path: string;
+  uploaded_by: string;
+  createdAt: string;
+}
+
+export interface PMSProjectProgress {
+  id: string;
+  project_id: string;
+  progress_percent: number;
+  remarks: string;
+  updated_by: string;
+  createdAt: string;
+}
+
+export interface PMSProjectReport {
+  project: PMSProject;
+  totalDays: number;
+  completedSessions: number;
+  totalSessions: number;
+  dayWiseProgress: Array<{
+    date: string;
+    session1: { work_done: string; work_left: string; status: string };
+    session2: { work_done: string; work_left: string; status: string };
+  }>;
+  progressPercent: number;
+  remarks: string;
+}
+
+export interface PMSEmployeeReport {
+  employee: Employee;
+  totalWorkingDays: number;
+  totalSessionsCompleted: number;
+  pendingWork: string;
+  projectsAssigned: number;
 }

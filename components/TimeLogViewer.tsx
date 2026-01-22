@@ -121,11 +121,28 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
   };
 
   const saveManualOut = async (log: any) => {
-      if (!manualTime) return;
+      if (!manualTime || !manualTime.trim()) return;
 
-      const clockOutIso = `${log.date}T${manualTime}:00`;
       const start = new Date(log.clockIn);
+      // Preserve seconds from clock-in time for accurate duration calculation
+      const seconds = start.getSeconds().toString().padStart(2, '0');
+      
+      // Ensure manualTime is in HH:mm format from the time input
+      const timeValue = manualTime.trim();
+      
+      const clockOutIso = `${log.date}T${timeValue}:${seconds}`;
       const end = new Date(clockOutIso);
+      
+      // Debug logging to identify the issue
+      console.log('[Manual Out Debug]', {
+        date: log.date,
+        clockIn: log.clockIn,
+        manualTime: timeValue,
+        clockOut: clockOutIso,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        diffMs: end.getTime() - start.getTime()
+      });
       
       // Validation: End must be after Start
       if (end <= start) {
@@ -133,8 +150,11 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
           return;
       }
 
-      const diffMinutes = differenceInMinutes(end, start);
-      const durationHours = diffMinutes / 60;
+      // Calculate duration in milliseconds, then convert to hours
+      const diffMs = end.getTime() - start.getTime();
+      const durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
+      
+      console.log('[Manual Out Result]', { durationHours, formatted: `${Math.floor(durationHours)}h ${Math.round((durationHours - Math.floor(durationHours)) * 60)}m` });
 
       // Calculate Attendance Value based on Hours (Matching App.tsx logic)
       let attendanceVal: AttendanceValue = 0;

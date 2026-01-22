@@ -667,6 +667,17 @@ const storageSitePhotos = multer.diskStorage({
 });
 const uploadSitePhoto = multer({ storage: storageSitePhotos, fileFilter, limits: { fileSize: 10 * 1024 * 1024 } });
 
+// PMS photos storage
+const pmsDir = path.join(uploadsRoot, 'pms');
+if (!fs.existsSync(pmsDir)) {
+  fs.mkdirSync(pmsDir, { recursive: true });
+}
+const storagePMS = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, pmsDir),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
+});
+const uploadPMS = multer({ storage: storagePMS, fileFilter, limits: { fileSize: 10 * 1024 * 1024 } });
+
 // Serve uploaded files
 app.use('/uploads', express.static(uploadsRoot));
 
@@ -2950,27 +2961,66 @@ console.log('Registered API routes: /api/sitephotos (POST/GET)');
 // GET /api/leaves - list all leaves for user or admin view
 app.get('/api/leaves', requireAuth, (req, res) => {
   try {
-    const userId = req.query.userId;
+    const loggedInUserId = req.user.id;
+    const type = req.query.type; // 'my' for employee, 'approvals' for manager/approver, undefined for admin
+    
+    console.log('DEBUG: GET /api/leaves', { loggedInUserId, userRole: req.user.role, type, query: req.query });
+    
     let stmt;
-    if (userId) {
-      stmt = db.prepare('SELECT id, userId, startDate, endDate, days, status, reason, createdAt FROM leaves WHERE userId = ? ORDER BY createdAt DESC');
-      stmt.bind([userId]);
+    let params = [];
+    
+    // Role-based filtering
+    if (req.user.role === 'ADMIN') {
+      // Admin sees all leaves
+      console.log('DEBUG: Admin view - fetching all leaves');
+      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves ORDER BY appliedOn DESC LIMIT 500');
+    } else if (type === 'my') {
+      // Employee view - my applications (appliedBy === loggedInUserId)
+      console.log('DEBUG: Employee view - fetching own leaves where appliedBy =', loggedInUserId);
+      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves WHERE appliedBy = ? ORDER BY appliedOn DESC LIMIT 500');
+      params = [loggedInUserId];
+    } else if (type === 'approvals') {
+      // Manager/Approver view - leaves sent to them (appliedTo === loggedInUserId)
+      console.log('DEBUG: Manager view - fetching leaves where appliedTo =', loggedInUserId);
+      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves WHERE appliedTo = ? ORDER BY appliedOn DESC LIMIT 500');
+      params = [loggedInUserId];
     } else {
-      stmt = db.prepare('SELECT id, userId, startDate, endDate, days, status, reason, createdAt FROM leaves ORDER BY createdAt DESC');
+      // Default: treat as employee view
+      console.log('DEBUG: Default view - fetching own leaves where appliedBy =', loggedInUserId);
+      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves WHERE appliedBy = ? ORDER BY appliedOn DESC LIMIT 500');
+      params = [loggedInUserId];
     }
+    
+    if (params.length > 0) stmt.bind(params);
+    
     const out = [];
-    while (stmt.step()) out.push(stmt.getAsObject());
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      // Map userId to employeeId for frontend compatibility
+      row.employeeId = row.appliedBy || row.userId;
+      out.push(row);
+    }
     stmt.free();
+    
+    console.log('DEBUG: Returning leaves count:', out.length);
     return success(res, out);
-  } catch (err) { console.error('Leaves GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+  } catch (err) { 
+    console.error('Leaves GET error', err && (err.stack || err.message || err)); 
+    return failure(res, 'Internal server error', 500); 
+  }
 });
 
 // POST /api/leaves - create a new leave application
 app.post('/api/leaves', requireAuth, (req, res) => {
   try {
-    const userId = req.user.id;
-    const { startDate, endDate, reason } = req.body;
-    if (!startDate || !endDate || !reason) return failure(res, 'Missing required fields', 400);
+    const appliedBy = req.user.id; // The logged-in user (employee)
+    const { startDate, endDate, reason, leaveType, subject, appliedTo, durationType } = req.body;
+    
+    console.log('DEBUG: POST /leaves payload', { appliedBy, appliedTo, startDate, endDate, leaveType, subject, durationType });
+    
+    if (!startDate || !endDate || !reason || !appliedTo) {
+      return failure(res, 'Missing required fields (startDate, endDate, reason, appliedTo)', 400);
+    }
     
     const start = new Date(startDate);
     const end = new Date(endDate);
@@ -2980,23 +3030,93 @@ app.post('/api/leaves', requireAuth, (req, res) => {
     const diffTime = Math.abs(end - start);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
     
+    // Get applied by user details
+    const appliedByStmt = db.prepare('SELECT id, name, department FROM employees WHERE id = ?');
+    appliedByStmt.bind([appliedBy]);
+    let appliedByName = '', appliedByDept = '';
+    if (appliedByStmt.step()) {
+      const empData = appliedByStmt.getAsObject();
+      appliedByName = empData.name || '';
+      appliedByDept = empData.department || '';
+    }
+    appliedByStmt.free();
+    
+    // Get applied to user name
+    let appliedToName = '';
+    if (appliedTo !== 'ADMIN') {
+      const appliedToStmt = db.prepare('SELECT name FROM employees WHERE id = ?');
+      appliedToStmt.bind([appliedTo]);
+      if (appliedToStmt.step()) {
+        const empData = appliedToStmt.getAsObject();
+        appliedToName = empData.name || '';
+      }
+      appliedToStmt.free();
+    } else {
+      appliedToName = 'Administrator';
+    }
+    
     const id = genId('LEAVE-');
     const timestamp = new Date().toISOString();
     
+    console.log('DEBUG: Saving leave', { id, appliedBy, appliedTo, appliedByName, appliedToName, appliedByDept });
+    
     try {
       db.run('BEGIN TRANSACTION');
-      const insert = db.prepare('INSERT INTO leaves (id, userId, startDate, endDate, days, status, reason, createdAt) VALUES (?,?,?,?,?,?,?,?)');
-      insert.run([id, userId, startDate, endDate, diffDays, 'PENDING', reason, timestamp]);
+      const insert = db.prepare('INSERT INTO leaves (id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      insert.run([
+        id, 
+        appliedBy,  // userId = appliedBy
+        appliedBy,  // explicit appliedBy
+        appliedTo, 
+        appliedByName, 
+        appliedToName, 
+        appliedByDept,
+        startDate, 
+        endDate, 
+        diffDays, 
+        'PENDING', 
+        reason, 
+        leaveType || 'Casual Leave', 
+        subject || '', 
+        timestamp, 
+        durationType || 'Multiple Days', 
+        timestamp
+      ]);
       insert.free();
       db.run('COMMIT');
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave insert', e && (e.message || e)); }
-      return success(res, { id, userId, startDate, endDate, days: diffDays, status: 'PENDING', reason, createdAt: timestamp });
+      
+      const responseData = { 
+        id, 
+        userId: appliedBy,
+        appliedBy,
+        appliedTo,
+        appliedByName,
+        appliedToName,
+        department: appliedByDept,
+        startDate, 
+        endDate, 
+        days: diffDays, 
+        status: 'PENDING', 
+        reason, 
+        leaveType: leaveType || 'Casual Leave', 
+        subject: subject || '', 
+        appliedOn: timestamp, 
+        durationType: durationType || 'Multiple Days', 
+        createdAt: timestamp 
+      };
+      
+      console.log('DEBUG: Leave saved successfully', responseData);
+      return success(res, responseData);
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) {}
       console.error('Leave insert failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to create leave application', 500);
     }
-  } catch (err) { console.error('Leaves POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+  } catch (err) { 
+    console.error('Leaves POST error', err && (err.stack || err.message || err)); 
+    return failure(res, 'Internal server error', 500); 
+  }
 });
 
 // PUT /api/leaves/:id - update leave status or details
@@ -3004,12 +3124,31 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
     const { status, reason, startDate, endDate } = req.body;
-    
-    // Check if leave exists
-    const check = db.prepare('SELECT id FROM leaves WHERE id = ?');
+    console.log('DEBUG: PUT /api/leaves/:id', { id, status, userId: req.user.id, role: req.user.role });
+
+    // Check if leave exists and get details for authorization
+    const check = db.prepare('SELECT id, appliedTo, appliedBy FROM leaves WHERE id = ?');
     check.bind([id]);
     if (!check.step()) { check.free(); return failure(res, 'Leave not found', 404); }
+    const leave = check.getAsObject();
     check.free();
+
+    // Authorization: Only admin, the approver (appliedTo), or the applicant (appliedBy) can update
+    const isAdmin = req.user.role === 'ADMIN';
+    const isApprover = leave.appliedTo === req.user.id || leave.appliedTo === req.user.employeeId || (leave.appliedTo === 'ADMIN' && isAdmin);
+    const isApplicant = leave.appliedBy === req.user.id || leave.appliedBy === req.user.employeeId;
+
+    // For status changes, only admin or approver can approve/reject
+    if (status && status !== 'PENDING') {
+      if (!isAdmin && !isApprover) {
+        return failure(res, 'Forbidden: Only approver or admin can approve/reject', 403);
+      }
+    }
+
+    // For other updates, allow applicant, approver, or admin
+    if (!isAdmin && !isApprover && !isApplicant) {
+      return failure(res, 'Forbidden: Insufficient permissions', 403);
+    }
     
     try {
       db.run('BEGIN TRANSACTION');
@@ -3039,6 +3178,7 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
       }
       db.run('COMMIT');
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave update', e && (e.message || e)); }
+      console.log('DEBUG: Leave updated successfully:', { id, status });
       return success(res, { id, message: 'Leave updated successfully' });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) {}
@@ -3052,7 +3192,24 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
 app.delete('/api/leaves/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
-    
+    console.log('DEBUG: DELETE /api/leaves/:id', { id, userId: req.user.id, role: req.user.role });
+
+    // Check if leave exists and get details for authorization
+    const check = db.prepare('SELECT id, appliedBy, status FROM leaves WHERE id = ?');
+    check.bind([id]);
+    if (!check.step()) { check.free(); return failure(res, 'Leave not found', 404); }
+    const leave = check.getAsObject();
+    check.free();
+
+    // Authorization: Only admin can delete any leave, or applicant can delete their own PENDING leave
+    const isAdmin = req.user.role === 'ADMIN';
+    const isApplicant = leave.appliedBy === req.user.id || leave.appliedBy === req.user.employeeId;
+    const isPending = leave.status === 'PENDING';
+
+    if (!isAdmin && !(isApplicant && isPending)) {
+      return failure(res, 'Forbidden: Only admin can delete any leave, or applicant can delete pending leave', 403);
+    }
+
     try {
       db.run('BEGIN TRANSACTION');
       const del = db.prepare('DELETE FROM leaves WHERE id = ?');
@@ -3060,6 +3217,7 @@ app.delete('/api/leaves/:id', requireAuth, (req, res) => {
       del.free();
       db.run('COMMIT');
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave delete', e && (e.message || e)); }
+      console.log('DEBUG: Leave deleted successfully:', id);
       return success(res, { message: 'Leave deleted successfully' });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) {}
@@ -3572,7 +3730,6 @@ app.delete('/api/notepad/:id', requireAuth, (req, res) => {
 });
 
 // Queries
-
 app.post('/api/queries', requireAuth, (req, res) => {
   try {
     const { question } = req.body || {};
@@ -3599,6 +3756,23 @@ app.get('/api/queries', requireAuth, (req, res) => {
     stmt.free();
     return success(res, out || []);
   } catch (err) { console.error('Queries GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+app.delete('/api/queries/:id', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Only admin can delete queries', 403);
+
+    const id = req.params.id;
+    const del = db.prepare('DELETE FROM queries WHERE id = ?');
+    del.run([id]);
+    del.free();
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    return success(res, null, 'Deleted');
+  } catch (err) {
+    console.error('Queries DELETE error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
 });
 console.log('Registered API routes: /api/notepad (GET/POST/PUT/DELETE)');
 
@@ -4071,6 +4245,424 @@ if (process.env.NODE_ENV !== 'production') {
   console.log('Registered dev o2d helpers: /api/_o2d_list, /api/_o2d_delete');
 }
 
+// ===========================
+// PMS (Project Management System) Endpoints - MUST BE BEFORE CATCH-ALL
+// ===========================
+console.log('LOADING PMS ROUTES - This message confirms PMS code is executing');
+
+try {
+
+// Middleware to check if user is ADMIN for PMS
+const isPMSAdmin = (req, res, next) => {
+  if (!req.user || req.user.role !== 'ADMIN') {
+    return failure(res, 'Access denied: PMS Admin only', 403);
+  }
+  next();
+};
+
+// POST /api/pms/projects - Create new project (ADMIN only)
+app.post('/api/pms/projects', requireAuth, isPMSAdmin, (req, res) => {
+  console.log('DEBUG: POST /api/pms/projects called');
+  try {
+    const { project_name, assigned_employee_id, start_date } = req.body;
+    if (!project_name || !assigned_employee_id || !start_date) {
+      return failure(res, 'Missing required fields', 400);
+    }
+
+    const id = 'pms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const now = new Date().toISOString();
+
+    db.run(
+      `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, status, createdBy, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, project_name, assigned_employee_id, start_date, 'Active', req.user.id, now]
+    );
+
+    saveToDB();
+    success(res, { id, project_name, assigned_employee_id, start_date, status: 'Active', createdAt: now });
+  } catch (err) {
+    console.error('POST /api/pms/projects error:', err);
+    failure(res, 'Failed to create project', 500);
+  }
+});
+
+// GET /api/pms/projects - Get all projects (ADMIN) or assigned project (EMPLOYEE)
+app.get('/api/pms/projects', requireAuth, (req, res) => {
+  console.log('DEBUG: GET /api/pms/projects called');
+  try {
+    let query = 'SELECT * FROM pms_projects WHERE 1=1';
+    let params = [];
+
+    // If employee, show only assigned projects
+    if (req.user.role === 'EMPLOYEE') {
+      query += ' AND assigned_employee_id = ?';
+      params.push(req.user.employeeId || String(req.user.id));
+    }
+
+    query += ' ORDER BY createdAt DESC';
+
+    const stmt = db.prepare(query);
+    stmt.bind(params);
+    const projects = [];
+    while (stmt.step()) {
+      projects.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    success(res, projects);
+  } catch (err) {
+    console.error('GET /api/pms/projects error:', err);
+    failure(res, 'Failed to fetch projects', 500);
+  }
+});
+
+// GET /api/pms/projects/:id - Get single project with daily work logs
+app.get('/api/pms/projects/:id', requireAuth, (req, res) => {
+  try {
+    const projectId = req.params.id;
+
+    // Get project
+    const pStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
+    pStmt.bind([projectId]);
+    if (!pStmt.step()) {
+      pStmt.free();
+      return failure(res, 'Project not found', 404);
+    }
+    const project = pStmt.getAsObject();
+    pStmt.free();
+
+    // Check access
+    if (req.user.role === 'EMPLOYEE' && project.assigned_employee_id !== (req.user.employeeId || String(req.user.id))) {
+      return failure(res, 'Access denied', 403);
+    }
+
+    // Get daily work logs
+    const wStmt = db.prepare(
+      `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
+       FROM pms_daily_work_logs dwl
+       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
+       WHERE dwl.project_id = ?
+       GROUP BY dwl.id
+       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
+    );
+    wStmt.bind([projectId]);
+    const logs = [];
+    while (wStmt.step()) {
+      const log = wStmt.getAsObject();
+      log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
+      logs.push(log);
+    }
+    wStmt.free();
+
+    // Get project progress
+    const prStmt = db.prepare(
+      'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
+    );
+    prStmt.bind([projectId]);
+    let progress = null;
+    if (prStmt.step()) {
+      progress = prStmt.getAsObject();
+    }
+    prStmt.free();
+
+    success(res, { project, logs, progress });
+  } catch (err) {
+    console.error('GET /api/pms/projects/:id error:', err);
+    failure(res, 'Failed to fetch project details', 500);
+  }
+});
+
+// PUT /api/pms/projects/:id - Update project status (ADMIN only)
+app.put('/api/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) {
+      return failure(res, 'Missing status field', 400);
+    }
+
+    db.run(
+      'UPDATE pms_projects SET status = ? WHERE id = ?',
+      [status, req.params.id]
+    );
+    saveToDB();
+    success(res, { message: 'Project updated' });
+  } catch (err) {
+    console.error('PUT /api/pms/projects/:id error:', err);
+    failure(res, 'Failed to update project', 500);
+  }
+});
+
+// POST /api/pms/daily-work - Submit daily work log (EMPLOYEE)
+app.post('/api/pms/daily-work', requireAuth, (req, res) => {
+  try {
+    const { project_id, work_date, session_number, work_done, work_left } = req.body;
+    if (!project_id || !work_date || !session_number || !work_done) {
+      return failure(res, 'Missing required fields', 400);
+    }
+
+    const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const now = new Date().toISOString();
+    const employeeId = req.user.employeeId || String(req.user.id);
+
+    db.run(
+      `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, work_left, status, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, project_id, employeeId, work_date, session_number, work_done, work_left || '', 'SUBMITTED', now]
+    );
+
+    saveToDB();
+    success(res, { id, project_id, work_date, session_number, work_done, work_left, status: 'SUBMITTED', createdAt: now });
+  } catch (err) {
+    console.error('POST /api/pms/daily-work error:', err);
+    failure(res, 'Failed to submit work log', 500);
+  }
+});
+
+// GET /api/pms/daily-work?projectId= - Get daily work logs
+app.get('/api/pms/daily-work', requireAuth, (req, res) => {
+  try {
+    const projectId = req.query.projectId;
+    if (!projectId) {
+      return failure(res, 'projectId query parameter required', 400);
+    }
+
+    const stmt = db.prepare(
+      `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
+       FROM pms_daily_work_logs dwl
+       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
+       WHERE dwl.project_id = ?
+       GROUP BY dwl.id
+       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
+    );
+    stmt.bind([projectId]);
+    const logs = [];
+    while (stmt.step()) {
+      const log = stmt.getAsObject();
+      log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
+      logs.push(log);
+    }
+    stmt.free();
+
+    success(res, logs);
+  } catch (err) {
+    console.error('GET /api/pms/daily-work error:', err);
+    failure(res, 'Failed to fetch work logs', 500);
+  }
+});
+
+// POST /api/pms/upload-photo - Upload photo for work log
+app.post('/api/pms/upload-photo', requireAuth, uploadPMS.single('photo'), (req, res) => {
+  try {
+    if (!req.file || !req.body.work_log_id) {
+      return failure(res, 'Missing file or work_log_id', 400);
+    }
+
+    const id = 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const now = new Date().toISOString();
+    const filePath = `/uploads/pms/${req.file.filename}`;
+
+    db.run(
+      `INSERT INTO pms_work_photos (id, work_log_id, file_path, uploaded_by, createdAt)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, req.body.work_log_id, filePath, req.user.id, now]
+    );
+
+    saveToDB();
+    success(res, { id, work_log_id: req.body.work_log_id, file_path: filePath, createdAt: now });
+  } catch (err) {
+    console.error('POST /api/pms/upload-photo error:', err);
+    failure(res, 'Failed to upload photo', 500);
+  }
+});
+
+// PUT /api/pms/daily-work/:id - Update work log with admin's approved work_left
+app.put('/api/pms/daily-work/:id', requireAuth, isPMSAdmin, (req, res) => {
+  try {
+    const { approved_work_left, status } = req.body;
+
+    let updateSQL = 'UPDATE pms_daily_work_logs SET ';
+    let updates = [];
+    let params = [];
+
+    if (approved_work_left !== undefined) {
+      updates.push('approved_work_left = ?');
+      params.push(approved_work_left);
+    }
+    if (status) {
+      updates.push('status = ?');
+      params.push(status);
+    }
+
+    if (updates.length === 0) {
+      return failure(res, 'No updates provided', 400);
+    }
+
+    updateSQL += updates.join(', ') + ' WHERE id = ?';
+    params.push(req.params.id);
+
+    db.run(updateSQL, params);
+    saveToDB();
+    success(res, { message: 'Work log updated' });
+  } catch (err) {
+    console.error('PUT /api/pms/daily-work/:id error:', err);
+    failure(res, 'Failed to update work log', 500);
+  }
+});
+
+// PUT /api/pms/progress - Update project progress (ADMIN only)
+app.put('/api/pms/progress', requireAuth, isPMSAdmin, (req, res) => {
+  try {
+    const { project_id, progress_percent, remarks } = req.body;
+    if (!project_id || progress_percent === undefined) {
+      return failure(res, 'Missing required fields', 400);
+    }
+
+    const id = 'prog_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const now = new Date().toISOString();
+
+    db.run(
+      `INSERT INTO pms_project_progress (id, project_id, progress_percent, remarks, updated_by, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, project_id, progress_percent, remarks || '', req.user.id, now]
+    );
+
+    saveToDB();
+    success(res, { id, project_id, progress_percent, remarks, createdAt: now });
+  } catch (err) {
+    console.error('PUT /api/pms/progress error:', err);
+    failure(res, 'Failed to update progress', 500);
+  }
+});
+
+// GET /api/pms/reports/project/:id - Project report (ADMIN only)
+app.get('/api/pms/reports/project/:id', requireAuth, isPMSAdmin, (req, res) => {
+  try {
+    const projectId = req.params.id;
+
+    // Get project
+    const pStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
+    pStmt.bind([projectId]);
+    if (!pStmt.step()) {
+      pStmt.free();
+      return failure(res, 'Project not found', 404);
+    }
+    const project = pStmt.getAsObject();
+    pStmt.free();
+
+    // Get work logs
+    const wStmt = db.prepare(
+      'SELECT * FROM pms_daily_work_logs WHERE project_id = ? ORDER BY work_date ASC, session_number ASC'
+    );
+    wStmt.bind([projectId]);
+    const logs = [];
+    while (wStmt.step()) {
+      logs.push(wStmt.getAsObject());
+    }
+    wStmt.free();
+
+    // Group by date
+    const dayWiseProgress = {};
+    logs.forEach(log => {
+      if (!dayWiseProgress[log.work_date]) {
+        dayWiseProgress[log.work_date] = { session1: null, session2: null };
+      }
+      dayWiseProgress[log.work_date][`session${log.session_number}`] = {
+        work_done: log.work_done,
+        work_left: log.work_left,
+        status: log.status
+      };
+    });
+
+    const uniqueDates = new Set(logs.map(l => l.work_date));
+    const totalDays = uniqueDates.size;
+    const completedSessions = logs.filter(l => l.status === 'APPROVED').length;
+    const totalSessions = logs.length;
+
+    // Get latest progress
+    const prStmt = db.prepare(
+      'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
+    );
+    prStmt.bind([projectId]);
+    let progressPercent = 0;
+    let remarks = '';
+    if (prStmt.step()) {
+      const prog = prStmt.getAsObject();
+      progressPercent = prog.progress_percent;
+      remarks = prog.remarks;
+    }
+    prStmt.free();
+
+    success(res, {
+      project,
+      totalDays,
+      completedSessions,
+      totalSessions,
+      dayWiseProgress: Object.entries(dayWiseProgress).map(([date, sessions]) => ({ date, ...sessions })),
+      progressPercent,
+      remarks
+    });
+  } catch (err) {
+    console.error('GET /api/pms/reports/project/:id error:', err);
+    failure(res, 'Failed to generate project report', 500);
+  }
+});
+
+// GET /api/pms/reports/employee/:id - Employee report (ADMIN only)
+app.get('/api/pms/reports/employee/:id', requireAuth, isPMSAdmin, (req, res) => {
+  try {
+    const employeeId = req.params.id;
+
+    // Get employee
+    const eStmt = db.prepare('SELECT * FROM employees WHERE id = ?');
+    eStmt.bind([employeeId]);
+    if (!eStmt.step()) {
+      eStmt.free();
+      return failure(res, 'Employee not found', 404);
+    }
+    const employee = eStmt.getAsObject();
+    eStmt.free();
+
+    // Get assigned projects
+    const pStmt = db.prepare('SELECT * FROM pms_projects WHERE assigned_employee_id = ?');
+    pStmt.bind([employeeId]);
+    let projectCount = 0;
+    while (pStmt.step()) projectCount++;
+    pStmt.free();
+
+    // Get work logs
+    const wStmt = db.prepare(
+      'SELECT * FROM pms_daily_work_logs WHERE employee_id = ?'
+    );
+    wStmt.bind([employeeId]);
+    const logs = [];
+    while (wStmt.step()) {
+      logs.push(wStmt.getAsObject());
+    }
+    wStmt.free();
+
+    const totalWorkingDays = new Set(logs.map(l => l.work_date)).size;
+    const totalSessionsCompleted = logs.filter(l => l.status === 'APPROVED').length;
+    const pendingLogs = logs.filter(l => l.status === 'PENDING' || l.status === 'SUBMITTED');
+    const pendingWork = pendingLogs.length > 0 ? `${pendingLogs.length} sessions pending` : 'None';
+
+    success(res, {
+      employee,
+      totalWorkingDays,
+      totalSessionsCompleted,
+      pendingWork,
+      projectsAssigned: projectCount
+    });
+  } catch (err) {
+    console.error('GET /api/pms/reports/employee/:id error:', err);
+    failure(res, 'Failed to generate employee report', 500);
+  }
+});
+
+console.log('PMS ROUTES SUCCESSFULLY REGISTERED');
+} catch (pmsError) {
+  console.error('CRITICAL: PMS routes registration failed', pmsError);
+}
+
 // Catch-all for any unmatched API routes — return JSON 404 instead of falling through to static host/index.html
 app.use('/api', (req, res) => {
   console.warn('Unmatched API request', { method: req.method, path: req.path, origin: req.headers.origin || null, cookies: req.headers.cookie || null });
@@ -4097,7 +4689,9 @@ if (process.env.VITE_EMBEDDED !== '1') {
       console.error(`EADDRINUSE: Port ${port} already in use. On Windows run: netstat -ano | findstr :${port} and then taskkill /PID <pid> /F to free it.`);
     }
   });
+
   server.on('close', () => console.log('Server closed'));
+
   process.on('exit', (code) => console.log('Process exit code', code));
   process.on('SIGINT', () => {
     console.log('SIGINT received, shutting down');

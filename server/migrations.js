@@ -153,6 +153,52 @@ export async function runMigrations({ db, dbFile }) {
     createdAt TEXT
   )`, [ `CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)` ]);
 
+  // PMS (Project Management System) Tables
+  ensureTable('pms_projects', `CREATE TABLE pms_projects (
+    id TEXT PRIMARY KEY,
+    project_name TEXT,
+    assigned_employee_id TEXT,
+    start_date TEXT,
+    status TEXT,
+    createdBy TEXT,
+    createdAt TEXT
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_projects_employee ON pms_projects(assigned_employee_id)` ]);
+
+  ensureTable('pms_daily_work_logs', `CREATE TABLE pms_daily_work_logs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    employee_id TEXT,
+    work_date TEXT,
+    session_number INTEGER,
+    work_done TEXT,
+    work_left TEXT,
+    approved_work_left TEXT,
+    status TEXT,
+    createdAt TEXT,
+    FOREIGN KEY (project_id) REFERENCES pms_projects(id)
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_project ON pms_daily_work_logs(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_employee ON pms_daily_work_logs(employee_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_date ON pms_daily_work_logs(work_date)` ]);
+
+  ensureTable('pms_work_photos', `CREATE TABLE pms_work_photos (
+    id TEXT PRIMARY KEY,
+    work_log_id TEXT,
+    file_path TEXT,
+    uploaded_by TEXT,
+    createdAt TEXT,
+    FOREIGN KEY (work_log_id) REFERENCES pms_daily_work_logs(id)
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_photos_log ON pms_work_photos(work_log_id)` ]);
+
+  ensureTable('pms_project_progress', `CREATE TABLE pms_project_progress (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    progress_percent REAL,
+    remarks TEXT,
+    updated_by TEXT,
+    createdAt TEXT,
+    FOREIGN KEY (project_id) REFERENCES pms_projects(id)
+  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_progress_project ON pms_project_progress(project_id)` ]);
+
   // Ensure standard columns exist on tables where appropriate
   const tablesToPatch = ['tasks', 'calendar', 'finance', 'notifications', 'projects', 'checklists', 'notepad', 'leaves', 'holidays', 'employee_documents', 'employees_profile'];
   for (const t of tablesToPatch) {
@@ -172,6 +218,19 @@ export async function runMigrations({ db, dbFile }) {
   ensureColumns('employees', {
     is_archived: 'INTEGER DEFAULT 0',
     archived_at: 'TEXT'
+  });
+
+  // Add leave-specific columns
+  ensureColumns('leaves', {
+    appliedBy: 'TEXT',
+    appliedByName: 'TEXT',
+    appliedToName: 'TEXT',
+    department: 'TEXT',
+    leaveType: 'TEXT DEFAULT "Casual Leave"',
+    subject: 'TEXT',
+    appliedTo: 'TEXT',
+    appliedOn: 'TEXT',
+    durationType: 'TEXT DEFAULT "Multiple Days"'
   });
 
   // Add more specific migrations if needed (e.g., migrate createdDate -> createdAt for tasks)

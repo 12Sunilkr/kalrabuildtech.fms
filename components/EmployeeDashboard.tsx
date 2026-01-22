@@ -149,12 +149,38 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   const hoursWorked = elapsed / 3600;
   const overtime = Math.max(0, hoursWorked - 8);
 
-  // Performance Stats
+  // Performance Stats - Matching PerformanceReport calculation
   const myTasks = tasks.filter(t => t.assignedTo === empId);
   const totalTasks = myTasks.length;
-  const completedTasks = myTasks.filter(t => t.status === 'COMPLETED').length;
-  const overdueTasks = myTasks.filter(t => t.status === 'OVERDUE').length;
-  const performanceScore = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+  const completedTasks = myTasks.filter(t => t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
+  
+  // Calculate overdue: check both status field and due date (but NOT for HOLD tasks)
+  const todayStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+  const overdueTasks = myTasks.filter(t => {
+    if (t.status?.toUpperCase() === 'COMPLETED') return false;
+    if (t.status === 'HOLD') return false; // HOLD tasks are not overdue
+    if (t.status === 'OVERDUE') return true;
+    if (t.dueDate && t.dueDate < todayStr) return true;
+    return false;
+  }).length;
+  
+  // Timeliness: count how many completed on or before due date
+  const timelyCompleted = myTasks.filter(t => {
+    if (t.status?.toUpperCase() !== 'COMPLETED' || !t.completionDate || !t.dueDate) return false;
+    try {
+      return new Date(t.completionDate).getTime() <= new Date(t.dueDate).getTime();
+    } catch (e) { return false; }
+  }).length;
+  const lateCompleted = completedTasks - timelyCompleted;
+  
+  // Scoring logic with penalties for overdue / late tasks
+  const overduePenaltyPerTask = 0.75;
+  const latePenaltyPerTask = 0.35;
+  
+  let effectiveCompleted = completedTasks - (overdueTasks * overduePenaltyPerTask) - (lateCompleted * latePenaltyPerTask);
+  if (effectiveCompleted < 0) effectiveCompleted = 0;
+  
+  const performanceScore = totalTasks > 0 ? Math.round((effectiveCompleted / totalTasks) * 100) : 0;
 
   const DocUploadButton = ({ label, field, existing }: { label: string, field: 'aadharFront' | 'aadharBack' | 'panFront' | 'panBack', existing?: string }) => (
       <div className="relative group">
