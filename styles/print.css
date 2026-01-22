@@ -31,18 +31,16 @@
   }
 
   /* ===== TABLE PAGINATION ===== */
-  /* TABLE: Repeat headers on every page */
+  /* TABLE: Allow table to break across pages */
   .print-table {
     width: 100%;
     border-collapse: collapse;
-    page-break-inside: avoid;
-    break-inside: avoid;
+    /* ALLOW table to break across pages - REMOVED page-break-inside: avoid */
   }
 
   .print-table thead {
     display: table-header-group;
-    page-break-inside: avoid;
-    break-inside: avoid;
+    /* Headers repeat on every page automatically */
   }
 
   .print-table tbody {
@@ -63,11 +61,9 @@
     text-transform: uppercase;
     padding: 0.5rem;
     border-bottom: 2px solid #cbd5e1;
-    page-break-inside: avoid;
-    break-inside: avoid;
   }
 
-  /* TABLE BODY: Prevent row breaks */
+  /* TABLE BODY: Allow rows to break across pages, but keep individual rows together */
   .print-table tbody tr {
     page-break-inside: avoid;
     break-inside: avoid;
@@ -78,8 +74,6 @@
     padding: 0.75rem 0.5rem;
     font-size: 0.875rem;
     color: #475569;
-    page-break-inside: avoid;
-    break-inside: avoid;
   }
 
   /* ===== PAGE BREAKS ===== */
