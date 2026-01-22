@@ -31,13 +31,15 @@
   }
 
   /* ===== TABLE PAGINATION ===== */
-  /* TABLE: Allow table to break across pages */
+  /* TABLE: Allow table to break across pages - THIS IS KEY */
   .print-table {
     width: 100%;
     border-collapse: collapse;
-    /* ALLOW table to break across pages - REMOVED page-break-inside: avoid */
+    page-break-inside: auto !important;
+    break-inside: auto !important;
   }
 
+  /* Allow tbody to break across pages */
   .print-table thead {
     display: table-header-group;
     /* Headers repeat on every page automatically */
@@ -45,6 +47,8 @@
 
   .print-table tbody {
     display: table-row-group;
+    page-break-inside: auto !important;
+    break-inside: auto !important;
   }
 
   /* TABLE HEADER: Stick on every page */
