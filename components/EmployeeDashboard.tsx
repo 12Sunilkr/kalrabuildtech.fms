@@ -152,21 +152,27 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   // Performance Stats - Matching PerformanceReport calculation
   const myTasks = tasks.filter(t => t.assignedTo === empId);
   const totalTasks = myTasks.length;
-  const completedTasks = myTasks.filter(t => t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
+  const completedTasks = myTasks.filter(t => t.completionDate || t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
   
   // Calculate overdue: check both status field and due date (but NOT for HOLD tasks)
   const todayStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+  const normalizeDate = (d?: string | null) => {
+    if (!d) return '';
+    try { const dt = new Date(d); if (isNaN(dt.getTime())) return ''; return dt.toISOString().split('T')[0]; } catch (e) { return ''; }
+  };
   const overdueTasks = myTasks.filter(t => {
+    if (t.completionDate) return false; // completed tasks are not overdue
     if (t.status?.toUpperCase() === 'COMPLETED') return false;
-    if (t.status === 'HOLD') return false; // HOLD tasks are not overdue
-    if (t.status === 'OVERDUE') return true;
-    if (t.dueDate && t.dueDate < todayStr) return true;
+    if ((t.status || '').toUpperCase() === 'HOLD') return false; // HOLD tasks are not overdue
+    if ((t.status || '').toUpperCase() === 'OVERDUE') return true;
+    const due = normalizeDate(t.dueDate);
+    if (due && due < todayStr) return true;
     return false;
   }).length;
   
   // Timeliness: count how many completed on or before due date
   const timelyCompleted = myTasks.filter(t => {
-    if (t.status?.toUpperCase() !== 'COMPLETED' || !t.completionDate || !t.dueDate) return false;
+    if (!t.completionDate || !t.dueDate) return false;
     try {
       return new Date(t.completionDate).getTime() <= new Date(t.dueDate).getTime();
     } catch (e) { return false; }

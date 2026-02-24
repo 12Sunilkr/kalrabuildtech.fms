@@ -5,6 +5,7 @@
  */
 
 @media print {
+
   /* ===== PAGE SETUP ===== */
   * {
     -webkit-print-color-adjust: exact;
@@ -38,10 +39,50 @@
     overflow-x: visible !important;
   }
 
-  /* CRITICAL: Convert flex layouts to block for print flow */
+  /* REMOVED: Converting flex to block breaks modern layouts like Grid/Flex in print.
+     Browsers now handle these well. */
   .flex,
-  [class*="flex"] {
-    display: block !important;
+  [class*="flex"],
+  .grid,
+  [class*="grid"] {
+    display: flex !important;
+    /* Default back to flex if Tailwind classes are used */
+  }
+
+  .grid {
+    display: grid !important;
+  }
+
+  /* Force gaps in grid and flex layouts for print */
+  .gap-2 {
+    gap: 0.5rem !important;
+  }
+
+  .gap-3 {
+    gap: 0.75rem !important;
+  }
+
+  .gap-4 {
+    gap: 1rem !important;
+  }
+
+  .gap-6 {
+    gap: 1.5rem !important;
+  }
+
+  .gap-8 {
+    gap: 2rem !important;
+  }
+
+  /* Force grid columns in print */
+  .grid-cols-4 {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .grid-cols-2 {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 
   /* ===== CONTAINER STYLES ===== */
@@ -145,7 +186,12 @@
   }
 
   /* ===== SPACING & LAYOUT ===== */
-  h1, h2, h3, h4, h5, h6 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     page-break-after: avoid;
     break-after: avoid;
     page-break-inside: avoid;
@@ -168,16 +214,37 @@
     background-color: #f8fafc !important;
   }
 
-  .bg-green-50 {
+  .bg-green-50,
+  .bg-green-50\/50,
+  .bg-green-50\/30 {
     background-color: #f0fdf4 !important;
   }
 
-  .bg-red-50 {
+  .bg-red-50,
+  .bg-red-50\/50,
+  .bg-red-50\/30 {
     background-color: #fef2f2 !important;
   }
 
-  .bg-blue-50 {
+  .bg-blue-50,
+  .bg-blue-50\/50,
+  .bg-blue-50\/30 {
     background-color: #eff6ff !important;
+  }
+
+  .bg-indigo-50,
+  .bg-\[\#eff2ff\],
+  .bg-indigo-50\/50,
+  .bg-indigo-50\/30 {
+    background-color: #eff2ff !important;
+  }
+
+  .bg-slate-50\/50 {
+    background-color: #f8fafc !important;
+  }
+
+  .bg-white {
+    background-color: #ffffff !important;
   }
 
   /* ===== REMOVE SHADOWS & ANIMATIONS ===== */
@@ -242,6 +309,7 @@
 
 /* ===== TAILWIND OVERRIDES FOR PRINT ===== */
 @media print {
+
   /* Override Tailwind's responsive utilities */
   .print\:hidden {
     display: none !important;

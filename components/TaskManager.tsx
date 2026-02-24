@@ -86,11 +86,20 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   // Check for auto-overdue visual
   const getDisplayStatus = (task: Task): TaskStatus => {
+    // If task has been completed, consider it COMPLETED regardless of due date/status
+    if (task.completionDate) return 'COMPLETED';
+
     // If pending and due date is strictly in the past (not today), it is OVERDUE
-    if (task.status === 'PENDING' && isPast(new Date(task.dueDate)) && !isSameDay(new Date(), new Date(task.dueDate))) {
+    if ((task.status || '').toUpperCase() === 'PENDING' && task.dueDate && isPast(new Date(task.dueDate)) && !isSameDay(new Date(), new Date(task.dueDate))) {
       return 'OVERDUE';
     }
-    return task.status;
+
+    return (task.status || '') as TaskStatus;
+  };
+
+  // Helper: consider tasks with completionDate as completed
+  const isTaskCompleted = (task: Task) => {
+    return !!task.completionDate || (task.status || '').toUpperCase() === 'COMPLETED';
   };
 
   // --- File Upload Handler ---
@@ -553,9 +562,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         // Overdue tab should show calculated OVERDUE items
         matchesTab = (displayStatus === 'OVERDUE');
     } else if (activeTab === 'OBJECTIONS') {
-        // Objections tab shows only pending extension/objection requests
-        // Exclude TERMINATED and REJECTED tasks
-        matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED');
+      // Objections tab shows only pending extension/objection requests
+      // Exclude TERMINATED, REJECTED and COMPLETED tasks (if an employee completed while objection was pending)
+      matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED' && t.status !== 'COMPLETED');
     } else if (activeTab === 'TERMINATE') {
         // Terminate tab shows tasks with TERMINATED status
         matchesTab = (t.status === 'TERMINATED');
@@ -592,7 +601,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     return ds === 'COMPLETED' || ds === 'TERMINATED';
   }).length;
   const overdueCount = relevantTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
-  const objectionCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED').length;
+  const objectionCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED' && t.status !== 'COMPLETED').length;
   const terminateCount = relevantTasks.filter(t => t.status === 'TERMINATED').length;
   const rejectCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'REJECTED').length;
 
@@ -805,7 +814,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
             return (
               <div key={task.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 hover:shadow-md transition-shadow relative overflow-visible group">
-                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${isTaskOverdue ? 'bg-red-500' : (task.status === 'COMPLETED' ? 'bg-green-500' : 'bg-indigo-500')}`}></div>
+                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${isTaskOverdue ? 'bg-red-500' : (isTaskCompleted(task) ? 'bg-green-500' : 'bg-indigo-500')}`}></div>
                 
                 {/* Mobile Menu Button (3 Dots) */}
                 <div className="md:hidden absolute top-4 right-4">
@@ -884,7 +893,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                     
                     {/* Completion / Extension / Status Notes */}
                     <div className="space-y-3 mt-4">
-                      {task.status === 'COMPLETED' && (
+                      {isTaskCompleted(task) && (
                         <div className="bg-green-50/50 p-4 rounded-xl border border-green-100 text-sm">
                           <p className="font-bold text-green-800 mb-1 flex items-center gap-2"><CheckCircle2 size={16}/> Completed on {task.completionDate}</p>
                           {task.completionProcess && (

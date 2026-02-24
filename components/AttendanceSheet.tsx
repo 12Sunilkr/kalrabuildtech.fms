@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { Employee, AttendanceRecord, AttendanceValue, SundayRequest, Holiday } from '../types';
+import { Employee, AttendanceRecord, AttendanceValue, SundayRequest, Holiday, User } from '../types';
 import { getDaysInMonthArray, formatDateKey, isDateSunday, startOfDay } from '../utils/dateUtils';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
 import { ChevronLeft, ChevronRight, Calendar, AlertCircle, CheckCircle2, XCircle, X } from 'lucide-react';
@@ -15,6 +15,7 @@ interface AttendanceSheetProps {
   holidays: Holiday[];
   sundayRequests: SundayRequest[];
   setSundayRequests: React.Dispatch<React.SetStateAction<SundayRequest[]>>;
+  currentUser: User;
 }
 
 export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({ 
@@ -23,7 +24,8 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
   setAttendanceData,
   holidays,
   sundayRequests,
-  setSundayRequests
+  setSundayRequests,
+  currentUser
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [showRequestsModal, setShowRequestsModal] = useState(false);
@@ -227,7 +229,9 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
-            {employees.map(emp => {
+            {employees
+              .filter(emp => !(currentUser && currentUser.role === 'ADMIN' && emp.hideAttendance))
+              .map(emp => {
               const stats = getStats(emp.id);
               
               // Determine start date for rendering logic

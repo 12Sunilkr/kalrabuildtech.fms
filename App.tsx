@@ -153,7 +153,7 @@ const App: React.FC = () => {
       try {
         const r = await safeGet('/employees');
         const empsPayload = extractPayload(r);
-        const empsArr = ensureArray(empsPayload);
+        const empsArr = ensureArray(empsPayload).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
         setEmployees(empsArr);
       } catch (err) {
         console.warn('Employees API unreachable', err && (err.stack || err.message || err));
@@ -162,7 +162,7 @@ const App: React.FC = () => {
       // Also load archived employees separately (admin only)
       try {
         const ra = await safeGet('/employees?archived=1');
-        const archivedArr = ensureArray(extractPayload(ra));
+        const archivedArr = ensureArray(extractPayload(ra)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
         setArchivedEmployees(archivedArr);
       } catch (err) {
         console.warn('Archived employees fetch failed', err && (err.stack || err.message || err));
@@ -194,7 +194,7 @@ const App: React.FC = () => {
           if (!t) return;
           const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
           if (!ag[t.userId]) ag[t.userId] = {};
-          
+
           // Calculate duration if not provided by server
           let duration = t.durationHours;
           if (!duration && t.startTime && t.endTime) {
@@ -203,7 +203,7 @@ const App: React.FC = () => {
             const diffMs = end - start;
             duration = Math.max(0, diffMs / (1000 * 60 * 60));
           }
-          
+
           ag[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime || undefined, clockOut: t.endTime || undefined, durationHours: duration } as TimeLog;
         });
         setTimeLogs(ag);
@@ -680,8 +680,8 @@ const App: React.FC = () => {
         userDepartment={employees.find(e => e.id === currentUser.employeeId)?.department}
       />
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:m-4 md:rounded-3xl border-slate-200 shadow-2xl">
-        <header className="bg-white/80 backdrop-blur-md p-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:m-4 md:rounded-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none">
+        <header className="bg-white/80 backdrop-blur-md p-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20 print:hidden">
           <div className="flex items-center gap-2 md:hidden">
             <img src={COMPANY_LOGO} alt="Logo" className="w-8 h-8 bg-white rounded-lg shadow-sm" />
             <span className="font-extrabold text-sm uppercase tracking-tight">Kalra FMS</span>

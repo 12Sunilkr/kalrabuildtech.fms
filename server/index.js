@@ -343,18 +343,24 @@ try {
     } catch (e) { console.warn('Chat reads migration warning', e && (e.message || e)); }
 
     // Queries
-    const tblQ = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='queries'");
-    const hasQ = tblQ.step(); tblQ.free();
-    if (!hasQ) {
+    const tblQuery = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='queries'");
+    const hasQuery = tblQuery.step(); tblQuery.free();
+    if (!hasQuery) {
       db.run(`CREATE TABLE queries (
         id TEXT PRIMARY KEY,
         userId TEXT,
-        question TEXT,
-        answer TEXT,
+        senderId TEXT,
+        receiverId TEXT,
+        subject TEXT,
+        message TEXT,
+        response TEXT,
         status TEXT,
-        createdAt TEXT
+        createdAt TEXT,
+        updatedAt TEXT
       )`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_queries_userId ON queries(userId)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_queries_sender ON queries(senderId)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_queries_receiver ON queries(receiverId)`);
     }
 
     // Notepad
@@ -593,6 +599,37 @@ try {
 // Persist DB in case we created/altered tables
 fs.writeFileSync(dbFile, Buffer.from(db.export()));
 
+// Ensure queries table columns
+try {
+  const tblQueryInfo = db.prepare("PRAGMA table_info('queries')");
+  const existingCols = new Set();
+  while (tblQueryInfo.step()) {
+    existingCols.add(String(tblQueryInfo.getAsObject().name));
+  }
+  tblQueryInfo.free();
+
+  const queryCols = ['senderId', 'receiverId', 'subject', 'message', 'response', 'updatedAt'];
+  let altered = false;
+  for (const col of queryCols) {
+    if (!existingCols.has(col)) {
+      try {
+        db.run(`ALTER TABLE queries ADD COLUMN ${col} TEXT`);
+        altered = true;
+      } catch (e) { console.warn('Failed to add query column', col, e); }
+    }
+  }
+  if (altered) {
+    // Data migration: If we have old 'userId' or 'question' style records, try to populate new columns
+    try {
+      db.run(`UPDATE queries SET senderId = userId WHERE (senderId IS NULL OR senderId = '') AND userId IS NOT NULL`);
+      db.run(`UPDATE queries SET subject = question WHERE (subject IS NULL OR subject = '') AND question IS NOT NULL`);
+      db.run(`UPDATE queries SET message = question WHERE (message IS NULL OR message = '') AND question IS NOT NULL`); // fallback
+      console.log('Queries: data migration (columns -> columns) completed');
+    } catch (e) { console.warn('Queries: data migration failed', e); }
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+  }
+} catch (e) { console.warn('Queries table check failed', e); }
+
 // Ensure legacy client default admin exists (admin@fms.com / admin)
 try {
   const chk = db.prepare('SELECT id FROM users WHERE lower(email) = ?');
@@ -632,7 +669,7 @@ try {
   if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot);
   if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir);
   if (!fs.existsSync(documentsDir)) fs.mkdirSync(documentsDir);
-    if (!fs.existsSync(sitePhotosDir)) fs.mkdirSync(sitePhotosDir);
+  if (!fs.existsSync(sitePhotosDir)) fs.mkdirSync(sitePhotosDir);
 } catch (e) {
   console.warn('Failed to create uploads directories', e && (e.message || e));
 }
@@ -1293,6 +1330,7 @@ function ensureEmployeesTable() {
         birthDate TEXT,
         address TEXT,
         documents TEXT,
+        hideAttendance INTEGER DEFAULT 0,
         compOffBalance REAL
       )`);
       fs.writeFileSync(dbFile, Buffer.from(db.export()));
@@ -1305,6 +1343,21 @@ function ensureEmployeesTable() {
   }
 }
 
+// Ensure employees table has hideAttendance column on older DBs
+try {
+  const tblInfo = db.prepare("PRAGMA table_info('employees')");
+  const cols = new Set();
+  while (tblInfo.step()) { cols.add(String(tblInfo.getAsObject().name)); }
+  tblInfo.free();
+  if (!cols.has('hideAttendance')) {
+    try {
+      db.run("ALTER TABLE employees ADD COLUMN hideAttendance INTEGER DEFAULT 0");
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      console.log('Migration: added employees.hideAttendance column');
+    } catch (e) { console.warn('Failed to add employees.hideAttendance column', e && (e.message || e)); }
+  }
+} catch (e) { /* ignore */ }
+
 app.get('/api/employees', requireAuth, (req, res) => {
   try {
     ensureEmployeesTable();
@@ -1316,7 +1369,7 @@ app.get('/api/employees', requireAuth, (req, res) => {
 
     if (isAdmin) {
       console.log('GET /api/employees from', req.headers.origin || 'no-origin');
-      const q = archived ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance, archived_at FROM employees WHERE coalesce(is_archived, 0) = 1' : 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
+      const q = archived ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, archived_at FROM employees WHERE coalesce(is_archived, 0) = 1' : 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
       const stmt = db.prepare(q);
       const out = [];
       while (stmt.step()) {
@@ -1332,7 +1385,7 @@ app.get('/api/employees', requireAuth, (req, res) => {
     } else if (req.user && req.user.employeeId) {
       // Allow non-admin authenticated users to fetch the list of active employees
       // so features like team chat can display colleagues.
-      const q = 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
+      const q = 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
       const stmt = db.prepare(q);
       const out = [];
       while (stmt.step()) {
@@ -1362,7 +1415,7 @@ app.get('/api/employees/:id', requireAuth, (req, res) => {
     const id = req.params.id;
     if (!isAdmin && (!req.user || req.user.employeeId !== id)) return failure(res, 'Forbidden', 403);
 
-    const stmt = db.prepare('SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance FROM employees WHERE id = ?');
+    const stmt = db.prepare('SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     const row = stmt.getAsObject();
@@ -1382,7 +1435,7 @@ app.post('/api/employees', requireAuth, (req, res) => {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
     ensureEmployeesTable();
-    const { id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance } = req.body || {};
+    const { id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance } = req.body || {};
     if (!id || !name) return failure(res, 'Missing fields', 400);
     const check = db.prepare('SELECT id FROM employees WHERE id = ?');
     check.bind([id]);
@@ -1390,8 +1443,8 @@ app.post('/api/employees', requireAuth, (req, res) => {
     check.free();
 
     const docs = documents ? JSON.stringify(documents) : null;
-    const insert = db.prepare('INSERT INTO employees (id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    insert.run([id, name, department || null, joiningDate || null, createdAt || new Date().toISOString(), status || 'Active', designation || null, email || null, phone || null, birthDate || null, address || null, docs, compOffBalance || 0]);
+    const insert = db.prepare('INSERT INTO employees (id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    insert.run([id, name, department || null, joiningDate || null, createdAt || new Date().toISOString(), status || 'Active', designation || null, email || null, phone || null, birthDate || null, address || null, docs, hideAttendance ? 1 : 0, compOffBalance || 0]);
     insert.free && insert.free();
     fs.writeFileSync(dbFile, Buffer.from(db.export()));
     return success(res, null, 'Created', 201);
@@ -1408,7 +1461,7 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     if (req.user.role !== 'ADMIN' && req.user.employeeId !== id) return failure(res, 'Forbidden', 403);
 
     ensureEmployeesTable();
-    const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, compOffBalance, is_archived } = req.body || {};
+    const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, is_archived } = req.body || {};
     const stmt = db.prepare('SELECT id FROM employees WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
@@ -1418,8 +1471,8 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     // If setting is_archived, record archived_at timestamp when archiving
     const archivedAt = is_archived ? new Date().toISOString() : null;
 
-    const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), compOffBalance = coalesce(?, compOffBalance), is_archived = coalesce(?, is_archived), archived_at = coalesce(?, archived_at) WHERE id = ?');
-    update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, compOffBalance || null, is_archived == null ? null : (is_archived ? 1 : 0), archivedAt, id]);
+    const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), is_archived = coalesce(?, is_archived), archived_at = coalesce(?, archived_at) WHERE id = ?');
+    update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, is_archived == null ? null : (is_archived ? 1 : 0), archivedAt, id]);
     update.free && update.free();
     fs.writeFileSync(dbFile, Buffer.from(db.export()));
     return success(res, null, 'Updated');
@@ -1718,6 +1771,64 @@ function genId(prefix = '') {
 }
 
 // Attendance endpoints
+// Use a more flexible route for the update endpoint to avoid 404s
+app.put('/api/attendance*', requireAuth, (req, res) => {
+  const fullPath = req.path;
+  // Extract ID from path: /api/attendance/ID or /attendance/ID
+  const id = fullPath.replace(/^\/api\/attendance\//, '').replace(/^\/attendance\//, '');
+  console.log(`[ATTENDANCE] PUT catch-all hit for path=${fullPath}, extracted id=${id}`, req.body);
+
+  if (!id || id === 'attendance') {
+    console.warn('[ATTENDANCE] PUT skip: no ID provided');
+    return failure(res, 'ID required', 400);
+  }
+
+  try {
+    const { clockIn, clockOut, value, location, notes, userId, date } = req.body || {};
+
+    // Check if record exists
+    const checkStmt = db.prepare('SELECT id, createdAt FROM attendance WHERE id = ?');
+    const exists = checkStmt.bind([id]) && checkStmt.step();
+    let createdAt = new Date().toISOString();
+    if (exists) {
+      const row = checkStmt.getAsObject();
+      createdAt = row.createdAt || createdAt;
+    }
+    checkStmt.free();
+
+    // Use INSERT OR REPLACE for upsert behavior
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO attendance (id, userId, date, clockIn, clockOut, value, location, notes, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    // If it exists, we might want to keep the old userId/date if not provided
+    // But usually in this app they are provided or derivable from ID
+    const finalUserId = userId || (id.split('-')[1]); // fallback to parsing ID A-E-002-date
+    const finalDate = date || (id.split('-').slice(2).join('-'));
+
+    stmt.run([
+      id,
+      finalUserId,
+      finalDate,
+      clockIn || null,
+      clockOut || null,
+      value == null ? null : value,
+      location || null,
+      notes || null,
+      createdAt
+    ]);
+    stmt.free();
+
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    console.log(`[ATTENDANCE] PUT success: ${exists ? 'Updated' : 'Created'}`);
+    return success(res, null, exists ? 'Updated' : 'Created');
+  } catch (err) {
+    console.error('[ATTENDANCE] PUT error', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
 app.get('/api/attendance', requireAuth, (req, res) => {
   try {
     // Optional query: ?userId= or ?date=
@@ -1763,24 +1874,6 @@ app.post('/api/attendance', requireAuth, (req, res) => {
   }
 });
 
-app.put('/api/attendance/:id', requireAuth, (req, res) => {
-  try {
-    const id = req.params.id;
-    const { clockIn, clockOut, value, location, notes } = req.body || {};
-    const stmt = db.prepare('SELECT id FROM attendance WHERE id = ?');
-    stmt.bind([id]);
-    if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
-    stmt.free();
-    const update = db.prepare('UPDATE attendance SET clockIn = coalesce(?, clockIn), clockOut = coalesce(?, clockOut), value = coalesce(?, value), location = coalesce(?, location), notes = coalesce(?, notes) WHERE id = ?');
-    update.run([clockIn || null, clockOut || null, value == null ? null : value, location || null, notes || null, id]);
-    update.free && update.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
-    return success(res, null, 'Updated');
-  } catch (err) {
-    console.error('Attendance PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
-  }
-});
 
 app.delete('/api/attendance/:id', requireAuth, (req, res) => {
   try {
@@ -2471,7 +2564,7 @@ app.post('/api/notifications', requireAuth, (req, res) => {
             const lastTime = new Date(last.createdAt).getTime();
             if ((new Date().getTime() - lastTime) < 5000) {
               console.log('Notifications POST: duplicate notification suppressed', { userId, message });
-              try { db.run('ROLLBACK'); } catch (er) {}
+              try { db.run('ROLLBACK'); } catch (er) { }
               return success(res, { id: last.id }, 'Duplicate suppressed', 200);
             }
           }
@@ -2480,7 +2573,7 @@ app.post('/api/notifications', requireAuth, (req, res) => {
         }
       } catch (ie) {
         // If the check fails, proceed to insert as normal
-        try { lastStmt && lastStmt.free && lastStmt.free(); } catch (_) {}
+        try { lastStmt && lastStmt.free && lastStmt.free(); } catch (_) { }
       }
 
       // Try full insert; fallback if schema lacks isRead/meta
@@ -2640,13 +2733,13 @@ app.put('/api/checklists/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
     const { item, done } = req.body || {};
-    
+
     // Check if checklist item exists
     const check = db.prepare('SELECT id FROM checklists WHERE id = ?');
     check.bind([id]);
     if (!check.step()) { check.free(); return failure(res, 'Checklist item not found', 404); }
     check.free();
-    
+
     try {
       db.run('BEGIN TRANSACTION');
       const updates = [];
@@ -2654,7 +2747,7 @@ app.put('/api/checklists/:id', requireAuth, (req, res) => {
       if (item) { updates.push('item = ?'); values.push(item); }
       if (done !== undefined && done !== null) { updates.push('done = ?'); values.push(done ? 1 : 0); }
       values.push(id);
-      
+
       if (updates.length > 0) {
         const query = `UPDATE checklists SET ${updates.join(', ')} WHERE id = ?`;
         const stmt = db.prepare(query);
@@ -2675,7 +2768,7 @@ app.put('/api/checklists/:id', requireAuth, (req, res) => {
 app.delete('/api/checklists/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
-    
+
     try {
       db.run('BEGIN TRANSACTION');
       const del = db.prepare('DELETE FROM checklists WHERE id = ?');
@@ -2727,13 +2820,13 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
     const { taskName, doerId, department, startDate, config, active } = req.body || {};
-    
+
     // Check if template exists
     const check = db.prepare('SELECT id FROM checklist_templates WHERE id = ?');
     check.bind([id]);
     if (!check.step()) { check.free(); return failure(res, 'Template not found', 404); }
     check.free();
-    
+
     try {
       db.run('BEGIN TRANSACTION');
       const data = JSON.stringify({ taskName, doerId, department, startDate, config, active });
@@ -2755,25 +2848,25 @@ app.delete('/api/checklist-templates/:id', requireAuth, (req, res) => {
   try {
     console.log('DELETE checklist-template endpoint called', { id: req.params.id });
     const id = req.params.id;
-    
+
     // Delete all checklist items that reference this template first
     const delItems = db.prepare('DELETE FROM checklists WHERE refId = ?');
     delItems.run([id]);
     delItems.free();
-    
+
     // Delete the template itself
     const delTemplate = db.prepare('DELETE FROM checklist_templates WHERE id = ?');
     delTemplate.run([id]);
     delTemplate.free();
-    
+
     // Persist to DB file
     try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('DB persist failed', e); }
-    
+
     console.log('DELETE checklist-template succeeded', { id });
     return success(res, { message: 'Template deleted successfully', id });
-  } catch (err) { 
-    console.error('DELETE checklist-template failed', { id: req.params.id, err: err && (err.stack || err.message || err) }); 
-    return failure(res, 'Failed to delete template: ' + (err && err.message || err), 500); 
+  } catch (err) {
+    console.error('DELETE checklist-template failed', { id: req.params.id, err: err && (err.stack || err.message || err) });
+    return failure(res, 'Failed to delete template: ' + (err && err.message || err), 500);
   }
 });
 console.log('Registered API routes: /api/checklist-templates (POST/GET/PUT/DELETE)');
@@ -2874,7 +2967,7 @@ function handleDeleteO2d(req, res) {
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after o2d delete', e && (e.message || e)); }
       return success(res, null, 'Deleted');
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) {}
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('O2D DELETE failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to delete', 500);
     }
@@ -2890,10 +2983,10 @@ app.post('/api/sitephotos', requireAuth, (req, res) => {
   try {
     console.log('API: POST /api/sitephotos', { path: req.path, user: req.user && req.user.id, hasImageData: !!req.body?.imageData });
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    
+
     const projectId = req.body?.projectId || null; // Make projectId optional
     const imageData = req.body?.imageData || null; // Base64 image data from JSON
-    
+
     if (!imageData) return failure(res, 'Missing imageData', 400);
 
     // Check project exists and not closed if projectId provided
@@ -2912,7 +3005,7 @@ app.post('/api/sitephotos', requireAuth, (req, res) => {
     const gps = req.body?.gps || null;
     const date = new Date().toISOString().split('T')[0];
     const timestamp = new Date().toISOString();
-    
+
     // Store base64 directly as imageUrl
     const imageUrl = imageData;
     const filename = 'base64-' + id;
@@ -2927,7 +3020,7 @@ app.post('/api/sitephotos', requireAuth, (req, res) => {
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after site photo insert', e && (e.message || e)); }
       return success(res, { id, projectId, imageUrl, filename, uploadedBy, date, timestamp });
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) {}
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('Site photo insert failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to persist site photo', 500);
     }
@@ -2963,50 +3056,70 @@ app.get('/api/leaves', requireAuth, (req, res) => {
   try {
     const loggedInUserId = req.user.id;
     const type = req.query.type; // 'my' for employee, 'approvals' for manager/approver, undefined for admin
-    
+
     console.log('DEBUG: GET /api/leaves', { loggedInUserId, userRole: req.user.role, type, query: req.query });
-    
-    let stmt;
-    let params = [];
-    
+
+    // Enhanced JOIN strategy to resolve names and canonical IDs from multiple sources
+    // Provides resolvedEmployeeId which is the string ID used for lookups in the frontend employees list
+    const columns = `
+      l.id, l.userId, l.appliedBy, l.appliedTo, 
+      coalesce(e1.name, e2.name, u1.name, l.appliedByName, 'Employee ' || l.appliedBy) as appliedByName, 
+      coalesce(e3.name, e4.name, u2.name, l.appliedToName) as appliedToName, 
+      coalesce(e1.department, e2.department, l.department, 'Staff') as department,
+      coalesce(u1.employeeId, e1.id, l.appliedBy) as resolvedEmployeeId,
+      l.startDate, l.endDate, l.days, l.status, l.reason, 
+      l.leaveType, l.subject, l.appliedOn, l.durationType, l.createdAt
+    `;
+    const baseQuery = `
+      SELECT ${columns}
+      FROM leaves l
+      -- Resolve applicant info
+      LEFT JOIN employees e1 ON CAST(e1.id AS TEXT) = CAST(l.appliedBy AS TEXT)
+      LEFT JOIN users u1 ON CAST(u1.id AS TEXT) = CAST(l.appliedBy AS TEXT)
+      LEFT JOIN employees e2 ON CAST(e2.id AS TEXT) = CAST(u1.employeeId AS TEXT)
+      
+      -- Resolve approver info
+      LEFT JOIN employees e3 ON CAST(e3.id AS TEXT) = CAST(l.appliedTo AS TEXT)
+      LEFT JOIN users u2 ON CAST(u2.id AS TEXT) = CAST(l.appliedTo AS TEXT)
+      LEFT JOIN employees e4 ON CAST(e4.id AS TEXT) = CAST(u2.employeeId AS TEXT)
+    `;
+
     // Role-based filtering
     if (req.user.role === 'ADMIN') {
-      // Admin sees all leaves
       console.log('DEBUG: Admin view - fetching all leaves');
-      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves ORDER BY appliedOn DESC LIMIT 500');
+      stmt = db.prepare(`${baseQuery} ORDER BY l.appliedOn DESC LIMIT 500`);
     } else if (type === 'my') {
-      // Employee view - my applications (appliedBy === loggedInUserId)
-      console.log('DEBUG: Employee view - fetching own leaves where appliedBy =', loggedInUserId);
-      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves WHERE appliedBy = ? ORDER BY appliedOn DESC LIMIT 500');
-      params = [loggedInUserId];
+      const usersEmpId = req.user.employeeId || 'NON_EXISTENT_EMP_ID';
+      console.log('DEBUG: Employee view - fetching own leaves where appliedBy =', loggedInUserId, 'or empId =', usersEmpId);
+      stmt = db.prepare(`${baseQuery} WHERE l.appliedBy = ? OR l.userId = ? OR l.appliedBy = ? ORDER BY l.appliedOn DESC LIMIT 500`);
+      params = [loggedInUserId, loggedInUserId, usersEmpId];
     } else if (type === 'approvals') {
-      // Manager/Approver view - leaves sent to them (appliedTo === loggedInUserId)
-      console.log('DEBUG: Manager view - fetching leaves where appliedTo =', loggedInUserId);
-      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves WHERE appliedTo = ? ORDER BY appliedOn DESC LIMIT 500');
-      params = [loggedInUserId];
+      const usersEmpId = req.user.employeeId || 'NON_EXISTENT_EMP_ID';
+      console.log('DEBUG: Manager view - fetching leaves where appliedTo =', loggedInUserId, 'or', usersEmpId);
+      stmt = db.prepare(`${baseQuery} WHERE l.appliedTo = ? OR l.appliedTo = ? ORDER BY l.appliedOn DESC LIMIT 500`);
+      params = [loggedInUserId, usersEmpId];
     } else {
-      // Default: treat as employee view
       console.log('DEBUG: Default view - fetching own leaves where appliedBy =', loggedInUserId);
-      stmt = db.prepare('SELECT id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt FROM leaves WHERE appliedBy = ? ORDER BY appliedOn DESC LIMIT 500');
-      params = [loggedInUserId];
+      stmt = db.prepare(`${baseQuery} WHERE l.appliedBy = ? OR l.userId = ? ORDER BY l.appliedOn DESC LIMIT 500`);
+      params = [loggedInUserId, loggedInUserId];
     }
-    
+
     if (params.length > 0) stmt.bind(params);
-    
+
     const out = [];
     while (stmt.step()) {
       const row = stmt.getAsObject();
-      // Map userId to employeeId for frontend compatibility
-      row.employeeId = row.appliedBy || row.userId;
+      // Ensure frontend compatibility
+      row.employeeId = row.resolvedEmployeeId || row.appliedBy || row.userId;
       out.push(row);
     }
     stmt.free();
-    
+
     console.log('DEBUG: Returning leaves count:', out.length);
     return success(res, out);
-  } catch (err) { 
-    console.error('Leaves GET error', err && (err.stack || err.message || err)); 
-    return failure(res, 'Internal server error', 500); 
+  } catch (err) {
+    console.error('Leaves GET error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
   }
 });
 
@@ -3015,24 +3128,25 @@ app.post('/api/leaves', requireAuth, (req, res) => {
   try {
     const appliedBy = req.user.id; // The logged-in user (employee)
     const { startDate, endDate, reason, leaveType, subject, appliedTo, durationType } = req.body;
-    
+
     console.log('DEBUG: POST /leaves payload', { appliedBy, appliedTo, startDate, endDate, leaveType, subject, durationType });
-    
+
     if (!startDate || !endDate || !reason || !appliedTo) {
       return failure(res, 'Missing required fields (startDate, endDate, reason, appliedTo)', 400);
     }
-    
+
     const start = new Date(startDate);
     const end = new Date(endDate);
     if (end < start) return failure(res, 'End date must be after start date', 400);
-    
+
     // Calculate days (inclusive)
     const diffTime = Math.abs(end - start);
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    
-    // Get applied by user details
+
+    // Get applied by user details (lookup using employeeId string if available)
+    const empIdToLookup = req.user.employeeId || req.user.id;
     const appliedByStmt = db.prepare('SELECT id, name, department FROM employees WHERE id = ?');
-    appliedByStmt.bind([appliedBy]);
+    appliedByStmt.bind([String(empIdToLookup)]);
     let appliedByName = '', appliedByDept = '';
     if (appliedByStmt.step()) {
       const empData = appliedByStmt.getAsObject();
@@ -3040,7 +3154,7 @@ app.post('/api/leaves', requireAuth, (req, res) => {
       appliedByDept = empData.department || '';
     }
     appliedByStmt.free();
-    
+
     // Get applied to user name
     let appliedToName = '';
     if (appliedTo !== 'ADMIN') {
@@ -3054,68 +3168,69 @@ app.post('/api/leaves', requireAuth, (req, res) => {
     } else {
       appliedToName = 'Administrator';
     }
-    
+
     const id = genId('LEAVE-');
     const timestamp = new Date().toISOString();
-    
+
     console.log('DEBUG: Saving leave', { id, appliedBy, appliedTo, appliedByName, appliedToName, appliedByDept });
-    
+
     try {
       db.run('BEGIN TRANSACTION');
+      const appliedByIdentifier = req.user.employeeId || req.user.id;
       const insert = db.prepare('INSERT INTO leaves (id, userId, appliedBy, appliedTo, appliedByName, appliedToName, department, startDate, endDate, days, status, reason, leaveType, subject, appliedOn, durationType, createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
       insert.run([
-        id, 
-        appliedBy,  // userId = appliedBy
-        appliedBy,  // explicit appliedBy
-        appliedTo, 
-        appliedByName, 
-        appliedToName, 
+        id,
+        appliedBy,  // userId = appliedBy (keep numeric for legacy/reference)
+        String(appliedByIdentifier),  // appliedBy = string identifier for easier lookup
+        appliedTo,
+        appliedByName,
+        appliedToName,
         appliedByDept,
-        startDate, 
-        endDate, 
-        diffDays, 
-        'PENDING', 
-        reason, 
-        leaveType || 'Casual Leave', 
-        subject || '', 
-        timestamp, 
-        durationType || 'Multiple Days', 
+        startDate,
+        endDate,
+        diffDays,
+        'PENDING',
+        reason,
+        leaveType || 'Casual Leave',
+        subject || '',
+        timestamp,
+        durationType || 'Multiple Days',
         timestamp
       ]);
       insert.free();
       db.run('COMMIT');
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave insert', e && (e.message || e)); }
-      
-      const responseData = { 
-        id, 
+
+      const responseData = {
+        id,
         userId: appliedBy,
         appliedBy,
         appliedTo,
         appliedByName,
         appliedToName,
         department: appliedByDept,
-        startDate, 
-        endDate, 
-        days: diffDays, 
-        status: 'PENDING', 
-        reason, 
-        leaveType: leaveType || 'Casual Leave', 
-        subject: subject || '', 
-        appliedOn: timestamp, 
-        durationType: durationType || 'Multiple Days', 
-        createdAt: timestamp 
+        startDate,
+        endDate,
+        days: diffDays,
+        status: 'PENDING',
+        reason,
+        leaveType: leaveType || 'Casual Leave',
+        subject: subject || '',
+        appliedOn: timestamp,
+        durationType: durationType || 'Multiple Days',
+        createdAt: timestamp
       };
-      
+
       console.log('DEBUG: Leave saved successfully', responseData);
       return success(res, responseData);
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) {}
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('Leave insert failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to create leave application', 500);
     }
-  } catch (err) { 
-    console.error('Leaves POST error', err && (err.stack || err.message || err)); 
-    return failure(res, 'Internal server error', 500); 
+  } catch (err) {
+    console.error('Leaves POST error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
   }
 });
 
@@ -3135,8 +3250,8 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
 
     // Authorization: Only admin, the approver (appliedTo), or the applicant (appliedBy) can update
     const isAdmin = req.user.role === 'ADMIN';
-    const isApprover = leave.appliedTo === req.user.id || leave.appliedTo === req.user.employeeId || (leave.appliedTo === 'ADMIN' && isAdmin);
-    const isApplicant = leave.appliedBy === req.user.id || leave.appliedBy === req.user.employeeId;
+    const isApprover = String(leave.appliedTo) === String(req.user.id) || (req.user.employeeId && String(leave.appliedTo) === String(req.user.employeeId)) || (leave.appliedTo === 'ADMIN' && isAdmin);
+    const isApplicant = String(leave.appliedBy) === String(req.user.id) || (req.user.employeeId && String(leave.appliedBy) === String(req.user.employeeId));
 
     // For status changes, only admin or approver can approve/reject
     if (status && status !== 'PENDING') {
@@ -3149,7 +3264,7 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
     if (!isAdmin && !isApprover && !isApplicant) {
       return failure(res, 'Forbidden: Insufficient permissions', 403);
     }
-    
+
     try {
       db.run('BEGIN TRANSACTION');
       const updates = [];
@@ -3169,7 +3284,7 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
         values.push(diffDays);
       }
       values.push(id);
-      
+
       if (updates.length > 0) {
         const query = `UPDATE leaves SET ${updates.join(', ')} WHERE id = ?`;
         const stmt = db.prepare(query);
@@ -3181,7 +3296,7 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
       console.log('DEBUG: Leave updated successfully:', { id, status });
       return success(res, { id, message: 'Leave updated successfully' });
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) {}
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('Leave update failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to update leave', 500);
     }
@@ -3220,7 +3335,7 @@ app.delete('/api/leaves/:id', requireAuth, (req, res) => {
       console.log('DEBUG: Leave deleted successfully:', id);
       return success(res, { message: 'Leave deleted successfully' });
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) {}
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('Leave delete failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to delete leave', 500);
     }
@@ -3286,7 +3401,7 @@ app.put('/api/projects/:id/close', requireAuth, (req, res) => {
       try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after project close', e && (e.message || e)); }
       return success(res, null, 'Project closed');
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) {}
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('Project close failed', e && (e.stack || e.message || e));
       return failure(res, 'Failed to close project', 500);
     }
@@ -3372,37 +3487,37 @@ app.post('/api/chat', requireAuth, (req, res) => {
 });
 
 app.get('/api/chat/:teamId', requireAuth, (req, res) => {
-// Also support GET /api/chat/employee/:employeeId to fetch all messages where an employee participates
-app.get('/api/chat/employee/:employeeId', requireAuth, (req, res) => {
-  try {
-    const emp = String(req.params.employeeId);
-    const limit = parseInt(req.query.limit) || 500;
-    const stmt = db.prepare('SELECT id, teamId, senderId, message, meta, createdAt, updatedAt, is_deleted, is_pinned, edited, replyTo FROM chat WHERE senderId = ? OR receiverId = ? OR teamId LIKE ? OR teamId = ? ORDER BY createdAt DESC LIMIT ?');
-    stmt.bind([emp, emp, '%-' + emp + '-%', emp, limit]);
-    const out = [];
-    while (stmt.step()) {
-      const r = stmt.getAsObject();
-      try { r.meta = r.meta ? JSON.parse(r.meta) : undefined; } catch (e) { r.meta = undefined; }
-      out.push({
-        id: r.id,
-        teamId: r.teamId,
-        senderId: r.senderId,
-        content: (r.message && String(r.message) !== 'Invalid Date') ? String(r.message) : '',
-        timestamp: r.createdAt,
-        updatedAt: r.updatedAt || undefined,
-        isDeleted: r.is_deleted ? true : false,
-        isPinned: r.is_pinned ? true : false,
-        edited: r.edited ? true : false,
-        replyTo: r.replyTo || undefined,
-        attachment: r.meta && r.meta.attachment ? r.meta.attachment : undefined
-      });
-    }
-    stmt.free();
-    const enriched = out.reverse();
-    console.log('Chat EMP GET: returning', enriched.length, 'messages for employee', emp);
-    return success(res, enriched);
-  } catch (err) { console.error('Chat EMP GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
-});
+  // Also support GET /api/chat/employee/:employeeId to fetch all messages where an employee participates
+  app.get('/api/chat/employee/:employeeId', requireAuth, (req, res) => {
+    try {
+      const emp = String(req.params.employeeId);
+      const limit = parseInt(req.query.limit) || 500;
+      const stmt = db.prepare('SELECT id, teamId, senderId, message, meta, createdAt, updatedAt, is_deleted, is_pinned, edited, replyTo FROM chat WHERE senderId = ? OR receiverId = ? OR teamId LIKE ? OR teamId = ? ORDER BY createdAt DESC LIMIT ?');
+      stmt.bind([emp, emp, '%-' + emp + '-%', emp, limit]);
+      const out = [];
+      while (stmt.step()) {
+        const r = stmt.getAsObject();
+        try { r.meta = r.meta ? JSON.parse(r.meta) : undefined; } catch (e) { r.meta = undefined; }
+        out.push({
+          id: r.id,
+          teamId: r.teamId,
+          senderId: r.senderId,
+          content: (r.message && String(r.message) !== 'Invalid Date') ? String(r.message) : '',
+          timestamp: r.createdAt,
+          updatedAt: r.updatedAt || undefined,
+          isDeleted: r.is_deleted ? true : false,
+          isPinned: r.is_pinned ? true : false,
+          edited: r.edited ? true : false,
+          replyTo: r.replyTo || undefined,
+          attachment: r.meta && r.meta.attachment ? r.meta.attachment : undefined
+        });
+      }
+      stmt.free();
+      const enriched = out.reverse();
+      console.log('Chat EMP GET: returning', enriched.length, 'messages for employee', emp);
+      return success(res, enriched);
+    } catch (err) { console.error('Chat EMP GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+  });
   try {
     const teamId = req.params.teamId;
     const limit = parseInt(req.query.limit) || 200;
@@ -3732,30 +3847,97 @@ app.delete('/api/notepad/:id', requireAuth, (req, res) => {
 // Queries
 app.post('/api/queries', requireAuth, (req, res) => {
   try {
-    const { question } = req.body || {};
-    if (!question) return failure(res, 'Missing question', 400);
+    const { subject, message, question, to } = req.body || {};
+    const finalSubject = subject || question;
+    const finalMessage = message || question;
+
+    // Log incoming request briefly for debugging
+    console.log('[API] POST /api/queries body:', { subject: finalSubject, to, user: req.user && { id: req.user.id, employeeId: req.user.employeeId } });
+
+    if (!finalSubject || !finalMessage || !to) return failure(res, 'Missing subject, message or recipient', 400);
+
     try {
       db.run('BEGIN TRANSACTION');
       const id = genId('Q-');
-      const createdAt = new Date().toISOString();
-      const insert = db.prepare('INSERT INTO queries (id, userId, question, answer, status, createdAt) VALUES (?,?,?,?,?,?)');
-      insert.run([id, req.user && (req.user.employeeId || req.user.id) || null, question, null, 'OPEN', createdAt]);
+      const now = new Date().toISOString();
+      const senderId = req.user.employeeId || 'ADMIN-' + req.user.id;
+
+      const insert = db.prepare('INSERT INTO queries (id, userId, senderId, receiverId, subject, message, status, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?)');
+      // Cast receiver id to string to avoid sqlite type coercion issues
+      const receiverId = to != null ? String(to) : null;
+      insert.run([id, String(req.user.id), senderId, receiverId, finalSubject, finalMessage, 'OPEN', now, now]);
       insert.free();
+
       db.run('COMMIT');
       fs.writeFileSync(dbFile, Buffer.from(db.export()));
-      return success(res, { id }, 'Created', 201);
-    } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
-  } catch (err) { console.error('Queries POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+      return success(res, { id, status: 'OPEN', createdAt: now }, 'Query submitted successfully', 201);
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      console.error('Queries POST transactional error', e);
+      return failure(res, 'Internal server error while creating query', 500);
+    }
+  } catch (err) {
+    console.error('Queries POST error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
 });
 
 app.get('/api/queries', requireAuth, (req, res) => {
+  // Provide additional logging when debugging query listing issues
+  console.log('[API] GET /api/queries requested by', req.user && { id: req.user.id, employeeId: req.user.employeeId });
+
+  const joinedSql = `
+    SELECT 
+      q.id, q.userId, q.senderId as "from", q.receiverId as "to", q.subject, q.message, q.response, q.status, q.createdAt, q.updatedAt,
+      COALESCE(e1.name, u1.name) as senderName,
+      COALESCE(e2.name, u2.name) as receiverName
+    FROM queries q
+    LEFT JOIN employees e1 ON q.senderId = e1.id
+    LEFT JOIN users u1 ON q.userId = u1.id
+    LEFT JOIN employees e2 ON q.receiverId = e2.id
+    LEFT JOIN users u2 ON q.receiverId = u2.id
+    ORDER BY q.createdAt DESC
+  `;
+
   try {
-    const stmt = db.prepare('SELECT id, userId, question, answer, status, createdAt FROM queries ORDER BY createdAt DESC');
+    // First attempt: run the richer joined query (may fail on older DBs)
+    const stmt = db.prepare(joinedSql);
     const out = [];
     while (stmt.step()) out.push(stmt.getAsObject());
     stmt.free();
     return success(res, out || []);
-  } catch (err) { console.error('Queries GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+  } catch (err) {
+    // Log the detailed SQL error for debugging and fall back to a safe simple select
+    console.error('Queries GET: joined SQL prepare/step failed, falling back to simple select', err && (err.stack || err.message || err));
+    try {
+      const fallback = db.prepare('SELECT id, userId, senderId, receiverId, subject, message, response, status, createdAt, updatedAt FROM queries ORDER BY createdAt DESC');
+      const out = [];
+      while (fallback.step()) out.push(fallback.getAsObject());
+      fallback.free();
+      return success(res, out || []);
+    } catch (err2) {
+      console.error('Queries GET fallback failed', err2 && (err2.stack || err2.message || err2));
+      return failure(res, 'Internal server error', 500);
+    }
+  }
+});
+
+app.put('/api/queries/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const { status, response } = req.body || {};
+    const now = new Date().toISOString();
+
+    const stmt = db.prepare('UPDATE queries SET status = coalesce(?, status), response = coalesce(?, response), updatedAt = ? WHERE id = ?');
+    stmt.run([status || null, response || null, now, id]);
+    stmt.free();
+
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    return success(res, null, 'Query updated');
+  } catch (err) {
+    console.error('Queries PUT error', err);
+    return failure(res, 'Internal server error', 500);
+  }
 });
 
 app.delete('/api/queries/:id', requireAuth, (req, res) => {
@@ -4219,7 +4401,7 @@ if (process.env.NODE_ENV !== 'production') {
       while (s.step()) {
         const r = s.getAsObject();
         let nestedId = null;
-        try { const d = JSON.parse(r.data || '{}'); nestedId = d && (d.id || d.orderId || d.refId) ? String(d.id || d.orderId || d.refId) : null; } catch (e) {}
+        try { const d = JSON.parse(r.data || '{}'); nestedId = d && (d.id || d.orderId || d.refId) ? String(d.id || d.orderId || d.refId) : null; } catch (e) { }
         out.push({ id: r.id, nestedId, status: r.status, createdBy: r.createdBy, createdAt: r.createdAt });
       }
       s.free();
@@ -4252,413 +4434,413 @@ console.log('LOADING PMS ROUTES - This message confirms PMS code is executing');
 
 try {
 
-// Middleware to check if user is ADMIN for PMS
-const isPMSAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== 'ADMIN') {
-    return failure(res, 'Access denied: PMS Admin only', 403);
-  }
-  next();
-};
-
-// POST /api/pms/projects - Create new project (ADMIN only)
-app.post('/api/pms/projects', requireAuth, isPMSAdmin, (req, res) => {
-  console.log('DEBUG: POST /api/pms/projects called');
-  try {
-    const { project_name, assigned_employee_id, start_date } = req.body;
-    if (!project_name || !assigned_employee_id || !start_date) {
-      return failure(res, 'Missing required fields', 400);
+  // Middleware to check if user is ADMIN for PMS
+  const isPMSAdmin = (req, res, next) => {
+    if (!req.user || req.user.role !== 'ADMIN') {
+      return failure(res, 'Access denied: PMS Admin only', 403);
     }
+    next();
+  };
 
-    const id = 'pms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const now = new Date().toISOString();
-
-    db.run(
-      `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, status, createdBy, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, project_name, assigned_employee_id, start_date, 'Active', req.user.id, now]
-    );
-
-    saveToDB();
-    success(res, { id, project_name, assigned_employee_id, start_date, status: 'Active', createdAt: now });
-  } catch (err) {
-    console.error('POST /api/pms/projects error:', err);
-    failure(res, 'Failed to create project', 500);
-  }
-});
-
-// GET /api/pms/projects - Get all projects (ADMIN) or assigned project (EMPLOYEE)
-app.get('/api/pms/projects', requireAuth, (req, res) => {
-  console.log('DEBUG: GET /api/pms/projects called');
-  try {
-    let query = 'SELECT * FROM pms_projects WHERE 1=1';
-    let params = [];
-
-    // If employee, show only assigned projects
-    if (req.user.role === 'EMPLOYEE') {
-      query += ' AND assigned_employee_id = ?';
-      params.push(req.user.employeeId || String(req.user.id));
-    }
-
-    query += ' ORDER BY createdAt DESC';
-
-    const stmt = db.prepare(query);
-    stmt.bind(params);
-    const projects = [];
-    while (stmt.step()) {
-      projects.push(stmt.getAsObject());
-    }
-    stmt.free();
-
-    success(res, projects);
-  } catch (err) {
-    console.error('GET /api/pms/projects error:', err);
-    failure(res, 'Failed to fetch projects', 500);
-  }
-});
-
-// GET /api/pms/projects/:id - Get single project with daily work logs
-app.get('/api/pms/projects/:id', requireAuth, (req, res) => {
-  try {
-    const projectId = req.params.id;
-
-    // Get project
-    const pStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
-    pStmt.bind([projectId]);
-    if (!pStmt.step()) {
-      pStmt.free();
-      return failure(res, 'Project not found', 404);
-    }
-    const project = pStmt.getAsObject();
-    pStmt.free();
-
-    // Check access
-    if (req.user.role === 'EMPLOYEE' && project.assigned_employee_id !== (req.user.employeeId || String(req.user.id))) {
-      return failure(res, 'Access denied', 403);
-    }
-
-    // Get daily work logs
-    const wStmt = db.prepare(
-      `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
-       FROM pms_daily_work_logs dwl
-       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
-       WHERE dwl.project_id = ?
-       GROUP BY dwl.id
-       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
-    );
-    wStmt.bind([projectId]);
-    const logs = [];
-    while (wStmt.step()) {
-      const log = wStmt.getAsObject();
-      log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
-      logs.push(log);
-    }
-    wStmt.free();
-
-    // Get project progress
-    const prStmt = db.prepare(
-      'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
-    );
-    prStmt.bind([projectId]);
-    let progress = null;
-    if (prStmt.step()) {
-      progress = prStmt.getAsObject();
-    }
-    prStmt.free();
-
-    success(res, { project, logs, progress });
-  } catch (err) {
-    console.error('GET /api/pms/projects/:id error:', err);
-    failure(res, 'Failed to fetch project details', 500);
-  }
-});
-
-// PUT /api/pms/projects/:id - Update project status (ADMIN only)
-app.put('/api/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
-  try {
-    const { status } = req.body;
-    if (!status) {
-      return failure(res, 'Missing status field', 400);
-    }
-
-    db.run(
-      'UPDATE pms_projects SET status = ? WHERE id = ?',
-      [status, req.params.id]
-    );
-    saveToDB();
-    success(res, { message: 'Project updated' });
-  } catch (err) {
-    console.error('PUT /api/pms/projects/:id error:', err);
-    failure(res, 'Failed to update project', 500);
-  }
-});
-
-// POST /api/pms/daily-work - Submit daily work log (EMPLOYEE)
-app.post('/api/pms/daily-work', requireAuth, (req, res) => {
-  try {
-    const { project_id, work_date, session_number, work_done, work_left } = req.body;
-    if (!project_id || !work_date || !session_number || !work_done) {
-      return failure(res, 'Missing required fields', 400);
-    }
-
-    const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const now = new Date().toISOString();
-    const employeeId = req.user.employeeId || String(req.user.id);
-
-    db.run(
-      `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, work_left, status, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, project_id, employeeId, work_date, session_number, work_done, work_left || '', 'SUBMITTED', now]
-    );
-
-    saveToDB();
-    success(res, { id, project_id, work_date, session_number, work_done, work_left, status: 'SUBMITTED', createdAt: now });
-  } catch (err) {
-    console.error('POST /api/pms/daily-work error:', err);
-    failure(res, 'Failed to submit work log', 500);
-  }
-});
-
-// GET /api/pms/daily-work?projectId= - Get daily work logs
-app.get('/api/pms/daily-work', requireAuth, (req, res) => {
-  try {
-    const projectId = req.query.projectId;
-    if (!projectId) {
-      return failure(res, 'projectId query parameter required', 400);
-    }
-
-    const stmt = db.prepare(
-      `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
-       FROM pms_daily_work_logs dwl
-       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
-       WHERE dwl.project_id = ?
-       GROUP BY dwl.id
-       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
-    );
-    stmt.bind([projectId]);
-    const logs = [];
-    while (stmt.step()) {
-      const log = stmt.getAsObject();
-      log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
-      logs.push(log);
-    }
-    stmt.free();
-
-    success(res, logs);
-  } catch (err) {
-    console.error('GET /api/pms/daily-work error:', err);
-    failure(res, 'Failed to fetch work logs', 500);
-  }
-});
-
-// POST /api/pms/upload-photo - Upload photo for work log
-app.post('/api/pms/upload-photo', requireAuth, uploadPMS.single('photo'), (req, res) => {
-  try {
-    if (!req.file || !req.body.work_log_id) {
-      return failure(res, 'Missing file or work_log_id', 400);
-    }
-
-    const id = 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const now = new Date().toISOString();
-    const filePath = `/uploads/pms/${req.file.filename}`;
-
-    db.run(
-      `INSERT INTO pms_work_photos (id, work_log_id, file_path, uploaded_by, createdAt)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, req.body.work_log_id, filePath, req.user.id, now]
-    );
-
-    saveToDB();
-    success(res, { id, work_log_id: req.body.work_log_id, file_path: filePath, createdAt: now });
-  } catch (err) {
-    console.error('POST /api/pms/upload-photo error:', err);
-    failure(res, 'Failed to upload photo', 500);
-  }
-});
-
-// PUT /api/pms/daily-work/:id - Update work log with admin's approved work_left
-app.put('/api/pms/daily-work/:id', requireAuth, isPMSAdmin, (req, res) => {
-  try {
-    const { approved_work_left, status } = req.body;
-
-    let updateSQL = 'UPDATE pms_daily_work_logs SET ';
-    let updates = [];
-    let params = [];
-
-    if (approved_work_left !== undefined) {
-      updates.push('approved_work_left = ?');
-      params.push(approved_work_left);
-    }
-    if (status) {
-      updates.push('status = ?');
-      params.push(status);
-    }
-
-    if (updates.length === 0) {
-      return failure(res, 'No updates provided', 400);
-    }
-
-    updateSQL += updates.join(', ') + ' WHERE id = ?';
-    params.push(req.params.id);
-
-    db.run(updateSQL, params);
-    saveToDB();
-    success(res, { message: 'Work log updated' });
-  } catch (err) {
-    console.error('PUT /api/pms/daily-work/:id error:', err);
-    failure(res, 'Failed to update work log', 500);
-  }
-});
-
-// PUT /api/pms/progress - Update project progress (ADMIN only)
-app.put('/api/pms/progress', requireAuth, isPMSAdmin, (req, res) => {
-  try {
-    const { project_id, progress_percent, remarks } = req.body;
-    if (!project_id || progress_percent === undefined) {
-      return failure(res, 'Missing required fields', 400);
-    }
-
-    const id = 'prog_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const now = new Date().toISOString();
-
-    db.run(
-      `INSERT INTO pms_project_progress (id, project_id, progress_percent, remarks, updated_by, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, project_id, progress_percent, remarks || '', req.user.id, now]
-    );
-
-    saveToDB();
-    success(res, { id, project_id, progress_percent, remarks, createdAt: now });
-  } catch (err) {
-    console.error('PUT /api/pms/progress error:', err);
-    failure(res, 'Failed to update progress', 500);
-  }
-});
-
-// GET /api/pms/reports/project/:id - Project report (ADMIN only)
-app.get('/api/pms/reports/project/:id', requireAuth, isPMSAdmin, (req, res) => {
-  try {
-    const projectId = req.params.id;
-
-    // Get project
-    const pStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
-    pStmt.bind([projectId]);
-    if (!pStmt.step()) {
-      pStmt.free();
-      return failure(res, 'Project not found', 404);
-    }
-    const project = pStmt.getAsObject();
-    pStmt.free();
-
-    // Get work logs
-    const wStmt = db.prepare(
-      'SELECT * FROM pms_daily_work_logs WHERE project_id = ? ORDER BY work_date ASC, session_number ASC'
-    );
-    wStmt.bind([projectId]);
-    const logs = [];
-    while (wStmt.step()) {
-      logs.push(wStmt.getAsObject());
-    }
-    wStmt.free();
-
-    // Group by date
-    const dayWiseProgress = {};
-    logs.forEach(log => {
-      if (!dayWiseProgress[log.work_date]) {
-        dayWiseProgress[log.work_date] = { session1: null, session2: null };
+  // POST /api/pms/projects - Create new project (ADMIN only)
+  app.post('/api/pms/projects', requireAuth, isPMSAdmin, (req, res) => {
+    console.log('DEBUG: POST /api/pms/projects called');
+    try {
+      const { project_name, assigned_employee_id, start_date } = req.body;
+      if (!project_name || !assigned_employee_id || !start_date) {
+        return failure(res, 'Missing required fields', 400);
       }
-      dayWiseProgress[log.work_date][`session${log.session_number}`] = {
-        work_done: log.work_done,
-        work_left: log.work_left,
-        status: log.status
-      };
-    });
 
-    const uniqueDates = new Set(logs.map(l => l.work_date));
-    const totalDays = uniqueDates.size;
-    const completedSessions = logs.filter(l => l.status === 'APPROVED').length;
-    const totalSessions = logs.length;
+      const id = 'pms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const now = new Date().toISOString();
 
-    // Get latest progress
-    const prStmt = db.prepare(
-      'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
-    );
-    prStmt.bind([projectId]);
-    let progressPercent = 0;
-    let remarks = '';
-    if (prStmt.step()) {
-      const prog = prStmt.getAsObject();
-      progressPercent = prog.progress_percent;
-      remarks = prog.remarks;
+      db.run(
+        `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, status, createdBy, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, project_name, assigned_employee_id, start_date, 'Active', req.user.id, now]
+      );
+
+      saveToDB();
+      success(res, { id, project_name, assigned_employee_id, start_date, status: 'Active', createdAt: now });
+    } catch (err) {
+      console.error('POST /api/pms/projects error:', err);
+      failure(res, 'Failed to create project', 500);
     }
-    prStmt.free();
+  });
 
-    success(res, {
-      project,
-      totalDays,
-      completedSessions,
-      totalSessions,
-      dayWiseProgress: Object.entries(dayWiseProgress).map(([date, sessions]) => ({ date, ...sessions })),
-      progressPercent,
-      remarks
-    });
-  } catch (err) {
-    console.error('GET /api/pms/reports/project/:id error:', err);
-    failure(res, 'Failed to generate project report', 500);
-  }
-});
+  // GET /api/pms/projects - Get all projects (ADMIN) or assigned project (EMPLOYEE)
+  app.get('/api/pms/projects', requireAuth, (req, res) => {
+    console.log('DEBUG: GET /api/pms/projects called');
+    try {
+      let query = 'SELECT * FROM pms_projects WHERE 1=1';
+      let params = [];
 
-// GET /api/pms/reports/employee/:id - Employee report (ADMIN only)
-app.get('/api/pms/reports/employee/:id', requireAuth, isPMSAdmin, (req, res) => {
-  try {
-    const employeeId = req.params.id;
+      // If employee, show only assigned projects
+      if (req.user.role === 'EMPLOYEE') {
+        query += ' AND assigned_employee_id = ?';
+        params.push(req.user.employeeId || String(req.user.id));
+      }
 
-    // Get employee
-    const eStmt = db.prepare('SELECT * FROM employees WHERE id = ?');
-    eStmt.bind([employeeId]);
-    if (!eStmt.step()) {
+      query += ' ORDER BY createdAt DESC';
+
+      const stmt = db.prepare(query);
+      stmt.bind(params);
+      const projects = [];
+      while (stmt.step()) {
+        projects.push(stmt.getAsObject());
+      }
+      stmt.free();
+
+      success(res, projects);
+    } catch (err) {
+      console.error('GET /api/pms/projects error:', err);
+      failure(res, 'Failed to fetch projects', 500);
+    }
+  });
+
+  // GET /api/pms/projects/:id - Get single project with daily work logs
+  app.get('/api/pms/projects/:id', requireAuth, (req, res) => {
+    try {
+      const projectId = req.params.id;
+
+      // Get project
+      const pStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
+      pStmt.bind([projectId]);
+      if (!pStmt.step()) {
+        pStmt.free();
+        return failure(res, 'Project not found', 404);
+      }
+      const project = pStmt.getAsObject();
+      pStmt.free();
+
+      // Check access
+      if (req.user.role === 'EMPLOYEE' && project.assigned_employee_id !== (req.user.employeeId || String(req.user.id))) {
+        return failure(res, 'Access denied', 403);
+      }
+
+      // Get daily work logs
+      const wStmt = db.prepare(
+        `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
+       FROM pms_daily_work_logs dwl
+       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
+       WHERE dwl.project_id = ?
+       GROUP BY dwl.id
+       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
+      );
+      wStmt.bind([projectId]);
+      const logs = [];
+      while (wStmt.step()) {
+        const log = wStmt.getAsObject();
+        log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
+        logs.push(log);
+      }
+      wStmt.free();
+
+      // Get project progress
+      const prStmt = db.prepare(
+        'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
+      );
+      prStmt.bind([projectId]);
+      let progress = null;
+      if (prStmt.step()) {
+        progress = prStmt.getAsObject();
+      }
+      prStmt.free();
+
+      success(res, { project, logs, progress });
+    } catch (err) {
+      console.error('GET /api/pms/projects/:id error:', err);
+      failure(res, 'Failed to fetch project details', 500);
+    }
+  });
+
+  // PUT /api/pms/projects/:id - Update project status (ADMIN only)
+  app.put('/api/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!status) {
+        return failure(res, 'Missing status field', 400);
+      }
+
+      db.run(
+        'UPDATE pms_projects SET status = ? WHERE id = ?',
+        [status, req.params.id]
+      );
+      saveToDB();
+      success(res, { message: 'Project updated' });
+    } catch (err) {
+      console.error('PUT /api/pms/projects/:id error:', err);
+      failure(res, 'Failed to update project', 500);
+    }
+  });
+
+  // POST /api/pms/daily-work - Submit daily work log (EMPLOYEE)
+  app.post('/api/pms/daily-work', requireAuth, (req, res) => {
+    try {
+      const { project_id, work_date, session_number, work_done, work_left } = req.body;
+      if (!project_id || !work_date || !session_number || !work_done) {
+        return failure(res, 'Missing required fields', 400);
+      }
+
+      const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const now = new Date().toISOString();
+      const employeeId = req.user.employeeId || String(req.user.id);
+
+      db.run(
+        `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, work_left, status, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, project_id, employeeId, work_date, session_number, work_done, work_left || '', 'SUBMITTED', now]
+      );
+
+      saveToDB();
+      success(res, { id, project_id, work_date, session_number, work_done, work_left, status: 'SUBMITTED', createdAt: now });
+    } catch (err) {
+      console.error('POST /api/pms/daily-work error:', err);
+      failure(res, 'Failed to submit work log', 500);
+    }
+  });
+
+  // GET /api/pms/daily-work?projectId= - Get daily work logs
+  app.get('/api/pms/daily-work', requireAuth, (req, res) => {
+    try {
+      const projectId = req.query.projectId;
+      if (!projectId) {
+        return failure(res, 'projectId query parameter required', 400);
+      }
+
+      const stmt = db.prepare(
+        `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
+       FROM pms_daily_work_logs dwl
+       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
+       WHERE dwl.project_id = ?
+       GROUP BY dwl.id
+       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
+      );
+      stmt.bind([projectId]);
+      const logs = [];
+      while (stmt.step()) {
+        const log = stmt.getAsObject();
+        log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
+        logs.push(log);
+      }
+      stmt.free();
+
+      success(res, logs);
+    } catch (err) {
+      console.error('GET /api/pms/daily-work error:', err);
+      failure(res, 'Failed to fetch work logs', 500);
+    }
+  });
+
+  // POST /api/pms/upload-photo - Upload photo for work log
+  app.post('/api/pms/upload-photo', requireAuth, uploadPMS.single('photo'), (req, res) => {
+    try {
+      if (!req.file || !req.body.work_log_id) {
+        return failure(res, 'Missing file or work_log_id', 400);
+      }
+
+      const id = 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const now = new Date().toISOString();
+      const filePath = `/uploads/pms/${req.file.filename}`;
+
+      db.run(
+        `INSERT INTO pms_work_photos (id, work_log_id, file_path, uploaded_by, createdAt)
+       VALUES (?, ?, ?, ?, ?)`,
+        [id, req.body.work_log_id, filePath, req.user.id, now]
+      );
+
+      saveToDB();
+      success(res, { id, work_log_id: req.body.work_log_id, file_path: filePath, createdAt: now });
+    } catch (err) {
+      console.error('POST /api/pms/upload-photo error:', err);
+      failure(res, 'Failed to upload photo', 500);
+    }
+  });
+
+  // PUT /api/pms/daily-work/:id - Update work log with admin's approved work_left
+  app.put('/api/pms/daily-work/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const { approved_work_left, status } = req.body;
+
+      let updateSQL = 'UPDATE pms_daily_work_logs SET ';
+      let updates = [];
+      let params = [];
+
+      if (approved_work_left !== undefined) {
+        updates.push('approved_work_left = ?');
+        params.push(approved_work_left);
+      }
+      if (status) {
+        updates.push('status = ?');
+        params.push(status);
+      }
+
+      if (updates.length === 0) {
+        return failure(res, 'No updates provided', 400);
+      }
+
+      updateSQL += updates.join(', ') + ' WHERE id = ?';
+      params.push(req.params.id);
+
+      db.run(updateSQL, params);
+      saveToDB();
+      success(res, { message: 'Work log updated' });
+    } catch (err) {
+      console.error('PUT /api/pms/daily-work/:id error:', err);
+      failure(res, 'Failed to update work log', 500);
+    }
+  });
+
+  // PUT /api/pms/progress - Update project progress (ADMIN only)
+  app.put('/api/pms/progress', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const { project_id, progress_percent, remarks } = req.body;
+      if (!project_id || progress_percent === undefined) {
+        return failure(res, 'Missing required fields', 400);
+      }
+
+      const id = 'prog_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const now = new Date().toISOString();
+
+      db.run(
+        `INSERT INTO pms_project_progress (id, project_id, progress_percent, remarks, updated_by, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, project_id, progress_percent, remarks || '', req.user.id, now]
+      );
+
+      saveToDB();
+      success(res, { id, project_id, progress_percent, remarks, createdAt: now });
+    } catch (err) {
+      console.error('PUT /api/pms/progress error:', err);
+      failure(res, 'Failed to update progress', 500);
+    }
+  });
+
+  // GET /api/pms/reports/project/:id - Project report (ADMIN only)
+  app.get('/api/pms/reports/project/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const projectId = req.params.id;
+
+      // Get project
+      const pStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
+      pStmt.bind([projectId]);
+      if (!pStmt.step()) {
+        pStmt.free();
+        return failure(res, 'Project not found', 404);
+      }
+      const project = pStmt.getAsObject();
+      pStmt.free();
+
+      // Get work logs
+      const wStmt = db.prepare(
+        'SELECT * FROM pms_daily_work_logs WHERE project_id = ? ORDER BY work_date ASC, session_number ASC'
+      );
+      wStmt.bind([projectId]);
+      const logs = [];
+      while (wStmt.step()) {
+        logs.push(wStmt.getAsObject());
+      }
+      wStmt.free();
+
+      // Group by date
+      const dayWiseProgress = {};
+      logs.forEach(log => {
+        if (!dayWiseProgress[log.work_date]) {
+          dayWiseProgress[log.work_date] = { session1: null, session2: null };
+        }
+        dayWiseProgress[log.work_date][`session${log.session_number}`] = {
+          work_done: log.work_done,
+          work_left: log.work_left,
+          status: log.status
+        };
+      });
+
+      const uniqueDates = new Set(logs.map(l => l.work_date));
+      const totalDays = uniqueDates.size;
+      const completedSessions = logs.filter(l => l.status === 'APPROVED').length;
+      const totalSessions = logs.length;
+
+      // Get latest progress
+      const prStmt = db.prepare(
+        'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
+      );
+      prStmt.bind([projectId]);
+      let progressPercent = 0;
+      let remarks = '';
+      if (prStmt.step()) {
+        const prog = prStmt.getAsObject();
+        progressPercent = prog.progress_percent;
+        remarks = prog.remarks;
+      }
+      prStmt.free();
+
+      success(res, {
+        project,
+        totalDays,
+        completedSessions,
+        totalSessions,
+        dayWiseProgress: Object.entries(dayWiseProgress).map(([date, sessions]) => ({ date, ...sessions })),
+        progressPercent,
+        remarks
+      });
+    } catch (err) {
+      console.error('GET /api/pms/reports/project/:id error:', err);
+      failure(res, 'Failed to generate project report', 500);
+    }
+  });
+
+  // GET /api/pms/reports/employee/:id - Employee report (ADMIN only)
+  app.get('/api/pms/reports/employee/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const employeeId = req.params.id;
+
+      // Get employee
+      const eStmt = db.prepare('SELECT * FROM employees WHERE id = ?');
+      eStmt.bind([employeeId]);
+      if (!eStmt.step()) {
+        eStmt.free();
+        return failure(res, 'Employee not found', 404);
+      }
+      const employee = eStmt.getAsObject();
       eStmt.free();
-      return failure(res, 'Employee not found', 404);
+
+      // Get assigned projects
+      const pStmt = db.prepare('SELECT * FROM pms_projects WHERE assigned_employee_id = ?');
+      pStmt.bind([employeeId]);
+      let projectCount = 0;
+      while (pStmt.step()) projectCount++;
+      pStmt.free();
+
+      // Get work logs
+      const wStmt = db.prepare(
+        'SELECT * FROM pms_daily_work_logs WHERE employee_id = ?'
+      );
+      wStmt.bind([employeeId]);
+      const logs = [];
+      while (wStmt.step()) {
+        logs.push(wStmt.getAsObject());
+      }
+      wStmt.free();
+
+      const totalWorkingDays = new Set(logs.map(l => l.work_date)).size;
+      const totalSessionsCompleted = logs.filter(l => l.status === 'APPROVED').length;
+      const pendingLogs = logs.filter(l => l.status === 'PENDING' || l.status === 'SUBMITTED');
+      const pendingWork = pendingLogs.length > 0 ? `${pendingLogs.length} sessions pending` : 'None';
+
+      success(res, {
+        employee,
+        totalWorkingDays,
+        totalSessionsCompleted,
+        pendingWork,
+        projectsAssigned: projectCount
+      });
+    } catch (err) {
+      console.error('GET /api/pms/reports/employee/:id error:', err);
+      failure(res, 'Failed to generate employee report', 500);
     }
-    const employee = eStmt.getAsObject();
-    eStmt.free();
+  });
 
-    // Get assigned projects
-    const pStmt = db.prepare('SELECT * FROM pms_projects WHERE assigned_employee_id = ?');
-    pStmt.bind([employeeId]);
-    let projectCount = 0;
-    while (pStmt.step()) projectCount++;
-    pStmt.free();
-
-    // Get work logs
-    const wStmt = db.prepare(
-      'SELECT * FROM pms_daily_work_logs WHERE employee_id = ?'
-    );
-    wStmt.bind([employeeId]);
-    const logs = [];
-    while (wStmt.step()) {
-      logs.push(wStmt.getAsObject());
-    }
-    wStmt.free();
-
-    const totalWorkingDays = new Set(logs.map(l => l.work_date)).size;
-    const totalSessionsCompleted = logs.filter(l => l.status === 'APPROVED').length;
-    const pendingLogs = logs.filter(l => l.status === 'PENDING' || l.status === 'SUBMITTED');
-    const pendingWork = pendingLogs.length > 0 ? `${pendingLogs.length} sessions pending` : 'None';
-
-    success(res, {
-      employee,
-      totalWorkingDays,
-      totalSessionsCompleted,
-      pendingWork,
-      projectsAssigned: projectCount
-    });
-  } catch (err) {
-    console.error('GET /api/pms/reports/employee/:id error:', err);
-    failure(res, 'Failed to generate employee report', 500);
-  }
-});
-
-console.log('PMS ROUTES SUCCESSFULLY REGISTERED');
+  console.log('PMS ROUTES SUCCESSFULLY REGISTERED');
 } catch (pmsError) {
   console.error('CRITICAL: PMS routes registration failed', pmsError);
 }

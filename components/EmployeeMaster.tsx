@@ -69,7 +69,8 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     setCurrentEmp({ 
         status: 'Active',
         id: generateNextId(), // Auto-generate ID
-        department: departments[0] // Default dept
+        department: departments[0], // Default dept
+        hideAttendance: false
     }); 
     setPassword('');
     setRole('EMPLOYEE');
@@ -103,6 +104,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
         designation: finalDesignation,
         email: currentEmp.email,
         phone: currentEmp.phone
+        , hideAttendance: !!currentEmp.hideAttendance
       };
 
       setEmployees([...employees, newEmployee]);
@@ -480,6 +482,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
                  <Search size={24} className="text-slate-300" />
               </div>
+              <div className="mt-3">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!!currentEmp.hideAttendance} onChange={e => setCurrentEmp({...currentEmp, hideAttendance: e.target.checked})} />
+                  <span className="text-xs font-bold text-slate-600">Hide attendance from Admins</span>
+                </label>
+              </div>
               <p>No team members found matching your search.</p>
             </div>
           )}
@@ -620,6 +628,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                     placeholder="Enter password"
                     />
                   </div>
+              </div>
+              <div className="mt-3">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={!!currentEmp.hideAttendance} onChange={e => setCurrentEmp({...currentEmp, hideAttendance: e.target.checked})} />
+                  <span className="text-xs font-bold text-slate-600">Hide attendance from Admins</span>
+                </label>
               </div>
             </div>
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">

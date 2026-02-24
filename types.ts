@@ -19,6 +19,8 @@ export interface Employee {
     panBack?: string;
   };
   compOffBalance?: number;
+  // When true, this employee's attendance is hidden from admin users
+  hideAttendance?: boolean;
 }
 
 export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN';
@@ -32,7 +34,7 @@ export interface User {
   employeeId?: string; // Link to Employee record if role is EMPLOYEE
 }
 
-export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO'; 
+export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO';
 
 export interface AttendanceRecord {
   [dateIso: string]: AttendanceValue;
@@ -62,12 +64,12 @@ export interface LeaveStatus {
 }
 
 export interface SundayRequest {
-    id: string;
-    employeeId: string;
-    date: string;
-    reason: string;
-    status: 'PENDING' | 'APPROVED' | 'REJECTED';
-    adminComment?: string;
+  id: string;
+  employeeId: string;
+  date: string;
+  reason: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  adminComment?: string;
 }
 
 // --- Leave Application Types ---
@@ -87,6 +89,9 @@ export interface LeaveRequest {
   appliedTo: string; // Manager/Admin Employee ID
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   appliedOn: string;
+  appliedByName?: string;
+  appliedToName?: string;
+  department?: string;
   adminComment?: string;
 }
 
@@ -96,12 +101,12 @@ export type TaskStatus = 'PENDING' | 'COMPLETED' | 'OVERDUE' | 'HOLD' | 'TERMINA
 export type TaskPriority = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export interface ExtensionRequest {
-    requestedDate: string;
-    reason: string;
-    status: 'PENDING' | 'APPROVED' | 'REJECTED';
-    timestamp?: string; // When the request was made
-    // Optional admin response/rejection note
-    adminResponse?: string;
+  requestedDate: string;
+  reason: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  timestamp?: string; // When the request was made
+  // Optional admin response/rejection note
+  adminResponse?: string;
 }
 
 export interface Task {
@@ -120,7 +125,7 @@ export interface Task {
   priority: TaskPriority;
   attachment?: string; // Mock URL for file attachment
   externalLink?: string; // Optional URL (e.g. Google Sheet)
-  
+
   // Admin Action Reason
   statusNote?: string; // Reason for Hold/Terminate
 
@@ -136,12 +141,12 @@ export interface Task {
 
 // --- Material Order Types ---
 
-export type OrderStatus = 
-  | 'PENDING_APPROVAL' 
-  | 'APPROVED_FOR_VENDOR' 
-  | 'ORDERED_TO_VENDOR' 
-  | 'DELIVERED_AWAITING_ADMIN' 
-  | 'COMPLETED' 
+export type OrderStatus =
+  | 'PENDING_APPROVAL'
+  | 'APPROVED_FOR_VENDOR'
+  | 'ORDERED_TO_VENDOR'
+  | 'DELIVERED_AWAITING_ADMIN'
+  | 'COMPLETED'
   | 'REJECTED';
 
 export type TATUnit = 'Hours' | 'Days' | 'Months';
@@ -150,11 +155,11 @@ export interface MaterialOrder {
   id: string;
   itemName: string;
   quantity: string;
-  siteLocation: string; 
+  siteLocation: string;
   description?: string;
   priority: 'Low' | 'Medium' | 'High';
   isMonsoon?: boolean;
-  
+
   // TAT Data
   tatValue: number;
   tatUnit: TATUnit;
@@ -164,7 +169,7 @@ export interface MaterialOrder {
   orderedBy: string; // Employee ID (Requester - 1st Employee)
   assignedApprover: string; // Employee ID (Approver - 2nd Employee)
   createdDate: string;
-  
+
   // Step 2: Approval
   approvedBy?: string;
   approvalDate?: string;
@@ -216,38 +221,38 @@ export interface SitePhoto {
 // --- Finance Types (New) ---
 
 export interface PaymentTransaction {
-    id: string;
-    date: string;
-    amount: number;
-    mode: 'Cheque' | 'Cash' | 'NEFT/RTGS' | 'UPI';
-    remarks?: string;
+  id: string;
+  date: string;
+  amount: number;
+  mode: 'Cheque' | 'Cash' | 'NEFT/RTGS' | 'UPI';
+  remarks?: string;
 }
 
 export interface ClientFinancial {
-    id: string;
-    projectId: string;
-    clientName: string;
-    totalDealValue: number;
-    receivedAmount: number;
-    balance: number;
-    registrationDate: string; // Changed from dueDate to registrationDate
-    lastPaymentDate?: string;
-    status: 'Paid' | 'Pending' | 'Overdue';
-    transactions: PaymentTransaction[];
+  id: string;
+  projectId: string;
+  clientName: string;
+  totalDealValue: number;
+  receivedAmount: number;
+  balance: number;
+  registrationDate: string; // Changed from dueDate to registrationDate
+  lastPaymentDate?: string;
+  status: 'Paid' | 'Pending' | 'Overdue';
+  transactions: PaymentTransaction[];
 }
 
 export interface VendorFinancial {
-    id: string;
-    vendorName: string;
-    category: string;
-    invoiceNo: string;
-    invoiceDate: string;
-    dueDate: string;
-    totalAmount: number;
-    paidAmount: number;
-    balance: number;
-    status: 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue';
-    transactions: PaymentTransaction[];
+  id: string;
+  vendorName: string;
+  category: string;
+  invoiceNo: string;
+  invoiceDate: string;
+  dueDate: string;
+  totalAmount: number;
+  paidAmount: number;
+  balance: number;
+  status: 'Paid' | 'Partially Paid' | 'Pending' | 'Overdue';
+  transactions: PaymentTransaction[];
 }
 
 // --- Query System Types ---
@@ -333,77 +338,77 @@ export interface Note {
 
 // --- Checklist Types ---
 
-export type FrequencyType = 
+export type FrequencyType =
   | 'ONE-TIME'
-  | 'DAILY' 
+  | 'DAILY'
   | 'ALTERNATE'
-  | 'WEEKLY' 
+  | 'WEEKLY'
   | 'FORTNIGHTLY'
-  | 'MONTHLY' 
-  | 'QUARTERLY' 
-  | 'HALF-YEARLY' 
+  | 'MONTHLY'
+  | 'QUARTERLY'
+  | 'HALF-YEARLY'
   | 'YEARLY'
   | 'EVENT-BASED'
   | 'PARTICULAR-DATE';
 
 export interface ChecklistConfig {
-    frequency: FrequencyType;
-    weekDays?: number[]; // 0=Sun, 1=Mon... for WEEKLY
-    dayOfMonth?: number; // 1-31 for MONTHLY
-    particularDateType?: 'EVERY-MONTH' | 'EVERY-YEAR'; // Sub-selection for PARTICULAR-DATE
+  frequency: FrequencyType;
+  weekDays?: number[]; // 0=Sun, 1=Mon... for WEEKLY
+  dayOfMonth?: number; // 1-31 for MONTHLY
+  particularDateType?: 'EVERY-MONTH' | 'EVERY-YEAR'; // Sub-selection for PARTICULAR-DATE
 }
 
 export interface ChecklistTemplate {
-    id: string;
-    taskName: string;
-    doerId: string; // Employee ID
-    department: string;
-    startDate: string; // YYYY-MM-DD
-    config: ChecklistConfig;
-    active: boolean;
+  id: string;
+  taskName: string;
+  doerId: string; // Employee ID
+  department: string;
+  startDate: string; // YYYY-MM-DD
+  config: ChecklistConfig;
+  active: boolean;
 }
 
 export interface ChecklistInstance {
-    id: string;
-    templateId: string;
-    date: string; // YYYY-MM-DD (Scheduled Date)
-    status: 'PENDING' | 'COMPLETED';
-    completedDate?: string;
-    shiftedDueToHoliday?: boolean; // Tracking if it was moved from Sun/Holiday
+  id: string;
+  templateId: string;
+  date: string; // YYYY-MM-DD (Scheduled Date)
+  status: 'PENDING' | 'COMPLETED';
+  completedDate?: string;
+  shiftedDueToHoliday?: boolean; // Tracking if it was moved from Sun/Holiday
 }
 
 export enum ViewMode {
   // Admin Views
   DASHBOARD = 'DASHBOARD',
   ATTENDANCE = 'ATTENDANCE',
-  CALENDAR = 'CALENDAR', 
+  CALENDAR = 'CALENDAR',
   EMPLOYEES = 'EMPLOYEES',
-  ARCHIVED_STAFF = 'ARCHIVED_STAFF', 
+  ARCHIVED_STAFF = 'ARCHIVED_STAFF',
   LEAVES = 'LEAVES',
   HOLIDAYS = 'HOLIDAYS',
   FMS_TASKS = 'FMS_TASKS',
   MATERIAL_ORDERS = 'MATERIAL_ORDERS',
-  PROJECTS = 'PROJECTS', 
-  FINANCE = 'FINANCE', 
-  CHECKLIST = 'CHECKLIST', 
-  PERFORMANCE = 'PERFORMANCE', 
-  QUERIES = 'QUERIES', 
-  CHAT = 'CHAT', 
-  TIME_LOGS = 'TIME_LOGS', 
-  NOTIFICATIONS = 'NOTIFICATIONS', 
-  ORGANIZATION_TREE = 'ORGANIZATION_TREE', 
+  PROJECTS = 'PROJECTS',
+  FINANCE = 'FINANCE',
+  CHECKLIST = 'CHECKLIST',
+  PERFORMANCE = 'PERFORMANCE',
+  QUERIES = 'QUERIES',
+  CHAT = 'CHAT',
+  TIME_LOGS = 'TIME_LOGS',
+  NOTIFICATIONS = 'NOTIFICATIONS',
+  ORGANIZATION_TREE = 'ORGANIZATION_TREE',
   README = 'README',
   NOTEPAD = 'NOTEPAD',
   DATABASE = 'DATABASE',
   PMS_ADMIN = 'PMS_ADMIN',
-  
+
   // Employee Views
   EMPLOYEE_HOME = 'EMPLOYEE_HOME',
   EMPLOYEE_TASKS = 'EMPLOYEE_TASKS',
   EMPLOYEE_ORDERS = 'EMPLOYEE_ORDERS',
-  EMPLOYEE_PROJECTS = 'EMPLOYEE_PROJECTS', 
-  EMPLOYEE_QUERIES = 'EMPLOYEE_QUERIES', 
-  EMPLOYEE_CHAT = 'EMPLOYEE_CHAT', 
+  EMPLOYEE_PROJECTS = 'EMPLOYEE_PROJECTS',
+  EMPLOYEE_QUERIES = 'EMPLOYEE_QUERIES',
+  EMPLOYEE_CHAT = 'EMPLOYEE_CHAT',
   EMPLOYEE_HISTORY = 'EMPLOYEE_HISTORY',
   PMS_EMPLOYEE = 'PMS_EMPLOYEE'
 }

@@ -55,16 +55,27 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, setNotes, currentUser }
   const handleSaveNote = async () => {
     if (currentNote.title && currentNote.content) {
       try {
-        await api.post('/notepad', { content: currentNote.content });
+        const payload = {
+          title: currentNote.title,
+          content: currentNote.content,
+          category: currentNote.category,
+          color: currentNote.color
+        };
+
+        if (isEditing && currentNote.id) {
+          await api.put(`/notepad/${encodeURIComponent(currentNote.id)}`, payload);
+        } else {
+          await api.post('/notepad', payload);
+        }
+
         // Refresh notes list from server
         const res = await safeGet(`/notepad/${encodeURIComponent(userId)}`);
-        const payload = extractPayload(res);
-        setNotes(ensureArray(payload));
+        setNotes(ensureArray(extractPayload(res)));
+        closeModal();
       } catch (e) {
-        console.error('Failed to save note', e && (e.stack || e.message || e));
+        console.error('Failed to save note', e);
         alert('Failed to save note to server');
       }
-      closeModal();
     } else {
       alert("Title and content are required.");
     }
