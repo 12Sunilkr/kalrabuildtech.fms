@@ -1,10 +1,13 @@
 
 import React, { useState } from 'react';
 import { Project, SitePhoto, User, Employee, Notification } from '../types';
-import { HardHat, Plus, MapPin, Camera, Image, Upload, User as UserIcon, Calendar, X, ExternalLink, Download, Search, Filter } from 'lucide-react';
+import { HardHat, Plus, MapPin, Camera, Image, Upload, User as UserIcon, Calendar, X, ExternalLink, Download, Search, Filter, Briefcase, CheckSquare } from 'lucide-react';
 import { convertFileToBase64 } from '../utils/fileHelper';
 import api, { safePost, safeGet, extractPayload, ensureArray } from '../src/utils/api';
 import { format } from 'date-fns';
+import WeeklyPlanner from './WeeklyPlanner';
+import DailyLogForm from './DailyLogForm';
+import WorkPlannerView from './WorkPlannerView';
 
 interface ProjectManagerProps {
   projects: Project[];
@@ -34,6 +37,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
         return [];
     };
   const [activeTab, setActiveTab] = useState<'PROJECTS' | 'PHOTOS'>('PROJECTS');
+  const [projectDetailTab, setProjectDetailTab] = useState<'PHOTOS' | 'PLANNER' | 'DAILY'>('PHOTOS');
     const [showClosedList, setShowClosedList] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
   
@@ -291,56 +295,109 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
       
       return (
           <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar flex flex-col">
-              <button onClick={() => setSelectedProjectId(null)} className="mb-4 text-sm font-bold text-slate-500 hover:text-slate-800 self-start">← Back to Projects</button>
+              <button onClick={() => { setSelectedProjectId(null); setProjectDetailTab('PHOTOS'); }} className="mb-4 text-sm font-bold text-slate-500 hover:text-slate-800 self-start">← Back to Projects</button>
               
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 mb-6">
                   <h2 className="text-2xl font-black text-slate-800 mb-1">{project?.name}</h2>
                   <p className="text-slate-500 flex items-center gap-1 text-sm font-medium mb-6"><MapPin size={14}/> {project?.location}</p>
 
-                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 text-center">
-                      <div className="mb-2 text-sm font-bold text-slate-500 uppercase tracking-widest">Daily Uploads</div>
-                      <div className="text-4xl font-black text-slate-800 mb-2">{todayPhotos.length} <span className="text-lg text-slate-400 font-medium">/ 15</span></div>
-                      
-                      {todayPhotos.length < 5 && (
-                          <div className="text-xs font-bold text-orange-500 mb-4 flex items-center justify-center gap-1">
-                              ⚠️ Minimum 5 photos required daily.
-                          </div>
-                      )}
-                                            {todayPhotos.length >= 15 ? (
-                                                     <div className="text-green-600 font-bold py-3 bg-green-50 rounded-xl border border-green-200">Daily Limit Reached ✅</div>
-                                            ) : (
-                                                project && project.status === 'CLOSED' ? (
-                                                    <div className="text-sm font-bold text-red-600">Project closed — uploads disabled.</div>
-                                                ) : (
-                                                                            <label className={`w-full py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-white shadow-lg transition-all cursor-pointer ${uploadLoading ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/30'}`}>
-                                                            <input 
-                                                                type="file" 
-                                                                accept="image/*" 
-                                                                capture="environment" 
-                                                                onChange={handlePhotoUpload} 
-                                                                disabled={uploadLoading} 
-                                                                className="hidden"
-                                                            />
-                                                            {uploadLoading ? 'Uploading...' : <><Camera size={20}/> Take Live Photo</>}
-                                                    </label>
-                                                )
-                                            )}
+                  {/* Tab Navigation */}
+                  <div className="flex gap-2 mb-6 border-b border-slate-200">
+                      <button 
+                          onClick={() => setProjectDetailTab('PHOTOS')}
+                          className={`px-4 py-3 font-semibold flex items-center gap-2 border-b-2 transition-colors ${projectDetailTab === 'PHOTOS' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-600 hover:text-slate-800'}`}
+                      >
+                          <Camera size={18} /> Photos
+                      </button>
+                      <button 
+                          onClick={() => setProjectDetailTab('PLANNER')}
+                          className={`px-4 py-3 font-semibold flex items-center gap-2 border-b-2 transition-colors ${projectDetailTab === 'PLANNER' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-600 hover:text-slate-800'}`}
+                      >
+                          <Calendar size={18} /> Work Planner
+                      </button>
+                      <button 
+                          onClick={() => setProjectDetailTab('DAILY')}
+                          className={`px-4 py-3 font-semibold flex items-center gap-2 border-b-2 transition-colors ${projectDetailTab === 'DAILY' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-600 hover:text-slate-800'}`}
+                      >
+                          <CheckSquare size={18} /> Daily Log
+                      </button>
                   </div>
               </div>
 
-              {/* Today's Gallery */}
-              <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Image size={18}/> Today's Uploads</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {todayPhotos.map(photo => (
-                      <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden shadow-sm bg-black group">
-                          <img src={photo.imageUrl} className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" />
-                          <div className="absolute bottom-0 left-0 right-0 p-2 bg-black/60 text-white text-[10px] backdrop-blur-sm">
-                              <div>{format(new Date(photo.timestamp), 'h:mm a')}</div>
-                              {photo.gps && <div className="truncate">GPS: {photo.gps.lat.toFixed(4)}, {photo.gps.lng.toFixed(4)}</div>}
+              {/* PHOTOS TAB */}
+              {projectDetailTab === 'PHOTOS' && (
+                  <div className="space-y-6">
+                      <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 text-center">
+                              <div className="mb-2 text-sm font-bold text-slate-500 uppercase tracking-widest">Daily Uploads</div>
+                              <div className="text-4xl font-black text-slate-800 mb-2">{todayPhotos.length} <span className="text-lg text-slate-400 font-medium">/ 15</span></div>
+                              
+                              {todayPhotos.length < 5 && (
+                                  <div className="text-xs font-bold text-orange-500 mb-4 flex items-center justify-center gap-1">
+                                      ⚠️ Minimum 5 photos required daily.
+                                  </div>
+                              )}
+                                                          {todayPhotos.length >= 15 ? (
+                                                                   <div className="text-green-600 font-bold py-3 bg-green-50 rounded-xl border border-green-200">Daily Limit Reached ✅</div>
+                                                          ) : (
+                                                              project && project.status === 'CLOSED' ? (
+                                                                  <div className="text-sm font-bold text-red-600">Project closed — uploads disabled.</div>
+                                                              ) : (
+                                                                                          <label className={`w-full py-4 rounded-xl flex items-center justify-center gap-2 font-bold text-white shadow-lg transition-all cursor-pointer ${uploadLoading ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/30'}`}>
+                                                                          <input 
+                                                                              type="file" 
+                                                                              accept="image/*" 
+                                                                              capture="environment" 
+                                                                              onChange={handlePhotoUpload} 
+                                                                              disabled={uploadLoading} 
+                                                                              className="hidden"
+                                                                          />
+                                                                          {uploadLoading ? 'Uploading...' : <><Camera size={20}/> Take Live Photo</>}
+                                                                  </label>
+                                                              )
+                                                          )}
                           </div>
                       </div>
-                  ))}
-              </div>
+
+                      {/* Today's Gallery */}
+                      <div>
+                          <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><Image size={18}/> Today's Uploads</h3>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                              {todayPhotos.map(photo => (
+                                  <div key={photo.id} className="relative aspect-square rounded-xl overflow-hidden shadow-sm bg-black group">
+                                      <img src={photo.imageUrl} className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" />
+                                      <div className="absolute bottom-0 left-0 right-0 p-2 bg-black/60 text-white text-[10px] backdrop-blur-sm">
+                                          <div>{format(new Date(photo.timestamp), 'h:mm a')}</div>
+                                          {photo.gps && <div className="truncate">GPS: {photo.gps.lat.toFixed(4)}, {photo.gps.lng.toFixed(4)}</div>}
+                                      </div>
+                                  </div>
+                              ))}
+                          </div>
+                      </div>
+                  </div>
+              )}
+
+              {/* PLANNER TAB */}
+              {projectDetailTab === 'PLANNER' && (
+                  <WorkPlannerView 
+                      projectId={selectedProjectId}
+                      projectName={project?.name || 'Project'}
+                      projectStatus={project?.status || 'Active'}
+                      onBack={() => setProjectDetailTab('PHOTOS')}
+                  />
+              )}
+
+              {/* DAILY LOG TAB */}
+              {projectDetailTab === 'DAILY' && (
+                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                      <DailyLogForm 
+                          projectId={selectedProjectId ? parseInt(selectedProjectId) : undefined}
+                          weeklyTaskId={undefined}
+                          userId={currentUser.employeeId ? parseInt(currentUser.employeeId) : undefined}
+                          onDone={() => {}}
+                      />
+                  </div>
+              )}
           </div>
       );
   }

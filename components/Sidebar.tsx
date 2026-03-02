@@ -24,8 +24,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.DATABASE, label: 'Data Hub & Backups', icon: Database },
     { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
     { id: ViewMode.ORGANIZATION_TREE, label: 'Organization Tree', icon: GitGraph }, 
-    { id: ViewMode.PMS_ADMIN, label: 'PMS Admin', icon: BarChart3 },
     { id: ViewMode.PROJECTS, label: 'Project Sites', icon: HardHat },
+      { id: ViewMode.PMS_ADMIN, label: 'PMS Dashboard', icon: BarChart3 },
     { id: ViewMode.TIME_LOGS, label: 'Shift Logs', icon: Clock },
     { id: ViewMode.FMS_TASKS, label: 'Task Management', icon: ClipboardList },
     { id: ViewMode.CHECKLIST, label: 'Checklist Monitor', icon: ListChecks },
@@ -54,13 +54,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.EMPLOYEE_QUERIES, label: 'Raise Query', icon: HelpCircle }, 
     { id: ViewMode.NOTEPAD, label: 'My Notepad', icon: StickyNote }, 
     { id: ViewMode.README, label: 'Help & Docs', icon: Info },
+      { id: ViewMode.PMS_EMPLOYEE, label: 'PMS', icon: BarChart3 },
   ];
 
   const isProjectTeam = userDepartment === 'Project Development & Execution';
-  if (isProjectTeam && role === 'EMPLOYEE') {
-      employeeItems.splice(3, 0, { id: ViewMode.PMS_EMPLOYEE, label: 'My Work (PMS)', icon: BarChart3 });
-      employeeItems.splice(4, 0, { id: ViewMode.EMPLOYEE_PROJECTS, label: 'Project Sites', icon: HardHat });
-  }
+    if (isProjectTeam && role === 'EMPLOYEE') {
+      employeeItems.splice(3, 0, { id: ViewMode.EMPLOYEE_PROJECTS, label: 'Project Sites', icon: HardHat });
+    }
 
   const isFinanceOrSales = userDepartment === 'Finance & Accounts' || userDepartment === 'Sales & Marketing';
   if (isFinanceOrSales && role === 'EMPLOYEE') {

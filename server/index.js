@@ -12,6 +12,32 @@ import { success, failure } from './utils/respond.js';
 
 const app = express();
 
+// Mount legacy/auxiliary PMS router if present (DISABLED to avoid conflict with new consolidated routes)
+/*
+try {
+  // use require so it works in both ESM and CJS setups
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const pmsRouter = require('./pmsRoutes');
+  if (pmsRouter) app.use('/api/pms', pmsRouter);
+} catch (e) {
+  // ignore if router not present or fails to load
+}
+*/
+
+// Backwards-compatibility middleware: some older frontend code calls `/server/...`.
+// Map these requests to the new `/api/pms/...` handlers so older bundles still work.
+app.use(['/server', '/pms'], (req, res, next) => {
+  try {
+    // If the request doesn't start with /api, we prefix it to help matching
+    if (!req.url.startsWith('/api')) {
+      // Ensure we don't double-prefix
+      const cleanPath = req.url.startsWith('/pms') ? req.url : '/pms' + req.url;
+      req.url = '/api' + (cleanPath.startsWith('/') ? '' : '/') + cleanPath;
+    }
+  } catch (e) { /* ignore */ }
+  next();
+});
+
 // Debug helpers: capture any uncaught exceptions or unhandled promise rejections so we can see why the process may exit
 process.on('uncaughtException', (err) => {
   console.error('UncaughtException:', err && (err.stack || err.message || err));
@@ -468,6 +494,11 @@ function persistDB() {
     console.error('Failed to persist DB file', e && (e.stack || e.message || e));
     return false;
   }
+}
+
+// Backwards-compatible alias used by some handlers
+function saveToDB() {
+  return persistDB();
 }
 
 // --- Migration: Hash any existing plaintext passwords ---
@@ -4574,12 +4605,122 @@ try {
     }
   });
 
+  // DELETE /api/pms/projects/:id - Delete a project and related PMS data (ADMIN only)
+  app.delete('/api/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const projectId = req.params.id;
+      if (!projectId) return failure(res, 'Missing project id', 400);
+
+      // Delete related weekly tasks, daily logs, photos, progress entries first
+      try {
+        db.run('DELETE FROM pms_weekly_tasks WHERE project_id = ?', [projectId]);
+      } catch (e) { /* ignore */ }
+      try {
+        // delete photos linked to logs
+        const stmt = db.prepare('SELECT id FROM pms_daily_work_logs WHERE project_id = ?');
+        stmt.bind([projectId]);
+        const logIds = [];
+        while (stmt.step()) { logIds.push(stmt.getAsObject().id); }
+        stmt.free();
+        for (const lid of logIds) {
+          try { db.run('DELETE FROM pms_work_photos WHERE work_log_id = ?', [lid]); } catch (e) { }
+        }
+      } catch (e) { /* ignore */ }
+      try { db.run('DELETE FROM pms_daily_work_logs WHERE project_id = ?', [projectId]); } catch (e) { }
+      try { db.run('DELETE FROM pms_project_progress WHERE project_id = ?', [projectId]); } catch (e) { }
+
+      // Finally remove the project
+      db.run('DELETE FROM pms_projects WHERE id = ?', [projectId]);
+      saveToDB();
+
+      success(res, { id: projectId, deleted: true });
+    } catch (err) {
+      console.error('DELETE /api/pms/projects/:id error:', err);
+      failure(res, 'Failed to delete project', 500);
+    }
+  });
+
+  // GET /api/pms/weekly-tasks?project_id= - List weekly tasks for a project
+  app.get('/api/pms/weekly-tasks', requireAuth, (req, res) => {
+    try {
+      const projectId = req.query.projectId || req.query.project_id || req.query.id;
+      if (!projectId) {
+        console.warn('GET /api/pms/weekly-tasks: Missing projectId', { query: req.query });
+        return failure(res, 'projectId or project_id query parameter required', 400);
+      }
+
+      const stmt = db.prepare('SELECT * FROM pms_weekly_tasks WHERE project_id = ? ORDER BY week_start_date DESC, createdAt DESC');
+      stmt.bind([projectId]);
+      const rows = [];
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+      }
+      stmt.free();
+
+      success(res, rows);
+    } catch (err) {
+      console.error('GET /api/pms/weekly-tasks error:', err);
+      failure(res, 'Failed to fetch weekly tasks', 500);
+    }
+  });
+
+  // POST /api/pms/weekly-tasks - Create a weekly task
+  app.post('/api/pms/weekly-tasks', requireAuth, (req, res) => {
+    try {
+      const { project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes } = req.body;
+      if (!project_id || !task_name) return failure(res, 'Missing required fields', 400);
+
+      const id = 'wt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const now = new Date().toISOString();
+
+      db.run(
+        `INSERT INTO pms_weekly_tasks (id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, project_id, week_start_date || '', task_name, total_quantity || 0, target_quantity || 0, assigned_to || '', priority || 'Medium', notes || '', now]
+      );
+
+      saveToDB();
+      success(res, { id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt: now });
+    } catch (err) {
+      console.error('POST /api/pms/weekly-tasks error:', err);
+      failure(res, 'Failed to create weekly task', 500);
+    }
+  });
+
+  // DELETE /api/pms/weekly-tasks/:id - Delete a weekly task (ADMIN only)
+  app.delete('/api/pms/weekly-tasks/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const id = req.params.id;
+      if (!id) return failure(res, 'Missing id', 400);
+
+      db.run('DELETE FROM pms_weekly_tasks WHERE id = ?', [id]);
+      saveToDB();
+      success(res, { id, deleted: true });
+    } catch (err) {
+      console.error('DELETE /api/pms/weekly-tasks/:id error:', err);
+      failure(res, 'Failed to delete weekly task', 500);
+    }
+  });
+
   // POST /api/pms/daily-work - Submit daily work log (EMPLOYEE)
   app.post('/api/pms/daily-work', requireAuth, (req, res) => {
     try {
-      const { project_id, work_date, session_number, work_done, work_left } = req.body;
-      if (!project_id || !work_date || !session_number || !work_done) {
-        return failure(res, 'Missing required fields', 400);
+      const {
+        project_id, projectId,
+        work_date, workDate, date,
+        session_number, sessionNumber,
+        work_done, workDone,
+        details
+      } = req.body || {};
+
+      const pId = project_id || projectId;
+      const wDate = work_date || workDate || date;
+      const sNum = session_number != null ? session_number : sessionNumber;
+      const wDone = work_done || workDone || '';
+
+      if (!pId || !wDate) {
+        console.warn('POST /api/pms/daily-work: Missing fields', { body: req.body });
+        return failure(res, 'Missing required fields: project_id and work_date are required', 400);
       }
 
       const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -4587,48 +4728,151 @@ try {
       const employeeId = req.user.employeeId || String(req.user.id);
 
       db.run(
-        `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, work_left, status, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, project_id, employeeId, work_date, session_number, work_done, work_left || '', 'SUBMITTED', now]
+        `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, details, status, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, pId, employeeId, wDate, sNum || 1, wDone, JSON.stringify(details || {}), 'SUBMITTED', now]
       );
 
       saveToDB();
-      success(res, { id, project_id, work_date, session_number, work_done, work_left, status: 'SUBMITTED', createdAt: now });
+      success(res, { id, project_id: pId, work_date: wDate, status: 'SUBMITTED', createdAt: now });
     } catch (err) {
       console.error('POST /api/pms/daily-work error:', err);
       failure(res, 'Failed to submit work log', 500);
     }
   });
 
-  // GET /api/pms/daily-work?projectId= - Get daily work logs
-  app.get('/api/pms/daily-work', requireAuth, (req, res) => {
+  // Compatibility duplicate routes under /pms/* to handle clients that bypass middleware
+  app.get('/pms/weekly-tasks', requireAuth, (req, res) => {
     try {
-      const projectId = req.query.projectId;
-      if (!projectId) {
-        return failure(res, 'projectId query parameter required', 400);
-      }
+      const projectId = req.query.project_id || req.query.projectId;
+      if (!projectId) return failure(res, 'project_id query parameter required', 400);
 
-      const stmt = db.prepare(
-        `SELECT dwl.*, GROUP_CONCAT(wp.file_path, ',') as photo_paths
-       FROM pms_daily_work_logs dwl
-       LEFT JOIN pms_work_photos wp ON wp.work_log_id = dwl.id
-       WHERE dwl.project_id = ?
-       GROUP BY dwl.id
-       ORDER BY dwl.work_date DESC, dwl.session_number ASC`
-      );
+      const stmt = db.prepare('SELECT * FROM pms_weekly_tasks WHERE project_id = ? ORDER BY week_start_date DESC, createdAt DESC');
       stmt.bind([projectId]);
-      const logs = [];
-      while (stmt.step()) {
-        const log = stmt.getAsObject();
-        log.photo_paths = log.photo_paths ? log.photo_paths.split(',') : [];
-        logs.push(log);
-      }
+      const rows = [];
+      while (stmt.step()) { rows.push(stmt.getAsObject()); }
       stmt.free();
-
-      success(res, logs);
+      success(res, rows);
     } catch (err) {
-      console.error('GET /api/pms/daily-work error:', err);
-      failure(res, 'Failed to fetch work logs', 500);
+      console.error('GET /pms/weekly-tasks error:', err);
+      failure(res, 'Failed to fetch weekly tasks', 500);
+    }
+  });
+
+  app.post('/pms/weekly-tasks', requireAuth, (req, res) => {
+    try {
+      const { project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes } = req.body;
+      if (!project_id || !task_name) return failure(res, 'Missing required fields', 400);
+      const id = 'wt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      const now = new Date().toISOString();
+      db.run(
+        `INSERT INTO pms_weekly_tasks (id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, project_id, week_start_date || '', task_name, total_quantity || 0, target_quantity || 0, assigned_to || '', priority || 'Medium', notes || '', now]
+      );
+      saveToDB();
+      success(res, { id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt: now });
+    } catch (err) {
+      console.error('POST /pms/weekly-tasks error:', err);
+      failure(res, 'Failed to create weekly task', 500);
+    }
+  });
+
+  app.delete('/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
+    try {
+      const projectId = req.params.id;
+      if (!projectId) return failure(res, 'Missing project id', 400);
+      try { db.run('DELETE FROM pms_weekly_tasks WHERE project_id = ?', [projectId]); } catch (e) { }
+      try {
+        const stmt = db.prepare('SELECT id FROM pms_daily_work_logs WHERE project_id = ?');
+        stmt.bind([projectId]);
+        const logIds = [];
+        while (stmt.step()) { logIds.push(stmt.getAsObject().id); }
+        stmt.free();
+        for (const lid of logIds) { try { db.run('DELETE FROM pms_work_photos WHERE work_log_id = ?', [lid]); } catch (e) { } }
+      } catch (e) { }
+      try { db.run('DELETE FROM pms_daily_work_logs WHERE project_id = ?', [projectId]); } catch (e) { }
+      try { db.run('DELETE FROM pms_project_progress WHERE project_id = ?', [projectId]); } catch (e) { }
+      db.run('DELETE FROM pms_projects WHERE id = ?', [projectId]);
+      saveToDB();
+      success(res, { id: projectId, deleted: true });
+    } catch (err) {
+      console.error('DELETE /pms/projects/:id error:', err);
+      failure(res, 'Failed to delete project', 500);
+    }
+  });
+
+  // Consolidated DAILY-WORK Route Handler
+  app.all(['/api/pms/daily-work', '/pms/daily-work'], requireAuth, (req, res) => {
+    console.log(`DEBUG: [${req.method}] daily-work hit`, { query: req.query, body: req.body });
+
+    try {
+      if (req.method === 'GET') {
+        const pId = req.query.projectId || req.query.project_id || req.query.id;
+        const wDate = req.query.workDate || req.query.work_date || req.query.date;
+
+        if (!pId) return failure(res, 'projectId is required', 400);
+
+        let query = `SELECT * FROM pms_daily_work_logs WHERE project_id = ?`;
+        const params = [pId];
+        if (wDate) {
+          query += ' AND work_date = ?';
+          params.push(wDate);
+        }
+        query += ' ORDER BY work_date DESC, session_number ASC';
+
+        const stmt = db.prepare(query);
+        stmt.bind(params);
+        const logs = [];
+        while (stmt.step()) {
+          const log = stmt.getAsObject();
+          try { if (log.details) log.details = JSON.parse(log.details); } catch (e) { }
+          logs.push(log);
+        }
+        stmt.free();
+        return success(res, logs);
+      }
+
+      if (req.method === 'POST') {
+        const {
+          project_id, projectId,
+          work_date, workDate,
+          session_number, sessionNumber,
+          work_done, workDone,
+          percent_done, percentDone,
+          details
+        } = req.body || {};
+        const pId = project_id || projectId;
+        const wDate = work_date || workDate;
+        if (!pId || !wDate) return failure(res, 'project_id and work_date are required', 400);
+
+        const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        const empId = req.user.employeeId || String(req.user.id);
+        const pDone = percent_done != null ? percent_done : (percentDone != null ? percentDone : 0);
+
+        db.run(
+          `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, percent_done, details, status, createdAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, pId, empId, wDate, session_number || sessionNumber || 1, work_done || workDone || '', pDone, JSON.stringify(details || {}), 'SUBMITTED', new Date().toISOString()]
+        );
+        saveToDB();
+        return success(res, { id, status: 'SUBMITTED' });
+      }
+
+      if (req.method === 'DELETE') {
+        const pId = req.query.projectId || req.query.project_id;
+        const wDate = req.query.workDate || req.query.work_date || req.query.date;
+        if (!pId || !wDate) return failure(res, 'projectId and work_date are required', 400);
+
+        db.run('DELETE FROM pms_daily_work_logs WHERE project_id = ? AND work_date = ?', [pId, wDate]);
+        saveToDB();
+        return success(res, { deleted: true });
+      }
+
+      return failure(res, 'Method not allowed', 405);
+    } catch (err) {
+      console.error(`ERROR in [${req.method}] daily-work:`, err);
+      return failure(res, 'Internal server error', 500);
     }
   });
 

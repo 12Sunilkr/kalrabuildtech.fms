@@ -69,7 +69,7 @@ export async function runMigrations({ db, dbFile }) {
     dueDate TEXT,
     status TEXT,
     createdAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)`]);
 
   ensureTable('calendar', `CREATE TABLE calendar (
     id TEXT PRIMARY KEY,
@@ -99,7 +99,7 @@ export async function runMigrations({ db, dbFile }) {
     meta TEXT,
     isRead INTEGER DEFAULT 0,
     createdAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_notifications_userId ON notifications(userId)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_notifications_userId ON notifications(userId)`]);
 
   ensureTable('projects', `CREATE TABLE projects (
     id TEXT PRIMARY KEY,
@@ -123,7 +123,7 @@ export async function runMigrations({ db, dbFile }) {
     date TEXT,
     timestamp TEXT,
     createdAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_site_photos_projectId ON site_photos(projectId)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_site_photos_projectId ON site_photos(projectId)`]);
 
   ensureTable('checklists', `CREATE TABLE checklists (
     id TEXT PRIMARY KEY,
@@ -133,7 +133,7 @@ export async function runMigrations({ db, dbFile }) {
     done INTEGER DEFAULT 0,
     createdBy TEXT,
     createdAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)`]);
 
   ensureTable('notepad', `CREATE TABLE notepad (
     id TEXT PRIMARY KEY,
@@ -141,7 +141,7 @@ export async function runMigrations({ db, dbFile }) {
     content TEXT,
     createdAt TEXT,
     updatedAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_notepad_userId ON notepad(userId)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_notepad_userId ON notepad(userId)`]);
 
   // Reminders table (migrate client-side reminders into DB)
   ensureTable('reminders', `CREATE TABLE reminders (
@@ -151,7 +151,7 @@ export async function runMigrations({ db, dbFile }) {
     title TEXT,
     createdBy TEXT,
     createdAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)`]);
 
   // PMS (Project Management System) Tables
   ensureTable('pms_projects', `CREATE TABLE pms_projects (
@@ -162,7 +162,7 @@ export async function runMigrations({ db, dbFile }) {
     status TEXT,
     createdBy TEXT,
     createdAt TEXT
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_projects_employee ON pms_projects(assigned_employee_id)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_pms_projects_employee ON pms_projects(assigned_employee_id)`]);
 
   ensureTable('pms_daily_work_logs', `CREATE TABLE pms_daily_work_logs (
     id TEXT PRIMARY KEY,
@@ -176,9 +176,9 @@ export async function runMigrations({ db, dbFile }) {
     status TEXT,
     createdAt TEXT,
     FOREIGN KEY (project_id) REFERENCES pms_projects(id)
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_project ON pms_daily_work_logs(project_id)`,
-        `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_employee ON pms_daily_work_logs(employee_id)`,
-        `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_date ON pms_daily_work_logs(work_date)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_pms_work_logs_project ON pms_daily_work_logs(project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_employee ON pms_daily_work_logs(employee_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pms_work_logs_date ON pms_daily_work_logs(work_date)`]);
 
   ensureTable('pms_work_photos', `CREATE TABLE pms_work_photos (
     id TEXT PRIMARY KEY,
@@ -187,7 +187,7 @@ export async function runMigrations({ db, dbFile }) {
     uploaded_by TEXT,
     createdAt TEXT,
     FOREIGN KEY (work_log_id) REFERENCES pms_daily_work_logs(id)
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_photos_log ON pms_work_photos(work_log_id)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_pms_photos_log ON pms_work_photos(work_log_id)`]);
 
   ensureTable('pms_project_progress', `CREATE TABLE pms_project_progress (
     id TEXT PRIMARY KEY,
@@ -197,7 +197,29 @@ export async function runMigrations({ db, dbFile }) {
     updated_by TEXT,
     createdAt TEXT,
     FOREIGN KEY (project_id) REFERENCES pms_projects(id)
-  )`, [ `CREATE INDEX IF NOT EXISTS idx_pms_progress_project ON pms_project_progress(project_id)` ]);
+  )`, [`CREATE INDEX IF NOT EXISTS idx_pms_progress_project ON pms_project_progress(project_id)`]);
+
+  // Weekly tasks table for PMS (planner)
+  ensureTable('pms_weekly_tasks', `CREATE TABLE pms_weekly_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    week_start_date TEXT,
+    task_name TEXT,
+    total_quantity REAL,
+    target_quantity REAL,
+    assigned_to TEXT,
+    priority TEXT,
+    notes TEXT,
+    createdAt TEXT,
+    FOREIGN KEY (project_id) REFERENCES pms_projects(id)
+  )`, [`CREATE INDEX IF NOT EXISTS idx_pms_weekly_tasks_project ON pms_weekly_tasks(project_id)`]);
+
+  // Add multi-variant columns for daily logs
+  ensureColumns('pms_daily_work_logs', {
+    weekly_task_id: 'TEXT',
+    percent_done: 'REAL',
+    details: 'TEXT'
+  });
 
   // Ensure standard columns exist on tables where appropriate
   const tablesToPatch = ['tasks', 'calendar', 'finance', 'notifications', 'projects', 'checklists', 'notepad', 'leaves', 'holidays', 'employee_documents', 'employees_profile'];

@@ -29,9 +29,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   // Loading / Error states for async operations
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   // Action Reason Modal State
-  const [actionPrompt, setActionPrompt] = useState<{taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE'} | null>(null);
+  const [actionPrompt, setActionPrompt] = useState<{ taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE' } | null>(null);
   const [actionReason, setActionReason] = useState('');
 
   const [mobileMenuOpenId, setMobileMenuOpenId] = useState<string | null>(null); // For mobile 3-dots menu
@@ -80,8 +80,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   // --- Helper for Overdue Logic ---
   const isSameDay = (d1: Date, d2: Date) => {
     return d1.getFullYear() === d2.getFullYear() &&
-           d1.getMonth() === d2.getMonth() &&
-           d1.getDate() === d2.getDate();
+      d1.getMonth() === d2.getMonth() &&
+      d1.getDate() === d2.getDate();
   };
 
   // Check for auto-overdue visual
@@ -136,15 +136,15 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const handleExportTasks = () => {
     // 1. Define Headers matching the request
     const headers = [
-      'Task Id', 
-      'GIVEN BY', 
-      'GIVEN TO', 
-      'GIVEN TO USER ID', 
-      'TASK DESCRIPTION', 
-      'DEPARTMENT', 
-      'TASK FREQUENCY', 
-      'PLANNED DATE', 
-      'COMPLETED ON', 
+      'Task Id',
+      'GIVEN BY',
+      'GIVEN TO',
+      'GIVEN TO USER ID',
+      'TASK DESCRIPTION',
+      'DEPARTMENT',
+      'TASK FREQUENCY',
+      'PLANNED DATE',
+      'COMPLETED ON',
       'STATUS',
       'OBJECTION DATE',
       'OBJECTION REASON',
@@ -153,11 +153,11 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
     // 2. Map Data
     const csvContent = tasks.map(t => {
-    const assignedEmp = employees.find(e => e.id === (t.assignedTo || t.assignedToEmployeeId || ''));
+      const assignedEmp = employees.find(e => e.id === (t.assignedTo || t.assignedToEmployeeId || ''));
       const assignedEmpName = assignedEmp?.name || 'Unknown';
       const department = assignedEmp?.department || 'General';
       const displayStatus = getDisplayStatus(t);
-      
+
       // Escape special characters for CSV (quotes, commas, newlines)
       const escape = (text: string | undefined | null) => {
         if (!text) return '';
@@ -175,20 +175,20 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
       // Aggregate Other Remarks
       let otherRemarks = [];
-      
+
       // Admin Action Notes
       if (t.statusNote) {
-          otherRemarks.push(`Admin Note: ${t.statusNote}`);
+        otherRemarks.push(`Admin Note: ${t.statusNote}`);
       }
 
       // Completion Notes
       if (t.completionProcess) {
-          otherRemarks.push(`Completion Note: ${t.completionProcess}`);
+        otherRemarks.push(`Completion Note: ${t.completionProcess}`);
       }
-      
+
       // Extension Status
       if (latestObjection) {
-          otherRemarks.push(`Objection Status: ${latestObjection.status}`);
+        otherRemarks.push(`Objection Status: ${latestObjection.status}`);
       }
 
       const remarksString = otherRemarks.join(' | ');
@@ -331,10 +331,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     setError(null);
     try {
       const newReq: ExtensionRequest = {
-          requestedDate: extensionDate,
-          reason: extensionReason,
-          status: 'PENDING',
-          timestamp: new Date().toISOString()
+        requestedDate: extensionDate,
+        reason: extensionReason,
+        status: 'PENDING',
+        timestamp: new Date().toISOString()
       };
       // Update extensionRequest and extensionHistory on the server
       // Fetch existing task to build new history
@@ -365,8 +365,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const confirmAdminAction = async () => {
     if (!actionPrompt) return;
     if (!actionReason.trim()) {
-        alert("Please provide a reason for this action.");
-        return;
+      alert("Please provide a reason for this action.");
+      return;
     }
 
     const { taskId, type } = actionPrompt;
@@ -376,7 +376,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       if (type === 'DELETE') {
         // Permanently delete the task from the database
         await api.delete(`/tasks/${taskId}`);
-        
+
         // Optimistically remove from local state
         let assigned: any = null;
         setTasks(prev => {
@@ -390,19 +390,19 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         // For HOLD and TERMINATE, update status instead
         const newStatus = type === 'HOLD' ? 'HOLD' : 'TERMINATED';
         // When terminating, clear extension request so it doesn't appear in objections
-        const updatePayload = type === 'TERMINATE' 
+        const updatePayload = type === 'TERMINATE'
           ? { status: newStatus, statusNote: actionReason, extensionRequest: null, extensionHistory: [] }
           : { status: newStatus, statusNote: actionReason };
-        
+
         // Persist change on server
         await api.put(`/tasks/${taskId}`, updatePayload);
 
         // Optimistically update local tasks so UI reflects immediately and avoid stale-state issues
         let assigned: any = null;
         setTasks(prev => prev.map(t => {
-          if (t.id === taskId) { 
-            assigned = t.assignedTo; 
-            return type === 'TERMINATE' 
+          if (t.id === taskId) {
+            assigned = t.assignedTo;
+            return type === 'TERMINATE'
               ? { ...t, status: newStatus, statusNote: actionReason, extensionRequest: null, extensionHistory: [] }
               : { ...t, status: newStatus, statusNote: actionReason };
           }
@@ -425,73 +425,73 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   const handleResumeTask = async (taskId: string) => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: null });
-        // Optimistic UI update
-        setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING', statusNote: null } : t));
-        await fetchTasks();
-        const task = tasks.find(t => t.id === taskId);
-        if(task) addNotification('Task Resumed', `Task ${taskId} is now active again.`, 'TASK', String(task.assignedTo));
-      } catch (e) {
-        console.error('Resume task failed', e);
-        setError('Failed to resume task');
-      } finally {
-        setIsLoading(false);
-      }
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: null });
+      // Optimistic UI update
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING', statusNote: null } : t));
+      await fetchTasks();
+      const task = tasks.find(t => t.id === taskId);
+      if (task) addNotification('Task Resumed', `Task ${taskId} is now active again.`, 'TASK', String(task.assignedTo));
+    } catch (e) {
+      console.error('Resume task failed', e);
+      setError('Failed to resume task');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleExtensionResponse = async (taskId: string, approved: boolean) => {
-      setIsLoading(true);
-      setError(null);
-      console.log('handleExtensionResponse start', { taskId, approved });
-      try {
-          // Fetch existing task to update its history
-          const res = await safeGet('/tasks');
-          const payload = extractPayload(res);
-          const allTasks = ensureArray(payload);
-          const t = allTasks.find((x: any) => x.id === taskId);
-          if (!t) throw new Error('Task not found');
+    setIsLoading(true);
+    setError(null);
+    console.log('handleExtensionResponse start', { taskId, approved });
+    try {
+      // Fetch existing task to update its history
+      const res = await safeGet('/tasks');
+      const payload = extractPayload(res);
+      const allTasks = ensureArray(payload);
+      const t = allTasks.find((x: any) => x.id === taskId);
+      if (!t) throw new Error('Task not found');
 
-          let newHistory = t.extensionHistory || [];
-          if (newHistory.length > 0) {
-              const lastIndex = newHistory.length - 1;
-              newHistory = [
-                  ...newHistory.slice(0, lastIndex),
-                  { ...newHistory[lastIndex], status: approved ? 'APPROVED' : 'REJECTED' }
-              ];
-          }
-
-          if (approved && t.extensionRequest) {
-              // Approving: move due date forward and set back to pending
-              await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null });
-              console.log('handleExtensionResponse: approved put completed', { taskId, newDate: t.extensionRequest.requestedDate });
-
-              // Optimistic UI update
-              setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null } : task));
-
-          } else if (!approved && t.extensionRequest) {
-              // Rejecting: keep task as PENDING (do not set to OVERDUE) and record admin rejection note
-              const rejectionNote = `Extension rejected by ${currentUser.name}`;
-              const updatedReq = { ...t.extensionRequest, status: 'REJECTED', adminResponse: rejectionNote };
-
-              await api.put(`/tasks/${taskId}`, { status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote });
-              console.log('handleExtensionResponse: rejected put completed', { taskId, note: rejectionNote });
-
-              // Optimistic UI update
-              setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote } : task));
-          }
-
-          // Keep server in sync
-          await fetchTasks();
-          if(t) addNotification('Extension Request', `Your extension request for Task ${taskId} was ${approved ? 'Approved' : 'Rejected'}.`, 'TASK', String(t.assignedTo));
-      } catch (e) {
-        console.error('Extension response failed', e);
-        setError('Failed to update extension request');
-      } finally {
-        setIsLoading(false);
+      let newHistory = t.extensionHistory || [];
+      if (newHistory.length > 0) {
+        const lastIndex = newHistory.length - 1;
+        newHistory = [
+          ...newHistory.slice(0, lastIndex),
+          { ...newHistory[lastIndex], status: approved ? 'APPROVED' : 'REJECTED' }
+        ];
       }
+
+      if (approved && t.extensionRequest) {
+        // Approving: move due date forward and set back to pending
+        await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null });
+        console.log('handleExtensionResponse: approved put completed', { taskId, newDate: t.extensionRequest.requestedDate });
+
+        // Optimistic UI update
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null } : task));
+
+      } else if (!approved && t.extensionRequest) {
+        // Rejecting: keep task as PENDING (do not set to OVERDUE) and record admin rejection note
+        const rejectionNote = `Extension rejected by ${currentUser.name}`;
+        const updatedReq = { ...t.extensionRequest, status: 'REJECTED', adminResponse: rejectionNote };
+
+        await api.put(`/tasks/${taskId}`, { status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote });
+        console.log('handleExtensionResponse: rejected put completed', { taskId, note: rejectionNote });
+
+        // Optimistic UI update
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote } : task));
+      }
+
+      // Keep server in sync
+      await fetchTasks();
+      if (t) addNotification('Extension Request', `Your extension request for Task ${taskId} was ${approved ? 'Approved' : 'Rejected'}.`, 'TASK', String(t.assignedTo));
+    } catch (e) {
+      console.error('Extension response failed', e);
+      setError('Failed to update extension request');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleAcknowledgeRejection = async (taskId: string) => {
@@ -499,22 +499,22 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     setError(null);
     try {
       // Clear the rejection by removing the extensionRequest and statusNote, set status back to PENDING
-      await api.put(`/tasks/${taskId}`, { 
+      await api.put(`/tasks/${taskId}`, {
         status: 'PENDING',
-        extensionRequest: null, 
+        extensionRequest: null,
         statusNote: null,
         extensionHistory: []
       });
-      
+
       // Optimistic UI update - task goes back to normal PENDING status
-      setTasks(prev => prev.map(task => task.id === taskId ? { 
-        ...task, 
+      setTasks(prev => prev.map(task => task.id === taskId ? {
+        ...task,
         status: 'PENDING',
-        extensionRequest: null, 
+        extensionRequest: null,
         statusNote: null,
         extensionHistory: []
       } : task));
-      
+
       await fetchTasks();
       addNotification('Acknowledgement', `You acknowledged the extension rejection for Task ${taskId}. Task is now back to normal.`, 'TASK', String(currentUser.id));
     } catch (e) {
@@ -526,7 +526,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   // --- Filtering ---
-  
+
   // Employees see tasks assigned TO them OR tasks assigned BY them
   const safeTasks = ensureArray(tasks);
   const relevantTasks = safeTasks.filter(t => {
@@ -551,34 +551,35 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     // 1. Tab Filter
     let matchesTab = true;
     if (activeTab === 'PENDING') {
-        // Pending tab should show only tasks with status 'PENDING' (exclude HOLD/EXTENSION_REQUESTED)
-        matchesTab = (displayStatus === 'PENDING');
+      // Pending tab should show only tasks with status 'PENDING' (exclude HOLD/EXTENSION_REQUESTED)
+      matchesTab = (displayStatus === 'PENDING');
     } else if (activeTab === 'HOLD') {
-        // Hold tab shows tasks explicitly put on HOLD
-        matchesTab = (displayStatus === 'HOLD' || t.status === 'HOLD');
+      // Hold tab shows tasks explicitly put on HOLD
+      matchesTab = (displayStatus === 'HOLD' || t.status === 'HOLD');
     } else if (activeTab === 'COMPLETED') {
-        matchesTab = (displayStatus === 'COMPLETED' || displayStatus === 'TERMINATED');
+      matchesTab = (displayStatus === 'COMPLETED' || displayStatus === 'TERMINATED');
     } else if (activeTab === 'OVERDUE') {
-        // Overdue tab should show calculated OVERDUE items
-        matchesTab = (displayStatus === 'OVERDUE');
+      // Overdue tab should show calculated OVERDUE items
+      matchesTab = (displayStatus === 'OVERDUE');
     } else if (activeTab === 'OBJECTIONS') {
       // Objections tab shows only pending extension/objection requests
-      // Exclude TERMINATED, REJECTED and COMPLETED tasks (if an employee completed while objection was pending)
-      matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED' && t.status !== 'COMPLETED');
+      // Exclude TERMINATED and COMPLETED tasks (use displayStatus which accounts for completionDate)
+      matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING' && displayStatus !== 'TERMINATED' && displayStatus !== 'COMPLETED');
     } else if (activeTab === 'TERMINATE') {
-        // Terminate tab shows tasks with TERMINATED status
-        matchesTab = (t.status === 'TERMINATED');
+      // Terminate tab shows tasks with TERMINATED status
+      matchesTab = (t.status === 'TERMINATED');
     } else if (activeTab === 'REJECT') {
-        // Reject tab shows tasks with rejected extension requests
-        matchesTab = (t.extensionRequest && t.extensionRequest.status === 'REJECTED');
+      // Reject tab shows tasks with rejected extension requests
+      // Exclude tasks that are already completed/terminated
+      matchesTab = (t.extensionRequest && t.extensionRequest.status === 'REJECTED' && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED');
     }
-    
+
     // 2. Search Filter (Text)
     const term = searchTerm.toLowerCase();
     const assigneeEmp = employees.find(e => e.id === (t.assignedTo || (t as any).assignedToEmployeeId || ''));
     const assigneeName = assigneeEmp ? (assigneeEmp.name || '').toLowerCase() : '';
     const assignedByName = (t.assignedByName || '').toString().toLowerCase();
-    const matchesSearch = 
+    const matchesSearch =
       (t.title || '').toLowerCase().includes(term) ||
       (t.description || '').toLowerCase().includes(term) ||
       (t.id || '').toLowerCase().includes(term) ||
@@ -586,9 +587,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       assignedByName.includes(term);
 
     // 3. Search Filter (Date)
-    const matchesDate = searchDate 
-        ? t.dueDate === searchDate || t.createdDate === searchDate 
-        : true;
+    const matchesDate = searchDate
+      ? t.dueDate === searchDate || t.createdDate === searchDate
+      : true;
 
     return matchesTab && matchesSearch && matchesDate;
   });
@@ -601,12 +602,18 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     return ds === 'COMPLETED' || ds === 'TERMINATED';
   }).length;
   const overdueCount = relevantTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
-  const objectionCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'PENDING' && t.status !== 'TERMINATED' && t.status !== 'REJECTED' && t.status !== 'COMPLETED').length;
-  const terminateCount = relevantTasks.filter(t => t.status === 'TERMINATED').length;
-  const rejectCount = relevantTasks.filter(t => t.extensionRequest && t.extensionRequest.status === 'REJECTED').length;
+  const objectionCount = relevantTasks.filter(t => {
+    const ds = getDisplayStatus(t);
+    return t.extensionRequest && t.extensionRequest.status === 'PENDING' && ds !== 'TERMINATED' && ds !== 'COMPLETED';
+  }).length;
+  const terminateCount = relevantTasks.filter(t => getDisplayStatus(t) === 'TERMINATED' || t.status === 'TERMINATED').length;
+  const rejectCount = relevantTasks.filter(t => {
+    const ds = getDisplayStatus(t);
+    return t.extensionRequest && t.extensionRequest.status === 'REJECTED' && ds !== 'COMPLETED' && ds !== 'TERMINATED';
+  }).length;
 
   const getPriorityColor = (p: string) => {
-    switch(p) {
+    switch (p) {
       case 'HIGH': return 'bg-red-100 text-red-700 border-red-200';
       case 'MEDIUM': return 'bg-orange-100 text-orange-700 border-orange-200';
       default: return 'bg-blue-100 text-blue-700 border-blue-200';
@@ -614,7 +621,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   const getStatusColor = (s: TaskStatus) => {
-    switch(s) {
+    switch (s) {
       case 'COMPLETED': return 'bg-green-100 text-green-700 border-green-200';
       case 'PENDING': return 'bg-slate-100 text-slate-700 border-slate-200';
       case 'OVERDUE': return 'bg-red-50 text-red-600 border-red-200';
@@ -627,8 +634,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   // Helper to check if task is "New" (created in last 48 hours)
   const isNewTask = (dateStr: string) => {
-      const created = new Date(dateStr);
-      return differenceInHours(new Date(), created) < 48;
+    const created = new Date(dateStr);
+    return differenceInHours(new Date(), created) < 48;
   };
 
   const renderActionButtons = (task: Task, isMobile: boolean) => {
@@ -638,103 +645,104 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
     const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
 
-    const btnBaseClass = isMobile 
-      ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 hover:bg-slate-50 rounded-lg transition-colors text-slate-700" 
+    const btnBaseClass = isMobile
+      ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 hover:bg-slate-50 rounded-lg transition-colors text-slate-700"
       : "w-full py-2 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors";
 
     return (
       <>
-         {/* Completion Actions (For Assignee) */}
-         {isAssignee && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED' && displayStatus !== 'HOLD' && (
-            <>
-              <button 
-                onClick={() => setShowCompleteModal(task.id)}
-                className={isMobile ? `${btnBaseClass} text-indigo-600 bg-indigo-50` : `${btnBaseClass} bg-indigo-600 hover:bg-indigo-700 text-white shadow-md`}
+        {/* Completion Actions (For Assignee) */}
+        {isAssignee && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED' && displayStatus !== 'HOLD' && (
+          <>
+            <button
+              onClick={() => setShowCompleteModal(task.id)}
+              className={isMobile ? `${btnBaseClass} text-indigo-600 bg-indigo-50` : `${btnBaseClass} bg-indigo-600 hover:bg-indigo-700 text-white shadow-md`}
+            >
+              <CheckCircle2 size={isMobile ? 18 : 16} /> Complete Task
+            </button>
+            {(isTaskOverdue || displayStatus === 'PENDING') && (
+              <button
+                onClick={() => setShowObjectionModal(task.id)}
+                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-red-600`}
               >
-                <CheckCircle2 size={isMobile ? 18 : 16} /> Complete Task
+                <AlertTriangle size={isMobile ? 18 : 16} /> Raise Objection
               </button>
-              {(isTaskOverdue || displayStatus === 'PENDING') && (
-                <button 
-                  onClick={() => setShowObjectionModal(task.id)}
-                  className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-red-600`}
-                >
-                  <AlertTriangle size={isMobile ? 18 : 16} /> Raise Objection
-                </button>
-              )}
-            </>
-         )}
+            )}
+          </>
+        )}
 
-         {/* Management Actions (For Admin or Creator) */}
-         {(isAdmin || isCreator) && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED' && (
-           <>
-             {displayStatus !== 'HOLD' ? (
-               <button 
-                 onClick={() => initiateAdminAction(task.id, 'HOLD')}
-                 className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-yellow-200 text-yellow-600 hover:bg-yellow-50`}
-               >
-                 <PauseCircle size={isMobile ? 18 : 14} /> Hold Task
-               </button>
-             ) : (
-               <button 
-                 onClick={() => handleResumeTask(task.id)}
-                 className={isMobile ? btnBaseClass : `${btnBaseClass} bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
-               >
-                 <Clock size={isMobile ? 18 : 14} /> Resume Task
-               </button>
-             )}
-             
-             <button 
-                onClick={() => initiateAdminAction(task.id, 'TERMINATE')}
-                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-red-200 text-red-600 hover:bg-red-50`}
-             >
-               <Ban size={isMobile ? 18 : 14} /> Terminate
-             </button>
-           </>
-         )}
+        {/* Management Actions (For Admin or Creator) */}
+        {(isAdmin || isCreator) && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED' && (
+          <>
+            {displayStatus !== 'HOLD' ? (
+              <button
+                onClick={() => initiateAdminAction(task.id, 'HOLD')}
+                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-yellow-200 text-yellow-600 hover:bg-yellow-50`}
+              >
+                <PauseCircle size={isMobile ? 18 : 14} /> Hold Task
+              </button>
+            ) : (
+              <button
+                onClick={() => handleResumeTask(task.id)}
+                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
+              >
+                <Clock size={isMobile ? 18 : 14} /> Resume Task
+              </button>
+            )}
 
-         {/* Admin Only Delete */}
-          {isAdmin && (
-             <button 
-                onClick={() => initiateAdminAction(task.id, 'DELETE')}
-                className={isMobile ? `${btnBaseClass} text-red-600 hover:bg-red-50` : `${btnBaseClass} bg-slate-50 border border-slate-200 text-slate-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200 mt-auto`}
-             >
-               <Trash2 size={isMobile ? 18 : 14} /> Delete
-             </button>
-         )}
+            <button
+              onClick={() => initiateAdminAction(task.id, 'TERMINATE')}
+              className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-red-200 text-red-600 hover:bg-red-50`}
+            >
+              <Ban size={isMobile ? 18 : 14} /> Terminate
+            </button>
+          </>
+        )}
+
+        {/* Admin Only Delete */}
+        {isAdmin && (
+          <button
+            onClick={() => initiateAdminAction(task.id, 'DELETE')}
+            className={isMobile ? `${btnBaseClass} text-red-600 hover:bg-red-50` : `${btnBaseClass} bg-slate-50 border border-slate-200 text-slate-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200 mt-auto`}
+          >
+            <Trash2 size={isMobile ? 18 : 14} /> Delete
+          </button>
+        )}
       </>
     );
   };
 
   return (
-    <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-6">
-        <div>
-          <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
-            <div className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 shrink-0">
-              <ClipboardList size={20} />
-            </div>
-            Task Manager
-          </h2>
-          <p className="text-slate-500 mt-2 font-medium md:ml-14">
-            Assign tasks, track progress, and manage submissions.
-          </p>
+    <div className="p-4 md:p-8 bg-gradient-to-br from-slate-50 via-white to-slate-50 h-full overflow-y-auto custom-scrollbar">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-10 animate-fade-in-up">
+        <div className="flex items-center gap-5">
+          <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-violet-700 text-white rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-100 rotate-3 hover:rotate-0 transition-transform duration-300 shrink-0">
+            <ClipboardList size={32} />
+          </div>
+          <div>
+            <h2 className="text-3xl md:text-4xl font-black text-slate-800 tracking-tight">Task Manager</h2>
+            <p className="text-slate-500 font-semibold tracking-wide flex items-center gap-2">
+              <Clock size={16} className="text-indigo-500" />
+              Assign tasks and track progress
+            </p>
+          </div>
         </div>
-        
-        <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
+
+        <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
           {isAdmin && (
             <>
-              <button 
+              <button
                 onClick={handleExportTasks}
-                className="w-full md:w-auto bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 px-5 py-3 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 font-bold"
+                className="w-full md:w-auto bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-700 px-6 py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all hover:bg-white hover:shadow-lg active:scale-95 font-bold"
               >
-                <Download size={18} />
+                <Download size={20} />
                 Export Data
               </button>
-              <button 
+              <button
                 onClick={() => setShowAssignModal(true)}
-                className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 transition-all active:scale-95 font-bold"
+                className="w-full md:w-auto bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-8 py-3.5 rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold"
               >
-                <Plus size={18} />
+                <Plus size={24} className="animate-pulse" />
                 Assign New Task
               </button>
             </>
@@ -743,54 +751,53 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       </div>
 
       {/* Search and Filter Row */}
-      <div className="flex flex-col gap-4 mb-6">
-          
-          {/* Top Row: Tabs */}
-          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide w-full">
-            {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS', 'TERMINATE', 'REJECT'].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab as any)}
-                className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${
-                  activeTab === tab 
-                    ? 'bg-white text-indigo-600 shadow-md ring-1 ring-slate-100' 
-                    : 'text-slate-400 hover:text-slate-600 hover:bg-white/50'
+      <div className="flex flex-col gap-6 mb-8 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
+
+        {/* Top Row: Tabs */}
+        <div className="flex gap-2 overflow-x-auto pb-4 scrollbar-hide w-full bg-white/50 p-2 rounded-2xl border border-slate-100 backdrop-blur-sm">
+          {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS', 'TERMINATE', 'REJECT'].map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab as any)}
+              className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
+                  : 'text-slate-500 hover:bg-white hover:text-indigo-600'
                 }`}
-              >
-                {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Completed (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : tab === 'OBJECTIONS' ? `Objections (${objectionCount})` : tab === 'TERMINATE' ? `Terminate (${terminateCount})` : `Reject (${rejectCount})`}
+            >
+              {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Completed (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : tab === 'OBJECTIONS' ? `Objections (${objectionCount})` : tab === 'TERMINATE' ? `Terminate (${terminateCount})` : `Reject (${rejectCount})`}
+            </button>
+          ))}
+        </div>
+
+        {/* Bottom Row: Search Inputs */}
+        <div className="flex flex-col md:flex-row gap-4">
+          {/* Text Search Input */}
+          <div className="relative w-full md:flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input
+              type="text"
+              placeholder="Search tasks ID, title..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
+            />
+          </div>
+
+          {/* Date Search Input */}
+          <div className="relative w-full md:w-48">
+            <input
+              type="date"
+              value={searchDate}
+              onChange={(e) => setSearchDate(e.target.value)}
+              className="w-full pl-4 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-slate-600 font-medium"
+            />
+            {searchDate && (
+              <button onClick={() => setSearchDate('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500">
+                <X size={16} />
               </button>
-            ))}
+            )}
           </div>
-
-          {/* Bottom Row: Search Inputs */}
-          <div className="flex flex-col md:flex-row gap-4">
-              {/* Text Search Input */}
-              <div className="relative w-full md:flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                <input 
-                type="text"
-                placeholder="Search tasks ID, title..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
-                />
-              </div>
-
-               {/* Date Search Input */}
-               <div className="relative w-full md:w-48">
-                <input 
-                type="date"
-                value={searchDate}
-                onChange={(e) => setSearchDate(e.target.value)}
-                className="w-full pl-4 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-slate-600 font-medium"
-                />
-                {searchDate && (
-                    <button onClick={() => setSearchDate('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500">
-                        <X size={16}/>
-                    </button>
-                )}
-              </div>
-          </div>
+        </div>
       </div>
 
       {/* Task Grid */}
@@ -804,171 +811,171 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
           filteredTasks
             .sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()) // Sort by Newest First
             .map(task => {
-            const displayStatus = getDisplayStatus(task);
-            const isTaskOverdue = displayStatus === 'OVERDUE';
-            const assignedToId = (task.assignedTo || (task as any).assignedToEmployeeId || '').toString();
-            const assignedEmp = employees.find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || ''));
-            const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
-            const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
-            const isNew = isNewTask(task.createdDate);
+              const displayStatus = getDisplayStatus(task);
+              const isTaskOverdue = displayStatus === 'OVERDUE';
+              const assignedToId = (task.assignedTo || (task as any).assignedToEmployeeId || '').toString();
+              const assignedEmp = employees.find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || ''));
+              const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
+              const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
+              const isNew = isNewTask(task.createdDate);
 
-            return (
-              <div key={task.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 hover:shadow-md transition-shadow relative overflow-visible group">
-                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${isTaskOverdue ? 'bg-red-500' : (isTaskCompleted(task) ? 'bg-green-500' : 'bg-indigo-500')}`}></div>
-                
-                {/* Mobile Menu Button (3 Dots) */}
-                <div className="md:hidden absolute top-4 right-4">
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMobileMenuOpenId(mobileMenuOpenId === task.id ? null : task.id);
-                    }}
-                    className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
-                  >
-                    <MoreVertical size={20} />
-                  </button>
-                  
-                  {/* Mobile Actions Dropdown */}
-                  {mobileMenuOpenId === task.id && (
-                    <div className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 p-2 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-100">
-                      {renderActionButtons(task, true)}
-                    </div>
-                  )}
-                </div>
+              return (
+                <div key={task.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 hover:shadow-md transition-shadow relative overflow-visible group">
+                  <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${isTaskOverdue ? 'bg-red-500' : (isTaskCompleted(task) ? 'bg-green-500' : 'bg-indigo-500')}`}></div>
 
-                <div className="flex flex-col md:flex-row gap-6 justify-between items-start">
-                  <div className="flex-1 w-full pr-8 md:pr-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
-                      <span className="font-mono text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-200">{task.id}</span>
-                      {isNew && (
+                  {/* Mobile Menu Button (3 Dots) */}
+                  <div className="md:hidden absolute top-4 right-4">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMobileMenuOpenId(mobileMenuOpenId === task.id ? null : task.id);
+                      }}
+                      className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
+                    >
+                      <MoreVertical size={20} />
+                    </button>
+
+                    {/* Mobile Actions Dropdown */}
+                    {mobileMenuOpenId === task.id && (
+                      <div className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-2xl border border-slate-100 z-50 p-2 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-100">
+                        {renderActionButtons(task, true)}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-6 justify-between items-start">
+                    <div className="flex-1 w-full pr-8 md:pr-0">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <span className="font-mono text-xs font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-200">{task.id}</span>
+                        {isNew && (
                           <span className="flex items-center gap-1 bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border border-yellow-200">
-                             <Sparkles size={10} fill="currentColor" /> New
+                            <Sparkles size={10} fill="currentColor" /> New
                           </span>
-                      )}
-                      <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${getPriorityColor(task.priority)}`}>
-                        {task.priority} Priority
-                      </span>
-                      <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${getStatusColor(displayStatus)}`}>
-                        {displayStatus.replace('_', ' ')}
-                      </span>
-                    </div>
-                    
-                    <h3 className="text-xl font-bold text-slate-800 mb-2">{task.title}</h3>
-                    <p className="text-slate-500 text-sm leading-relaxed mb-4 max-w-2xl">{task.description}</p>
-                    
-                    <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-3 sm:gap-6 text-sm text-slate-500">
-                       <div className="flex items-center gap-2">
-                        <UserIcon size={16} className="text-slate-400" />
-                        <span className="font-medium">From: <span className="text-slate-700">{task.assignedBy || task.assignedByName || task.assignedBy}</span></span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <UserIcon size={16} className="text-slate-400" />
-                        <span className="font-medium">To: <span className="text-slate-700">{assignedEmp?.name || task.assignedToName || task.assignedTo}</span></span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Calendar size={16} className="text-slate-400" />
-                        <span className="font-medium">Assigned: <span className="text-slate-700">{format(new Date(task.createdDate), 'MMM do, yyyy')}</span></span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Calendar size={16} className="text-slate-400" />
-                        <span className={`font-medium ${isTaskOverdue ? 'text-red-600 font-bold' : ''}`}>
-                          Due: {format(new Date(task.dueDate), 'MMM do, yyyy')}
+                        )}
+                        <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${getPriorityColor(task.priority)}`}>
+                          {task.priority} Priority
+                        </span>
+                        <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${getStatusColor(displayStatus)}`}>
+                          {displayStatus.replace('_', ' ')}
                         </span>
                       </div>
-                      {task.attachment && (
-                        <div className="flex items-center gap-2 text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
-                          <FileText size={14} />
-                          <a href={task.attachment} download={`Task_${task.id}_Attachment`} className="text-xs font-bold hover:underline">Download Attachment</a>
+
+                      <h3 className="text-xl font-bold text-slate-800 mb-2">{task.title}</h3>
+                      <p className="text-slate-500 text-sm leading-relaxed mb-4 max-w-2xl">{task.description}</p>
+
+                      <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-3 sm:gap-6 text-sm text-slate-500">
+                        <div className="flex items-center gap-2">
+                          <UserIcon size={16} className="text-slate-400" />
+                          <span className="font-medium">From: <span className="text-slate-700">{task.assignedBy || task.assignedByName || task.assignedBy}</span></span>
                         </div>
-                      )}
-                      {task.externalLink && (
-                        <div className="flex items-center gap-2 text-blue-600 bg-blue-50 px-2 py-1 rounded-lg">
-                          <Link size={14} />
-                          <a href={task.externalLink} target="_blank" rel="noreferrer" className="text-xs font-bold hover:underline truncate max-w-[150px]">
-                            Open Link
-                          </a>
+                        <div className="flex items-center gap-2">
+                          <UserIcon size={16} className="text-slate-400" />
+                          <span className="font-medium">To: <span className="text-slate-700">{assignedEmp?.name || task.assignedToName || task.assignedTo}</span></span>
                         </div>
-                      )}
-                    </div>
-                    
-                    {/* Completion / Extension / Status Notes */}
-                    <div className="space-y-3 mt-4">
-                      {isTaskCompleted(task) && (
-                        <div className="bg-green-50/50 p-4 rounded-xl border border-green-100 text-sm">
-                          <p className="font-bold text-green-800 mb-1 flex items-center gap-2"><CheckCircle2 size={16}/> Completed on {task.completionDate}</p>
-                          {task.completionProcess && (
-                            <p className="text-green-700/80 italic break-words">{task.completionProcess}</p>
-                          )}
-                          {task.completionAttachment && (
-                             <div className="mt-2 text-green-700 flex items-center gap-2">
+                        <div className="flex items-center gap-2">
+                          <Calendar size={16} className="text-slate-400" />
+                          <span className="font-medium">Assigned: <span className="text-slate-700">{format(new Date(task.createdDate), 'MMM do, yyyy')}</span></span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Calendar size={16} className="text-slate-400" />
+                          <span className={`font-medium ${isTaskOverdue ? 'text-red-600 font-bold' : ''}`}>
+                            Due: {format(new Date(task.dueDate), 'MMM do, yyyy')}
+                          </span>
+                        </div>
+                        {task.attachment && (
+                          <div className="flex items-center gap-2 text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+                            <FileText size={14} />
+                            <a href={task.attachment} download={`Task_${task.id}_Attachment`} className="text-xs font-bold hover:underline">Download Attachment</a>
+                          </div>
+                        )}
+                        {task.externalLink && (
+                          <div className="flex items-center gap-2 text-blue-600 bg-blue-50 px-2 py-1 rounded-lg">
+                            <Link size={14} />
+                            <a href={task.externalLink} target="_blank" rel="noreferrer" className="text-xs font-bold hover:underline truncate max-w-[150px]">
+                              Open Link
+                            </a>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Completion / Extension / Status Notes */}
+                      <div className="space-y-3 mt-4">
+                        {isTaskCompleted(task) && (
+                          <div className="bg-green-50/50 p-4 rounded-xl border border-green-100 text-sm">
+                            <p className="font-bold text-green-800 mb-1 flex items-center gap-2"><CheckCircle2 size={16} /> Completed on {task.completionDate}</p>
+                            {task.completionProcess && (
+                              <p className="text-green-700/80 italic break-words">{task.completionProcess}</p>
+                            )}
+                            {task.completionAttachment && (
+                              <div className="mt-2 text-green-700 flex items-center gap-2">
                                 <FileText size={14} />
                                 <a href={task.completionAttachment} download={`Task_${task.id}_Proof`} className="font-bold underline">Download Proof</a>
-                             </div>
-                          )}
-                        </div>
-                      )}
+                              </div>
+                            )}
+                          </div>
+                        )}
 
-                      {task.status === 'EXTENSION_REQUESTED' && (
-                        <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 text-sm">
-                          <p className="font-bold text-purple-800 mb-1 flex items-center gap-2"><Clock size={16}/> Extension Requested</p>
-                          <p className="text-purple-700 mb-2">Team Member requested new date: <span className="font-bold">{task.extensionRequest?.requestedDate}</span></p>
-                          <p className="text-purple-600 italic break-words">Reason: "{task.extensionRequest?.reason}"</p>
-                          
-                          {(isAdmin || isCreator) && (
-                            <div className="flex gap-2 mt-3">
-                              <button 
-                                onClick={() => handleExtensionResponse(task.id, true)}
-                                disabled={isLoading}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all ${isLoading ? 'bg-purple-400 text-white opacity-60 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
-                              >
-                                Approve New Date
-                              </button>
-                              <button 
-                                onClick={() => handleExtensionResponse(task.id, false)}
-                                disabled={isLoading}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isLoading ? 'bg-white border-purple-100 text-purple-300 cursor-not-allowed' : 'bg-white border border-purple-200 text-purple-600 hover:bg-purple-50'}`}
-                              >
-                                Reject
-                              </button>
+                        {task.status === 'EXTENSION_REQUESTED' && (
+                          <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 text-sm">
+                            <p className="font-bold text-purple-800 mb-1 flex items-center gap-2"><Clock size={16} /> Extension Requested</p>
+                            <p className="text-purple-700 mb-2">Team Member requested new date: <span className="font-bold">{task.extensionRequest?.requestedDate}</span></p>
+                            <p className="text-purple-600 italic break-words">Reason: "{task.extensionRequest?.reason}"</p>
+
+                            {(isAdmin || isCreator) && (
+                              <div className="flex gap-2 mt-3">
+                                <button
+                                  onClick={() => handleExtensionResponse(task.id, true)}
+                                  disabled={isLoading}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all ${isLoading ? 'bg-purple-400 text-white opacity-60 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
+                                >
+                                  Approve New Date
+                                </button>
+                                <button
+                                  onClick={() => handleExtensionResponse(task.id, false)}
+                                  disabled={isLoading}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${isLoading ? 'bg-white border-purple-100 text-purple-300 cursor-not-allowed' : 'bg-white border border-purple-200 text-purple-600 hover:bg-purple-50'}`}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Show Status Note (Hold/Terminate Reason) */}
+                        {(task.status === 'HOLD' || task.status === 'TERMINATED' || task.status === 'REJECTED' || task.extensionRequest?.status === 'REJECTED') && task.statusNote && (
+                          <div className={`p-4 rounded-xl border text-sm ${task.status === 'HOLD' ? 'bg-yellow-50 border-yellow-100' : (task.status === 'TERMINATED' ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-100')}`}>
+                            <div className="flex justify-between items-start gap-3">
+                              <div className="flex-1">
+                                <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : (task.status === 'TERMINATED' ? 'text-gray-700' : 'text-red-700')}`}>
+                                  <MessageSquare size={16} /> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection')}
+                                </p>
+                                <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
+                              </div>
+                              {task.extensionRequest?.status === 'REJECTED' && (isAssignee || isAdmin) && (
+                                <button
+                                  onClick={() => handleAcknowledgeRejection(task.id)}
+                                  disabled={isLoading}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${isLoading ? 'bg-red-300 text-white cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                                >
+                                  Acknowledge
+                                </button>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      )}
+                          </div>
+                        )}
+                      </div>
 
-                      {/* Show Status Note (Hold/Terminate Reason) */}
-                      {(task.status === 'HOLD' || task.status === 'TERMINATED' || task.status === 'REJECTED' || task.extensionRequest?.status === 'REJECTED') && task.statusNote && (
-                         <div className={`p-4 rounded-xl border text-sm ${task.status === 'HOLD' ? 'bg-yellow-50 border-yellow-100' : (task.status === 'TERMINATED' ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-100')}`}>
-                           <div className="flex justify-between items-start gap-3">
-                             <div className="flex-1">
-                               <p className={`font-bold mb-1 flex items-center gap-2 ${task.status === 'HOLD' ? 'text-yellow-800' : (task.status === 'TERMINATED' ? 'text-gray-700' : 'text-red-700')}`}>
-                                  <MessageSquare size={16}/> {task.status === 'HOLD' ? 'Hold Reason' : (task.status === 'TERMINATED' ? 'Termination Reason' : 'Rejection')}
-                               </p>
-                               <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
-                             </div>
-                             {task.extensionRequest?.status === 'REJECTED' && (isAssignee || isAdmin) && (
-                               <button
-                                 onClick={() => handleAcknowledgeRejection(task.id)}
-                                 disabled={isLoading}
-                                 className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${isLoading ? 'bg-red-300 text-white cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
-                               >
-                                 Acknowledge
-                               </button>
-                             )}
-                           </div>
-                         </div>
-                      )}
                     </div>
 
-                  </div>
-
-                  {/* Desktop Actions Area (Hidden on Mobile) */}
-                  <div className="hidden md:flex flex-col gap-2 w-full md:w-auto md:min-w-[160px]">
-                    {renderActionButtons(task, false)}
+                    {/* Desktop Actions Area (Hidden on Mobile) */}
+                    <div className="hidden md:flex flex-col gap-2 w-full md:w-auto md:min-w-[160px]">
+                      {renderActionButtons(task, false)}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })
+              );
+            })
         )}
       </div>
 
@@ -979,8 +986,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
             <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-               <h3 className="text-xl font-extrabold text-slate-800">Assign New Task</h3>
-               <button onClick={() => setShowAssignModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20}/></button>
+              <h3 className="text-xl font-extrabold text-slate-800">Assign New Task</h3>
+              <button onClick={() => setShowAssignModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
             </div>
             <div className="p-6 space-y-4 overflow-y-auto">
               {/* Inline error display for validation/server errors */}
@@ -994,41 +1001,41 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
               <div className="relative">
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
                 <div className="relative">
-                    <input 
-                    type="text" 
+                  <input
+                    type="text"
                     className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
                     value={newTask.title || ''}
-                    onChange={e => { setNewTask({...newTask, title: e.target.value}); setError(null); }}
+                    onChange={e => { setNewTask({ ...newTask, title: e.target.value }); setError(null); }}
                     placeholder="e.g. Inspect HVAC Unit B"
-                    />
-                    <AITextEnhancer 
-                        text={newTask.title || ''} 
-                        onUpdate={(text) => { setNewTask({...newTask, title: text}); setError(null); }} 
-                        context="concise"
-                        mini={true}
-                    />
+                  />
+                  <AITextEnhancer
+                    text={newTask.title || ''}
+                    onUpdate={(text) => { setNewTask({ ...newTask, title: text }); setError(null); }}
+                    context="concise"
+                    mini={true}
+                  />
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To</label>
-                    <select 
-                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                      value={newAssignedUserId}
-                      onChange={e => { setNewAssignedUserId(e.target.value || ''); setError(null); }}
-                    >
-                      <option value="">Select Team Member</option>
-                      {employees.filter(emp => !(emp as any).is_archived).map(emp => (
-                        <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
-                      ))}
-                    </select>
+                  <select
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    value={newAssignedUserId}
+                    onChange={e => { setNewAssignedUserId(e.target.value || ''); setError(null); }}
+                  >
+                    <option value="">Select Team Member</option>
+                    {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                      <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
-                  <select 
+                  <select
                     className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                     value={newTask.priority || 'MEDIUM'}
-                    onChange={e => setNewTask({...newTask, priority: e.target.value as any})}
+                    onChange={e => setNewTask({ ...newTask, priority: e.target.value as any })}
                   >
                     <option value="LOW">Low</option>
                     <option value="MEDIUM">Medium</option>
@@ -1036,81 +1043,81 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                   </select>
                 </div>
               </div>
-              
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assigned Date</label>
-                    <input 
-                        type="date" 
-                        className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                        value={newTask.createdDate || format(new Date(), 'yyyy-MM-dd')}
-                        onChange={e => setNewTask({...newTask, createdDate: e.target.value})}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
-                    <input 
-                      type="date" 
-                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                      value={newTask.dueDate || ''}
-                      onChange={e => setNewTask({...newTask, dueDate: e.target.value})}
-                    />
-                  </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assigned Date</label>
+                  <input
+                    type="date"
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    value={newTask.createdDate || format(new Date(), 'yyyy-MM-dd')}
+                    onChange={e => setNewTask({ ...newTask, createdDate: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
+                  <input
+                    type="date"
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    value={newTask.dueDate || ''}
+                    onChange={e => setNewTask({ ...newTask, dueDate: e.target.value })}
+                  />
+                </div>
               </div>
 
               <div>
                 <div className="flex justify-between items-center mb-2">
-                    <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
                 </div>
-                <textarea 
+                <textarea
                   className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
                   value={newTask.description || ''}
-                  onChange={e => setNewTask({...newTask, description: e.target.value})}
+                  onChange={e => setNewTask({ ...newTask, description: e.target.value })}
                   placeholder="Detailed instructions..."
                 />
-                 <AITextEnhancer 
-                    text={newTask.description || ''} 
-                    onUpdate={(text) => setNewTask({...newTask, description: text})} 
+                <AITextEnhancer
+                  text={newTask.description || ''}
+                  onUpdate={(text) => setNewTask({ ...newTask, description: text })}
                 />
               </div>
-              
+
               {/* External Link Input */}
               <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
-                  <div className="relative">
-                      <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                      <input 
-                          type="url" 
-                          className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
-                          value={newTask.externalLink || ''}
-                          onChange={e => setNewTask({...newTask, externalLink: e.target.value})}
-                          placeholder="https://docs.google.com/spreadsheets/..."
-                      />
-                  </div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
+                <div className="relative">
+                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="url"
+                    className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    value={newTask.externalLink || ''}
+                    onChange={e => setNewTask({ ...newTask, externalLink: e.target.value })}
+                    placeholder="https://docs.google.com/spreadsheets/..."
+                  />
+                </div>
               </div>
 
               <div>
-                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
-                 <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
-                    <input type="file" className="hidden" onChange={handleFileChange} />
-                    {attachment ? (
-                      <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
-                        <FileText size={20} />
-                        File Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                        <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
-                      </div>
-                    ) : (
-                      <div className="text-slate-400 text-sm">
-                        <Upload size={20} className="mx-auto mb-2" />
-                        Click to upload file (PDF, JPG, PNG)
-                      </div>
-                    )}
-                 </label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
+                <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
+                  <input type="file" className="hidden" onChange={handleFileChange} />
+                  {attachment ? (
+                    <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
+                      <FileText size={20} />
+                      File Attached ({(attachment.length / 1024).toFixed(0)} KB)
+                      <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                    </div>
+                  ) : (
+                    <div className="text-slate-400 text-sm">
+                      <Upload size={20} className="mx-auto mb-2" />
+                      Click to upload file (PDF, JPG, PNG)
+                    </div>
+                  )}
+                </label>
               </div>
             </div>
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
               <button onClick={() => setShowAssignModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button 
+              <button
                 type="button"
                 onClick={createTask}
                 className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
@@ -1125,9 +1132,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       {showCompleteModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-             <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-               <h3 className="text-xl font-extrabold text-slate-800">Submit Completion Report</h3>
-               <button onClick={() => setShowCompleteModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20}/></button>
+            <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+              <h3 className="text-xl font-extrabold text-slate-800">Submit Completion Report</h3>
+              <button onClick={() => setShowCompleteModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
             </div>
             <div className="p-6 space-y-4 overflow-y-auto">
               <div className="bg-indigo-50 p-4 rounded-xl text-indigo-800 text-sm font-medium mb-4">
@@ -1135,39 +1142,39 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Process Description (How to?)</label>
-                <textarea 
+                <textarea
                   className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
                   value={processNote}
                   onChange={e => setProcessNote(e.target.value)}
                   placeholder="I have completed the task by..."
                 />
-                 <AITextEnhancer 
-                    text={processNote} 
-                    onUpdate={setProcessNote} 
+                <AITextEnhancer
+                  text={processNote}
+                  onUpdate={setProcessNote}
                 />
               </div>
               <div>
-                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proof Attachment</label>
-                 <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
-                    <input type="file" className="hidden" onChange={handleFileChange} />
-                    {attachment ? (
-                      <div className="flex items-center justify-center gap-2 text-green-600 font-bold">
-                        <CheckCircle2 size={20} />
-                        Proof Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                        <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
-                      </div>
-                    ) : (
-                      <div className="text-slate-400 text-sm">
-                        <Upload size={20} className="mx-auto mb-2" />
-                        Upload Completion Proof (JPG, PDF)
-                      </div>
-                    )}
-                 </label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proof Attachment</label>
+                <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
+                  <input type="file" className="hidden" onChange={handleFileChange} />
+                  {attachment ? (
+                    <div className="flex items-center justify-center gap-2 text-green-600 font-bold">
+                      <CheckCircle2 size={20} />
+                      Proof Attached ({(attachment.length / 1024).toFixed(0)} KB)
+                      <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                    </div>
+                  ) : (
+                    <div className="text-slate-400 text-sm">
+                      <Upload size={20} className="mx-auto mb-2" />
+                      Upload Completion Proof (JPG, PDF)
+                    </div>
+                  )}
+                </label>
               </div>
             </div>
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-               <button onClick={() => setShowCompleteModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-               <button onClick={() => handleCompleteTask(showCompleteModal)} className="px-5 py-2.5 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-600/20">Mark as Completed</button>
+              <button onClick={() => setShowCompleteModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+              <button onClick={() => handleCompleteTask(showCompleteModal)} className="px-5 py-2.5 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-600/20">Mark as Completed</button>
             </div>
           </div>
         </div>
@@ -1177,19 +1184,19 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       {showObjectionModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-             <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
-               <h3 className="text-xl font-extrabold text-red-800">Raise Objection / Request Extension</h3>
-               <button onClick={() => setShowObjectionModal(null)} className="p-2 hover:bg-red-100 rounded-full text-red-500"><X size={20}/></button>
+            <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
+              <h3 className="text-xl font-extrabold text-red-800">Raise Objection / Request Extension</h3>
+              <button onClick={() => setShowObjectionModal(null)} className="p-2 hover:bg-red-100 rounded-full text-red-500"><X size={20} /></button>
             </div>
             <div className="p-6 space-y-4 overflow-y-auto">
-               <div className="flex items-start gap-3 bg-red-50 p-4 rounded-xl text-red-800 text-sm font-medium">
+              <div className="flex items-start gap-3 bg-red-50 p-4 rounded-xl text-red-800 text-sm font-medium">
                 <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
                 <p>Use this form if the task cannot be completed by the deadline or if there are blockers. This will alert the Assignee.</p>
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proposed New Deadline</label>
-                <input 
-                  type="date" 
+                <input
+                  type="date"
                   className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-red-500 outline-none"
                   value={extensionDate || ''}
                   onChange={e => setExtensionDate(e.target.value)}
@@ -1197,21 +1204,21 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Reason / Note</label>
-                <textarea 
+                <textarea
                   className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-red-500 outline-none h-32 resize-none"
                   value={extensionReason}
                   onChange={e => setExtensionReason(e.target.value)}
                   placeholder="I cannot complete this because..."
                 />
-                 <AITextEnhancer 
-                    text={extensionReason} 
-                    onUpdate={setExtensionReason} 
+                <AITextEnhancer
+                  text={extensionReason}
+                  onUpdate={setExtensionReason}
                 />
               </div>
             </div>
-             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-               <button onClick={() => setShowObjectionModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-               <button onClick={() => handleRaiseObjection(showObjectionModal)} className="px-5 py-2.5 bg-red-600 text-white rounded-xl font-bold shadow-lg shadow-red-600/20">Submit Request</button>
+            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+              <button onClick={() => setShowObjectionModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+              <button onClick={() => handleRaiseObjection(showObjectionModal)} className="px-5 py-2.5 bg-red-600 text-white rounded-xl font-bold shadow-lg shadow-red-600/20">Submit Request</button>
             </div>
           </div>
         </div>
@@ -1221,42 +1228,41 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       {actionPrompt && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
-             <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-               <h3 className="text-xl font-extrabold text-slate-800 capitalize">{actionPrompt.type === 'DELETE' ? 'Delete Task' : `${actionPrompt.type.toLowerCase()} Task`}</h3>
-               <button onClick={() => setActionPrompt(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20}/></button>
+            <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <h3 className="text-xl font-extrabold text-slate-800 capitalize">{actionPrompt.type === 'DELETE' ? 'Delete Task' : `${actionPrompt.type.toLowerCase()} Task`}</h3>
+              <button onClick={() => setActionPrompt(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
             </div>
             <div className="p-6 space-y-4">
               <p className="text-sm text-slate-600 font-medium">
-                {actionPrompt.type === 'DELETE' 
-                    ? "Are you sure you want to delete this task? Please provide a reason for the deletion record." 
-                    : `Please specify the reason for ${actionPrompt.type === 'HOLD' ? 'putting this task on hold' : 'terminating this task'}.`
+                {actionPrompt.type === 'DELETE'
+                  ? "Are you sure you want to delete this task? Please provide a reason for the deletion record."
+                  : `Please specify the reason for ${actionPrompt.type === 'HOLD' ? 'putting this task on hold' : 'terminating this task'}.`
                 }
               </p>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Reason / Note <span className="text-red-500">*</span></label>
-                <textarea 
+                <textarea
                   className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
                   value={actionReason}
                   onChange={e => setActionReason(e.target.value)}
                   placeholder="Enter reason here..."
                   autoFocus
                 />
-                 <AITextEnhancer 
-                    text={actionReason} 
-                    onUpdate={setActionReason} 
+                <AITextEnhancer
+                  text={actionReason}
+                  onUpdate={setActionReason}
                 />
               </div>
             </div>
-             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100">
-               <button onClick={() => setActionPrompt(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-               <button 
-                  onClick={confirmAdminAction} 
-                  className={`px-5 py-2.5 text-white rounded-xl font-bold shadow-lg ${
-                      actionPrompt.type === 'DELETE' || actionPrompt.type === 'TERMINATE' ? 'bg-red-600 shadow-red-600/20' : 'bg-yellow-500 shadow-yellow-500/20'
+            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100">
+              <button onClick={() => setActionPrompt(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+              <button
+                onClick={confirmAdminAction}
+                className={`px-5 py-2.5 text-white rounded-xl font-bold shadow-lg ${actionPrompt.type === 'DELETE' || actionPrompt.type === 'TERMINATE' ? 'bg-red-600 shadow-red-600/20' : 'bg-yellow-500 shadow-yellow-500/20'
                   }`}
-                >
-                  Confirm {actionPrompt.type === 'DELETE' ? 'Delete' : (actionPrompt.type === 'HOLD' ? 'Hold' : 'Terminate')}
-               </button>
+              >
+                Confirm {actionPrompt.type === 'DELETE' ? 'Delete' : (actionPrompt.type === 'HOLD' ? 'Hold' : 'Terminate')}
+              </button>
             </div>
           </div>
         </div>

@@ -294,7 +294,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
 
     return (
         <div className="p-6 md:p-8 bg-gradient-to-br from-slate-50 via-white to-slate-50 h-full overflow-y-auto custom-scrollbar">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 animate-fade-in-up">
                 <div className="flex items-center gap-5">
                     <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-violet-600 text-white rounded-2xl flex items-center justify-center shadow-2xl shadow-indigo-200 rotate-3 hover:rotate-0 transition-transform duration-300 shrink-0">
                         <FileBarChart size={32} />
@@ -320,7 +320,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
             </div>
 
             {/* Tabs */}
-            <div className="flex flex-wrap gap-3 mb-10 bg-white/50 p-2 rounded-2xl border border-slate-100 backdrop-blur-sm self-start">
+            <div className="flex flex-wrap gap-3 mb-10 bg-white/50 p-2 rounded-2xl border border-slate-100 backdrop-blur-sm self-start animate-fade-in-up" style={{ animationDelay: '100ms' }}>
                 <button onClick={() => setActiveTab('OVERVIEW')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'OVERVIEW' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' : 'text-slate-500 hover:bg-white hover:text-indigo-600'}`}>Overview</button>
                 {!isAdmin && (
                     <button onClick={() => setActiveTab('MY_APPLICATIONS')} className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'MY_APPLICATIONS' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' : 'text-slate-500 hover:bg-white hover:text-indigo-600'}`}>My Applications</button>
@@ -334,7 +334,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
             </div>
 
             {/* Tab Content */}
-            <div className="flex-1">
+            <div className="flex-1 animate-fade-in-up" style={{ animationDelay: '200ms' }}>
                 {activeTab === 'OVERVIEW' ? (
                     <div className="space-y-6">
                         {!isAdmin && leaveRequests.some(r => (String(r.appliedTo) === String(currentUser.id) || (currentUser.employeeId && String(r.appliedTo) === String(currentUser.employeeId))) && r.status === 'PENDING') && (

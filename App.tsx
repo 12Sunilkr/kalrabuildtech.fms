@@ -24,8 +24,10 @@ import { FinanceDashboard } from './components/FinanceDashboard';
 import { Notepad } from './components/Notepad';
 import { ChecklistSystem } from './components/ChecklistSystem';
 import { DatabaseManager } from './components/DatabaseManager';
-import { PMSAdmin } from './components/PMSAdmin';
-import { PMSEmployee } from './components/PMSEmployee';
+import PMSDashboard from './components/PMSDashboard';
+import ProjectForm from './components/ProjectForm';
+import WeeklyPlanner from './components/WeeklyPlanner';
+import DailyLogForm from './components/DailyLogForm';
 import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, Project, SitePhoto, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance } from './types';
 import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_PROJECTS, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
@@ -625,6 +627,7 @@ const App: React.FC = () => {
         case ViewMode.FMS_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.MATERIAL_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.PROJECTS: return <ProjectManager {...commonProps} photos={sitePhotos} setPhotos={setSitePhotos} />;
+        case ViewMode.PMS_ADMIN: return <PMSDashboard />;
         case ViewMode.FINANCE: return <FinanceDashboard {...commonProps} clientFinancials={clientFinancials} setClientFinancials={setClientFinancials} vendorFinancials={vendorFinancials} setVendorFinancials={setVendorFinancials} />;
         case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} />;
         case ViewMode.PERFORMANCE: return <PerformanceReport {...commonProps} />;
@@ -636,7 +639,6 @@ const App: React.FC = () => {
         case ViewMode.HOLIDAYS: return <HolidayManager holidays={holidays} setHolidays={setHolidays} />;
         case ViewMode.LEAVES: return <LeaveManagement {...commonProps} />;
         case ViewMode.DATABASE: return <DatabaseManager allData={{ ...commonProps, users }} onRestore={(d) => { }} onReset={() => { }} />;
-        case ViewMode.PMS_ADMIN: return <PMSAdmin currentUser={currentUser} employees={employees} addNotification={addNotification} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role="ADMIN" />;
         default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} />;
@@ -646,6 +648,7 @@ const App: React.FC = () => {
         case ViewMode.EMPLOYEE_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.EMPLOYEE_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.EMPLOYEE_PROJECTS: return <ProjectManager {...commonProps} photos={sitePhotos} setPhotos={setSitePhotos} />;
+        case ViewMode.PMS_EMPLOYEE: return <PMSDashboard />;
         case ViewMode.FINANCE: return <FinanceDashboard {...commonProps} clientFinancials={clientFinancials} setClientFinancials={setClientFinancials} vendorFinancials={vendorFinancials} setVendorFinancials={setVendorFinancials} />;
         case ViewMode.CHECKLIST: return <ChecklistSystem {...commonProps} templates={checklistTemplates} setTemplates={setChecklistTemplates} instances={checklistInstances} setInstances={setChecklistInstances} />;
         case ViewMode.CALENDAR: return <CalendarView {...commonProps} leaves={leaveRequests} reminders={reminders} setReminders={setReminders} />;
@@ -653,7 +656,6 @@ const App: React.FC = () => {
         case ViewMode.NOTEPAD: return <Notepad {...commonProps} />;
         case ViewMode.EMPLOYEE_CHAT: return <ChatSystem messages={chatMessages} setMessages={setChatMessages} groups={chatGroups} setGroups={setChatGroups} {...commonProps} />;
         case ViewMode.EMPLOYEE_QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
-        case ViewMode.PMS_EMPLOYEE: return <PMSEmployee currentUser={currentUser} addNotification={addNotification} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
         default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={() => { }} {...commonProps} />;
@@ -680,7 +682,7 @@ const App: React.FC = () => {
         userDepartment={employees.find(e => e.id === currentUser.employeeId)?.department}
       />
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:m-4 md:rounded-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:my-4 md:mr-4 md:rounded-r-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none">
         <header className="bg-white/80 backdrop-blur-md p-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20 print:hidden">
           <div className="flex items-center gap-2 md:hidden">
             <img src={COMPANY_LOGO} alt="Logo" className="w-8 h-8 bg-white rounded-lg shadow-sm" />
