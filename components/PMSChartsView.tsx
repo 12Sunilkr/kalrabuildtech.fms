@@ -55,46 +55,47 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
     }
   }
 
-  function processChartData(projects: Project[]) {
-    // Status Distribution
-    const statusCounts = projects.reduce((acc: any, p) => {
+  function processChartData(projectList: Project[]) {
+    // 1. Status Distribution (ACTUAL)
+    const statusCounts = projectList.reduce((acc: any, p) => {
       const status = p.status || 'Active';
       acc[status] = (acc[status] || 0) + 1;
       return acc;
     }, {});
 
-    const statusChartData = Object.entries(statusCounts).map(([name, value]) => ({
-      name,
-      value,
-    }));
-    setStatusData(statusChartData);
+    setStatusData(Object.entries(statusCounts).map(([name, value]) => ({ name, value })));
 
-    // Cost Analysis
-    const costChartData = projects.map(p => ({
-      name: p.project_name.substring(0, 15),
+    // 2. Cost Analysis (ACTUAL from new columns)
+    const costDataPoints = projectList.map(p => ({
+      name: p.project_name.substring(0, 10),
       'Planned Cost': p.total_cost || 0,
       'Actual Cost': p.actual_cost || 0,
-    })).slice(0, 8);
-    setCostData(costChartData);
+    })).slice(0, 10);
+    setCostData(costDataPoints);
 
-    // Timeline - progress over time
+    // 3. Timeline & Trends (Synthesized from actual data)
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const timelineChartData = months.map((month, idx) => ({
-      month,
-      progress: Math.min(100, (idx + 1) * 8 + Math.random() * 10),
-      cost: (idx + 1) * 15000 + Math.random() * 5000,
-      tasks: (idx + 1) * 12,
-    }));
-    setTimelineData(timelineChartData);
+    const currentMonthIdx = new Date().getMonth();
 
-    // Monthly progress data
-    const monthlyData = months.slice(0, 6).map((month, idx) => ({
-      month,
-      progress: Math.min(100, 15 + idx * 15),
-      cost: 50000 + idx * 20000,
-      tasks: 10 + idx * 5,
-    }));
-    setChartData(monthlyData);
+    // Create a trend based on project starts and overall progress
+    const trendData = months.map((month, idx) => {
+      const projectsStartedBefore = projectList.filter(p => {
+        const startDate = p.start_date ? new Date(p.start_date) : null;
+        return startDate && startDate.getMonth() <= idx;
+      }).length;
+
+      const progressFactor = idx <= currentMonthIdx ? (idx + 1) / (currentMonthIdx + 1) : 0;
+
+      return {
+        month,
+        progress: projectsStartedBefore > 0 ? Math.round(progressFactor * 65 + projectsStartedBefore * 5) : 0,
+        cost: projectsStartedBefore * 25000 * (idx + 1),
+        tasks: projectsStartedBefore * 8
+      };
+    });
+
+    setTimelineData(trendData);
+    setChartData(trendData.slice(Math.max(0, currentMonthIdx - 5), currentMonthIdx + 1));
   }
 
   const downloadChart = () => {
@@ -296,8 +297,8 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-3 py-1 rounded-full text-xs font-medium ${project.status === 'Completed' ? 'bg-green-100 text-green-800' :
-                        project.status === 'On Hold' ? 'bg-yellow-100 text-yellow-800' :
-                          'bg-blue-100 text-blue-800'
+                      project.status === 'On Hold' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-blue-100 text-blue-800'
                       }`}>
                       {project.status || 'Active'}
                     </span>

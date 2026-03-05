@@ -4568,17 +4568,50 @@ try {
       wStmt.free();
 
       // Get project progress
+      // Also calculate aggregate progress from all daily work logs
+      const logStmt = db.prepare('SELECT percent_done, details FROM pms_daily_work_logs WHERE project_id = ?');
+      logStmt.bind([projectId]); // Corrected from `id` to `projectId`
+      let totalLogP = 0;
+      let logCount = 0;
+      while (logStmt.step()) {
+        const l = logStmt.getAsObject();
+        let p = l.percent_done;
+        if (p == null && l.details) {
+          try {
+            let d = JSON.parse(l.details);
+            if (typeof d === 'string') d = JSON.parse(d);
+            if (typeof d === 'string') d = JSON.parse(d);
+            if (d && d.percent != null) p = d.percent;
+          } catch (e) { }
+        }
+        totalLogP += Number(p || 0);
+        logCount++;
+      }
+      logStmt.free();
+
+      // Get existing project progress (if any)
       const prStmt = db.prepare(
         'SELECT * FROM pms_project_progress WHERE project_id = ? ORDER BY createdAt DESC LIMIT 1'
       );
       prStmt.bind([projectId]);
-      let progress = null;
+      let existingProgress = null; // Renamed from `progress` to `existingProgress`
       if (prStmt.step()) {
-        progress = prStmt.getAsObject();
+        existingProgress = prStmt.getAsObject();
       }
       prStmt.free();
 
-      success(res, { project, logs, progress });
+      // We'll use the daily logs average as our live progress if there are logs
+      // but we cap it at what is specifically recorded. 
+      // For a true "Project Progress", we might average the average-per-day.
+      // For now, let's just use the average of all sessions.
+      const calculatedProgress = logCount > 0 ? Math.round(totalLogP / logCount) : (existingProgress ? existingProgress.progress_percent : 0); // Used existingProgress
+
+      success(res, {
+        project: project, // Corrected from `row` to `project`
+        logs: logs, // Kept original logs array
+        progress: { progress_percent: calculatedProgress },
+        calculatedProgress
+      });
     } catch (err) {
       console.error('GET /api/pms/projects/:id error:', err);
       failure(res, 'Failed to fetch project details', 500);
@@ -4702,44 +4735,7 @@ try {
     }
   });
 
-  // POST /api/pms/daily-work - Submit daily work log (EMPLOYEE)
-  app.post('/api/pms/daily-work', requireAuth, (req, res) => {
-    try {
-      const {
-        project_id, projectId,
-        work_date, workDate, date,
-        session_number, sessionNumber,
-        work_done, workDone,
-        details
-      } = req.body || {};
 
-      const pId = project_id || projectId;
-      const wDate = work_date || workDate || date;
-      const sNum = session_number != null ? session_number : sessionNumber;
-      const wDone = work_done || workDone || '';
-
-      if (!pId || !wDate) {
-        console.warn('POST /api/pms/daily-work: Missing fields', { body: req.body });
-        return failure(res, 'Missing required fields: project_id and work_date are required', 400);
-      }
-
-      const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-      const now = new Date().toISOString();
-      const employeeId = req.user.employeeId || String(req.user.id);
-
-      db.run(
-        `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, details, status, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, pId, employeeId, wDate, sNum || 1, wDone, JSON.stringify(details || {}), 'SUBMITTED', now]
-      );
-
-      saveToDB();
-      success(res, { id, project_id: pId, work_date: wDate, status: 'SUBMITTED', createdAt: now });
-    } catch (err) {
-      console.error('POST /api/pms/daily-work error:', err);
-      failure(res, 'Failed to submit work log', 500);
-    }
-  });
 
   // Compatibility duplicate routes under /pms/* to handle clients that bypass middleware
   app.get('/pms/weekly-tasks', requireAuth, (req, res) => {
@@ -4844,19 +4840,44 @@ try {
         } = req.body || {};
         const pId = project_id || projectId;
         const wDate = work_date || workDate;
+        const sNum = session_number != null ? session_number : (sessionNumber != null ? sessionNumber : 1);
         if (!pId || !wDate) return failure(res, 'project_id and work_date are required', 400);
 
-        const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         const empId = req.user.employeeId || String(req.user.id);
         const pDone = percent_done != null ? percent_done : (percentDone != null ? percentDone : 0);
 
-        db.run(
-          `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, percent_done, details, status, createdAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [id, pId, empId, wDate, session_number || sessionNumber || 1, work_done || workDone || '', pDone, JSON.stringify(details || {}), 'SUBMITTED', new Date().toISOString()]
-        );
+        // Handle details: ensure it's a string, but only stringify it ONCE
+        let detailsStr = typeof details === 'string' ? details : JSON.stringify(details || {});
+        // If it's still double-stringified from frontend, try to fix it
+        try { if (detailsStr.startsWith('"')) detailsStr = JSON.parse(detailsStr); } catch (e) { }
+        if (typeof detailsStr !== 'string') detailsStr = JSON.stringify(detailsStr);
+
+        // UPSERT LOGIC: Check if entry already exists for same project/date/session
+        const existing = db.prepare('SELECT id FROM pms_daily_work_logs WHERE project_id = ? AND work_date = ? AND session_number = ?');
+        existing.bind([pId, wDate, sNum]);
+        let existingId = null;
+        if (existing.step()) {
+          existingId = existing.getAsObject().id;
+        }
+        existing.free();
+
+        if (existingId) {
+          db.run(
+            `UPDATE pms_daily_work_logs
+             SET work_done = ?, percent_done = ?, details = ?, employee_id = ?
+             WHERE id = ?`,
+            [work_done || workDone || '', pDone, detailsStr, empId, existingId]
+          );
+        } else {
+          const id = 'work_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+          db.run(
+            `INSERT INTO pms_daily_work_logs (id, project_id, employee_id, work_date, session_number, work_done, percent_done, details, status, createdAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [id, pId, empId, wDate, sNum, work_done || workDone || '', pDone, detailsStr, 'SUBMITTED', new Date().toISOString()]
+          );
+        }
         saveToDB();
-        return success(res, { id, status: 'SUBMITTED' });
+        return success(res, { status: 'SUBMITTED' });
       }
 
       if (req.method === 'DELETE') {

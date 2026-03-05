@@ -159,10 +159,22 @@ export async function runMigrations({ db, dbFile }) {
     project_name TEXT,
     assigned_employee_id TEXT,
     start_date TEXT,
+    end_date TEXT,
+    location TEXT,
+    total_cost REAL DEFAULT 0,
+    actual_cost REAL DEFAULT 0,
     status TEXT,
     createdBy TEXT,
     createdAt TEXT
   )`, [`CREATE INDEX IF NOT EXISTS idx_pms_projects_employee ON pms_projects(assigned_employee_id)`]);
+
+  // Ensure columns exist for older databases
+  ensureColumns('pms_projects', {
+    end_date: 'TEXT',
+    location: 'TEXT',
+    total_cost: 'REAL DEFAULT 0',
+    actual_cost: 'REAL DEFAULT 0'
+  });
 
   ensureTable('pms_daily_work_logs', `CREATE TABLE pms_daily_work_logs (
     id TEXT PRIMARY KEY,
@@ -218,7 +230,8 @@ export async function runMigrations({ db, dbFile }) {
   ensureColumns('pms_daily_work_logs', {
     weekly_task_id: 'TEXT',
     percent_done: 'REAL',
-    details: 'TEXT'
+    details: 'TEXT',
+    updatedAt: 'TEXT'
   });
 
   // Ensure standard columns exist on tables where appropriate

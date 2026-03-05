@@ -6,8 +6,6 @@ import DailyLogForm from './DailyLogForm';
 import PMSChartsView from './PMSChartsView';
 import { BarChart3, BarChart2, Calendar, CheckCircle, Zap, ClipboardList, Plus, RefreshCw, ChevronRight, Trash2 } from 'lucide-react';
 
-
-
 // dashboard statistic card with premium styling
 const StatCard = ({ title, value, icon: Icon, gradient, delay }: any) => (
   <div
@@ -23,6 +21,71 @@ const StatCard = ({ title, value, icon: Icon, gradient, delay }: any) => (
     </div>
   </div>
 );
+
+function ProjectCard({ project, idx, onDelete, onClick }: any) {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    getProjectSummary(project.id).then(s => setProgress(s.overallProgress || 0)).catch(() => { });
+  }, [project.id]);
+
+  return (
+    <div
+      style={{ animationDelay: `${idx * 50}ms` }}
+      className="bg-white/80 backdrop-blur-xl rounded-3xl p-6 border border-white/50 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 animate-scale-in group"
+    >
+      <div className="flex justify-between items-start mb-4">
+        <div className="space-y-1">
+          <h3 className="font-black text-xl text-slate-800">{project.project_name}</h3>
+          <div className="flex items-center gap-2 text-xs text-slate-400 font-bold uppercase tracking-wider">
+            <Calendar size={14} />
+            <span>Started: {project.start_date || '—'}</span>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${project.status === 'Completed' ? 'bg-emerald-100 text-emerald-700' :
+            project.status === 'On Hold' ? 'bg-amber-100 text-amber-700' :
+              'bg-blue-100 text-blue-700'
+            }`}>
+            {project.status || 'Active'}
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm('Are you sure you want to delete this project? All daily logs and tasks will be permanently removed.')) {
+                fetchJSON(`/api/pms/projects/${project.id}`, { method: 'DELETE' }).then(() => onDelete());
+              }
+            }}
+            className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex justify-between text-xs font-bold text-slate-500 uppercase tracking-widest">
+          <span>Progress</span>
+          <span>{progress}%</span>
+        </div>
+        <div className="h-3 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200/50">
+          <div
+            className="h-full bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full transition-all duration-1000"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+
+      <button
+        onClick={onClick}
+        className="w-full mt-6 py-3 px-4 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-between text-sm font-bold text-slate-600 group-hover:bg-slate-900 group-hover:text-white group-hover:border-slate-800 transition-all duration-300"
+      >
+        <span>OPEN PLANNER</span>
+        <ChevronRight size={18} className="transform group-hover:translate-x-1 transition-transform" />
+      </button>
+    </div>
+  );
+}
 
 export default function PMSDashboard() {
   const [projects, setProjects] = useState<any[]>([]);
@@ -48,8 +111,14 @@ export default function PMSDashboard() {
 
   useEffect(() => {
     if (projects.length) {
-      const id = projects[0].id;
-      getProjectSummary(id).then(setSummary).catch(() => { });
+      // Calculate overall summary across all projects
+      Promise.all(projects.map(p => getProjectSummary(p.id))).then(summaries => {
+        const totalProgress = summaries.reduce((acc, s) => acc + (s.overallProgress || 0), 0);
+        const avgProgress = projects.length > 0 ? Math.round(totalProgress / projects.length) : 0;
+        setSummary({ overallProgress: avgProgress });
+      }).catch(e => console.warn('Summary calc failed', e));
+    } else {
+      setSummary({ overallProgress: 0 });
     }
   }, [projects]);
 
@@ -69,9 +138,6 @@ export default function PMSDashboard() {
           onChange={async () => {
             setShowPlanner(false);
             await loadProjects();
-            if (activeProjectId) {
-              try { const s = await getProjectSummary(activeProjectId); setSummary(s); } catch (e) { }
-            }
           }}
         />
       </div>
@@ -159,61 +225,13 @@ export default function PMSDashboard() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           {projects.length ? projects.map((p: any, idx: number) => (
-            <div
+            <ProjectCard
               key={p.id}
-              style={{ animationDelay: `${idx * 50}ms` }}
-              className="bg-white/80 backdrop-blur-xl rounded-3xl p-6 border border-white/50 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 animate-scale-in group"
-            >
-              <div className="flex justify-between items-start mb-4">
-                <div className="space-y-1">
-                  <h3 className="font-black text-xl text-slate-800">{p.project_name}</h3>
-                  <div className="flex items-center gap-2 text-xs text-slate-400 font-bold uppercase tracking-wider">
-                    <Calendar size={14} />
-                    <span>Started: {p.start_date || '—'}</span>
-                  </div>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                  <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${p.status === 'Completed' ? 'bg-emerald-100 text-emerald-700' :
-                    p.status === 'On Hold' ? 'bg-amber-100 text-amber-700' :
-                      'bg-blue-100 text-blue-700'
-                    }`}>
-                    {p.status || 'Active'}
-                  </span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (window.confirm('Are you sure you want to delete this project? All daily logs and tasks will be permanently removed.')) {
-                        fetchJSON(`/api/pms/projects/${p.id}`, { method: 'DELETE' }).then(() => loadProjects());
-                      }
-                    }}
-                    className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs font-bold text-slate-500 uppercase tracking-widest">
-                  <span>Progress</span>
-                  <span>{p.progress || 0}%</span>
-                </div>
-                <div className="h-3 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200/50">
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full transition-all duration-1000"
-                    style={{ width: `${p.progress || 0}%` }}
-                  />
-                </div>
-              </div>
-
-              <button
-                onClick={() => { setActiveProjectId(p.id); setShowPlanner(true); setShowDailyLog(false); }}
-                className="w-full mt-6 py-3 px-4 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-between text-sm font-bold text-slate-600 group-hover:bg-slate-900 group-hover:text-white group-hover:border-slate-800 transition-all duration-300"
-              >
-                <span>OPEN PLANNER</span>
-                <ChevronRight size={18} className="transform group-hover:translate-x-1 transition-transform" />
-              </button>
-            </div>
+              project={p}
+              idx={idx}
+              onDelete={() => loadProjects()}
+              onClick={() => { setActiveProjectId(p.id); setShowPlanner(true); setShowDailyLog(false); }}
+            />
           )) : (
             <div className="col-span-full py-20 text-center animate-scale-in">
               <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-400">

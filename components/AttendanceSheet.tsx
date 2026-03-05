@@ -3,13 +3,14 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Employee, AttendanceRecord, AttendanceValue, SundayRequest, Holiday, User } from '../types';
 import { getDaysInMonthArray, formatDateKey, isDateSunday, startOfDay } from '../utils/dateUtils';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
-import { ChevronLeft, ChevronRight, Calendar, AlertCircle, CheckCircle2, XCircle, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar, AlertCircle, CheckCircle2, XCircle, X, Eye, EyeOff } from 'lucide-react';
 import api from '../src/utils/api';
 import { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 import { format, isBefore } from 'date-fns';
 
 interface AttendanceSheetProps {
   employees: Employee[];
+  setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
   attendanceData: Record<string, AttendanceRecord>;
   setAttendanceData: React.Dispatch<React.SetStateAction<Record<string, AttendanceRecord>>>;
   holidays: Holiday[];
@@ -18,9 +19,10 @@ interface AttendanceSheetProps {
   currentUser: User;
 }
 
-export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({ 
-  employees, 
-  attendanceData, 
+export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
+  employees,
+  setEmployees,
+  attendanceData,
   setAttendanceData,
   holidays,
   sundayRequests,
@@ -29,7 +31,8 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [showRequestsModal, setShowRequestsModal] = useState(false);
-  
+  const [showHidden, setShowHidden] = useState(false);
+
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, empId: string, date: Date } | null>(null);
 
@@ -85,45 +88,61 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
   const toggleAttendance = (empId: string, date: Date) => {
     const dateKey = formatDateKey(date);
     const currentVal = attendanceData[empId]?.[dateKey];
-    
+
     let nextVal: AttendanceValue = 1;
 
     if (currentVal === undefined) {
-        nextVal = 1;
+      nextVal = 1;
     } else {
-        if (currentVal === 1) nextVal = 0;
-        else if (currentVal === 0) nextVal = 1;
-        else nextVal = 1; 
+      if (currentVal === 1) nextVal = 0;
+      else if (currentVal === 0) nextVal = 1;
+      else nextVal = 1;
     }
 
     updateAttendance(empId, date, nextVal);
   };
 
   const handleContextMenu = (e: React.MouseEvent, empId: string, date: Date) => {
-      e.preventDefault();
-      setContextMenu({ x: e.clientX, y: e.clientY, empId, date });
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, empId, date });
   };
 
   const handleMenuSelect = (val: AttendanceValue) => {
-      if (contextMenu) {
-          updateAttendance(contextMenu.empId, contextMenu.date, val);
-          setContextMenu(null);
-      }
+    if (contextMenu) {
+      updateAttendance(contextMenu.empId, contextMenu.date, val);
+      setContextMenu(null);
+    }
   };
 
   const handleRequestAction = (id: string, status: 'APPROVED' | 'REJECTED') => {
-      setSundayRequests(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+    setSundayRequests(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+  };
+
+  const toggleHideStatus = async (empId: string, currentStatus: boolean) => {
+    const newStatus = !currentStatus;
+    // Optimistic Update
+    setEmployees(prev => prev.map(e => e.id === empId ? { ...e, hideAttendance: newStatus } : e));
+
+    try {
+      await api.put(`/employees/${empId}`, { hideAttendance: newStatus }, { withCredentials: true });
+      const refreshed = await safeGet('/employees');
+      setEmployees(ensureArray(extractPayload(refreshed)));
+    } catch (err) {
+      console.error('Failed to update hide status', err);
+      // Revert on error
+      setEmployees(prev => prev.map(e => e.id === empId ? { ...e, hideAttendance: currentStatus } : e));
+    }
   };
 
   const getStats = (empId: string) => {
     const emp = employees.find(e => e.id === empId);
-    
+
     // Determine the start date for tracking stats:
     // If 'createdAt' exists (System Entry Date), use that.
     // Otherwise, fallback to 'joiningDate' (Legacy behavior).
-    const trackingStartDate = emp 
-        ? (emp.createdAt ? startOfDay(new Date(emp.createdAt)) : startOfDay(new Date(emp.joiningDate))) 
-        : new Date(0);
+    const trackingStartDate = emp
+      ? (emp.createdAt ? startOfDay(new Date(emp.createdAt)) : startOfDay(new Date(emp.joiningDate)))
+      : new Date(0);
 
     const record = attendanceData[empId] || {};
     let worked = 0;
@@ -144,13 +163,13 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
       if (val === undefined && !isBefore(currentDay, todayStart)) return;
 
       let effectiveVal: AttendanceValue = 1;
-      
+
       if (val !== undefined) {
-          effectiveVal = val;
+        effectiveVal = val;
       } else {
-          if (isDateSunday(d)) effectiveVal = 'OFF';
-          else if (holidays.some(h => h.date === k)) effectiveVal = 'HOLIDAY';
-          else effectiveVal = 0; // It is strictly past and undefined, so Absent
+        if (isDateSunday(d)) effectiveVal = 'OFF';
+        else if (holidays.some(h => h.date === k)) effectiveVal = 'HOLIDAY';
+        else effectiveVal = 0; // It is strictly past and undefined, so Absent
       }
 
       if (effectiveVal === 'OFF' || effectiveVal === 'HOLIDAY') return;
@@ -175,30 +194,42 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
           </div>
           Attendance Sheet
           {pendingRequests.length > 0 && (
-              <button 
-                onClick={() => setShowRequestsModal(true)}
-                className="ml-4 text-xs bg-red-500 text-white px-3 py-1 rounded-full font-bold animate-pulse shadow-red-500/50 shadow-sm"
-              >
-                  {pendingRequests.length} Sunday Req
-              </button>
+            <button
+              onClick={() => setShowRequestsModal(true)}
+              className="ml-4 text-xs bg-red-500 text-white px-3 py-1 rounded-full font-bold animate-pulse shadow-red-500/50 shadow-sm"
+            >
+              {pendingRequests.length} Sunday Req
+            </button>
           )}
         </h2>
-        <div className="flex items-center justify-between w-full md:w-auto gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
-          <button 
-            onClick={() => handleMonthChange(-1)}
-            className="p-2 hover:bg-white hover:shadow-md hover:text-blue-600 rounded-lg transition-all text-slate-500"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <span className="w-32 md:w-48 text-center font-bold text-slate-800 select-none text-base md:text-lg">
-            {format(currentDate, 'MMMM yyyy')}
-          </span>
-          <button 
-            onClick={() => handleMonthChange(1)}
-            className="p-2 hover:bg-white hover:shadow-md hover:text-blue-600 rounded-lg transition-all text-slate-500"
-          >
-            <ChevronRight size={20} />
-          </button>
+        <div className="flex items-center justify-between w-full md:w-auto gap-4">
+          {currentUser?.role === 'ADMIN' && (
+            <button
+              onClick={() => setShowHidden(!showHidden)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl border transition-all font-bold text-xs ${showHidden ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/30' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+              title={showHidden ? "Hide team members marked as hidden" : "Show team members marked as hidden"}
+            >
+              {showHidden ? <Eye size={16} /> : <EyeOff size={16} />}
+              {showHidden ? 'Showing Hidden' : 'Show Hidden'}
+            </button>
+          )}
+          <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+            <button
+              onClick={() => handleMonthChange(-1)}
+              className="p-2 hover:bg-white hover:shadow-md hover:text-blue-600 rounded-lg transition-all text-slate-500"
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <span className="w-32 md:w-48 text-center font-bold text-slate-800 select-none text-base md:text-lg">
+              {format(currentDate, 'MMMM yyyy')}
+            </span>
+            <button
+              onClick={() => handleMonthChange(1)}
+              className="p-2 hover:bg-white hover:shadow-md hover:text-blue-600 rounded-lg transition-all text-slate-500"
+            >
+              <ChevronRight size={20} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -207,17 +238,17 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
           <thead className="bg-slate-50 sticky top-0 z-20 shadow-sm">
             <tr>
               <th className="sticky left-0 bg-slate-50 z-30 p-4 min-w-[80px] text-left text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r">ID</th>
-              <th className="sticky left-[80px] bg-slate-50 z-30 p-4 min-w-[140px] text-left text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r shadow-[4px_0_8px_-4px_rgba(0,0,0,0.05)]">Name</th>
+              <th className="sticky left-[80px] bg-slate-50 z-30 p-4 min-w-[160px] text-left text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r shadow-[4px_0_8px_-4px_rgba(0,0,0,0.05)]">Name</th>
               <th className="p-2 w-14 text-center text-[10px] uppercase font-bold text-blue-600 bg-blue-50/50 border-b border-blue-100 border-r border-slate-200">Work</th>
               <th className="p-2 w-14 text-center text-[10px] uppercase font-bold text-red-600 bg-red-50/50 border-b border-red-100 border-r border-slate-200">Full</th>
               <th className="p-2 w-14 text-center text-[10px] uppercase font-bold text-orange-600 bg-orange-50/50 border-b border-orange-100 border-r border-slate-200">Total</th>
-              
+
               {days.map(d => {
                 const isSun = isDateSunday(d);
                 const holiday = holidays.find(h => h.date === formatDateKey(d));
                 return (
-                  <th 
-                    key={d.toString()} 
+                  <th
+                    key={d.toString()}
                     className={`p-2 min-w-[44px] text-center border-b border-slate-200 border-r border-slate-100 group transition-colors ${isSun || holiday ? 'bg-green-50' : 'bg-slate-50'}`}
                     title={holiday?.name}
                   >
@@ -230,81 +261,94 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
             {employees
-              .filter(emp => !(currentUser && currentUser.role === 'ADMIN' && emp.hideAttendance))
+              .filter(emp => showHidden || !emp.hideAttendance || (currentUser && currentUser.role === 'ADMIN' && currentUser.employeeId === emp.id))
               .map(emp => {
-              const stats = getStats(emp.id);
-              
-              // Determine start date for rendering logic
-              const trackingStartDate = emp.createdAt 
-                  ? startOfDay(new Date(emp.createdAt)) 
+                const stats = getStats(emp.id);
+
+                // Determine start date for rendering logic
+                const trackingStartDate = emp.createdAt
+                  ? startOfDay(new Date(emp.createdAt))
                   : startOfDay(new Date(emp.joiningDate));
 
-              return (
-                <tr key={emp.id} className="hover:bg-blue-50/30 transition-colors group">
-                  <td className="sticky left-0 bg-white group-hover:bg-blue-50/30 p-3 font-mono text-xs font-bold text-slate-500 border-r border-slate-200 z-10 transition-colors">{emp.id}</td>
-                  <td className="sticky left-[80px] bg-white group-hover:bg-blue-50/30 p-3 text-sm font-bold text-slate-700 border-r border-slate-200 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.05)] z-10 whitespace-nowrap overflow-hidden text-ellipsis max-w-[140px] transition-colors">{emp.name}</td>
-                  
-                  <td className="p-2 text-center text-sm font-bold text-slate-800 bg-blue-50/20 border-r border-slate-100">{stats?.worked.toFixed(2) || 0}</td>
-                  <td className="p-2 text-center text-sm font-bold text-slate-500 bg-red-50/20 border-r border-slate-100">{stats?.fullLeaves || 0}</td>
-                  <td className="p-2 text-center text-sm font-bold text-slate-800 bg-orange-50/20 border-r border-slate-100">{stats?.totalLeaves.toFixed(2) || 0}</td>
+                return (
+                  <tr key={emp.id} className="hover:bg-blue-50/30 transition-colors group">
+                    <td className="sticky left-0 bg-white group-hover:bg-blue-50/30 p-3 font-mono text-xs font-bold text-slate-500 border-r border-slate-200 z-10 transition-colors uppercase">{emp.id}</td>
+                    <td className="sticky left-[80px] bg-white group-hover:bg-blue-50/30 p-2 text-sm font-bold border-r border-slate-200 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.05)] z-10 whitespace-nowrap overflow-hidden max-w-[160px] transition-colors">
+                      <div className="flex items-center justify-between gap-1 overflow-hidden w-full">
+                        <span className={`truncate flex-1 ${emp.hideAttendance ? 'text-slate-400 italic' : 'text-slate-700'}`}>{emp.name}</span>
+                        {currentUser?.role === 'ADMIN' && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleHideStatus(emp.id, !!emp.hideAttendance); }}
+                            className={`p-1.5 rounded-lg transition-colors shrink-0 ${emp.hideAttendance ? 'text-blue-600 bg-blue-50 hover:bg-blue-100' : 'text-slate-300 hover:text-blue-600 hover:bg-blue-50'}`}
+                            title={emp.hideAttendance ? "Unhide from Attendance Sheet" : "Hide from Attendance Sheet"}
+                          >
+                            {emp.hideAttendance ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        )}
+                      </div>
+                    </td>
 
-                  {days.map(d => {
-                    const currentDay = startOfDay(d);
-                    const isBeforeTracking = isBefore(currentDay, trackingStartDate);
-                    
-                    const isSun = isDateSunday(d);
-                    const dateKey = formatDateKey(d);
-                    const holiday = holidays.find(h => h.date === dateKey);
-                    
-                    const record = attendanceData[emp.id]?.[dateKey];
-                    let val: AttendanceValue | null = null; 
+                    <td className="p-2 text-center text-sm font-bold text-slate-800 bg-blue-50/20 border-r border-slate-100">{stats?.worked.toFixed(2) || 0}</td>
+                    <td className="p-2 text-center text-sm font-bold text-slate-500 bg-red-50/20 border-r border-slate-100">{stats?.fullLeaves || 0}</td>
+                    <td className="p-2 text-center text-sm font-bold text-slate-800 bg-orange-50/20 border-r border-slate-100">{stats?.totalLeaves.toFixed(2) || 0}</td>
 
-                    if (record !== undefined) {
+                    {days.map(d => {
+                      const currentDay = startOfDay(d);
+                      const isBeforeTracking = isBefore(currentDay, trackingStartDate);
+
+                      const isSun = isDateSunday(d);
+                      const dateKey = formatDateKey(d);
+                      const holiday = holidays.find(h => h.date === dateKey);
+
+                      const record = attendanceData[emp.id]?.[dateKey];
+                      let val: AttendanceValue | null = null;
+
+                      if (record !== undefined) {
                         val = record;
-                    } else {
+                      } else {
                         // If it is before tracking start date, do not auto-populate status (Empty)
                         if (isBeforeTracking) {
-                            val = null;
+                          val = null;
                         } else {
-                            if (isSun) {
-                                val = 'OFF';
-                            } else if (holiday) {
-                                val = 'HOLIDAY';
+                          if (isSun) {
+                            val = 'OFF';
+                          } else if (holiday) {
+                            val = 'HOLIDAY';
+                          } else {
+                            // Only mark 0 (Absent) if STRICTLY in the past.
+                            // Today (if incomplete) or Future remains null (Empty)
+                            if (isBefore(currentDay, todayStart)) {
+                              val = 0;
                             } else {
-                                // Only mark 0 (Absent) if STRICTLY in the past.
-                                // Today (if incomplete) or Future remains null (Empty)
-                                if (isBefore(currentDay, todayStart)) {
-                                    val = 0; 
-                                } else {
-                                    val = null; 
-                                }
+                              val = null;
                             }
+                          }
                         }
-                    }
+                      }
 
-                    const colorClass = val === null ? 'bg-white' : (STATUS_COLORS[val.toString()] || 'bg-white');
-                    const displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : val));
-                    
-                    // Style hint for pre-tracking empty cells (optional, kept subtle)
-                    const cellStyle = (isBeforeTracking && val === null) ? '' : ''; 
+                      const colorClass = val === null ? 'bg-white' : (STATUS_COLORS[val.toString()] || 'bg-white');
+                      const displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : val));
 
-                    return (
-                      <td 
-                        key={dateKey}
-                        onClick={() => toggleAttendance(emp.id, d)}
-                        onContextMenu={(e) => handleContextMenu(e, emp.id, d)}
-                        className={`p-1 border-r border-slate-100 cursor-pointer text-center relative ${cellStyle}`}
-                        title={holiday ? `${holiday.name}` : undefined}
-                      >
-                        <div className={`w-8 h-8 mx-auto rounded-lg flex items-center justify-center text-[10px] font-bold shadow-sm transition-all hover:scale-110 hover:shadow-md ${colorClass} ${val === 1 ? 'border border-slate-100' : ''}`}>
-                          {displayText}
-                        </div>
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
+                      // Style hint for pre-tracking empty cells (optional, kept subtle)
+                      const cellStyle = (isBeforeTracking && val === null) ? '' : '';
+
+                      return (
+                        <td
+                          key={dateKey}
+                          onClick={() => toggleAttendance(emp.id, d)}
+                          onContextMenu={(e) => handleContextMenu(e, emp.id, d)}
+                          className={`p-1 border-r border-slate-100 cursor-pointer text-center relative ${cellStyle}`}
+                          title={holiday ? `${holiday.name}` : undefined}
+                        >
+                          <div className={`w-8 h-8 mx-auto rounded-lg flex items-center justify-center text-[10px] font-bold shadow-sm transition-all hover:scale-110 hover:shadow-md ${colorClass} ${val === 1 ? 'border border-slate-100' : ''}`}>
+                            {displayText}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
       </div>
@@ -320,82 +364,82 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
 
       {/* Context Menu */}
       {contextMenu && (
-          <div 
-            style={{ top: contextMenu.y, left: contextMenu.x }} 
-            className="fixed z-50 bg-white rounded-xl shadow-xl border border-slate-100 w-48 py-1.5 animate-in fade-in zoom-in-95 duration-100 overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-              <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase border-b border-slate-50 mb-1">Set Status</div>
-              <button onClick={() => handleMenuSelect(1)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-white border border-slate-300"></div> Present (1.0)
-              </button>
-              <button onClick={() => handleMenuSelect(0)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-red-500"></div> Absent (0)
-              </button>
-               <button onClick={() => handleMenuSelect(0.5)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-yellow-300"></div> Half Day (0.5)
-              </button>
-              <button onClick={() => handleMenuSelect(0.25)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-blue-200"></div> Quarter Day (0.25)
-              </button>
-               <button onClick={() => handleMenuSelect(0.75)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-orange-300"></div> Short Leave (0.75)
-              </button>
-              <div className="my-1 border-t border-slate-50"></div>
-              <button onClick={() => handleMenuSelect('OFF')} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-[#00b050]"></div> Off Day
-              </button>
-               <button onClick={() => handleMenuSelect('HOLIDAY')} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-[#00b050]"></div> Holiday
-              </button>
-          </div>
+        <div
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          className="fixed z-50 bg-white rounded-xl shadow-xl border border-slate-100 w-48 py-1.5 animate-in fade-in zoom-in-95 duration-100 overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase border-b border-slate-50 mb-1">Set Status</div>
+          <button onClick={() => handleMenuSelect(1)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-white border border-slate-300"></div> Present (1.0)
+          </button>
+          <button onClick={() => handleMenuSelect(0)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div> Absent (0)
+          </button>
+          <button onClick={() => handleMenuSelect(0.5)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-yellow-300"></div> Half Day (0.5)
+          </button>
+          <button onClick={() => handleMenuSelect(0.25)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-blue-200"></div> Quarter Day (0.25)
+          </button>
+          <button onClick={() => handleMenuSelect(0.75)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-orange-300"></div> Short Leave (0.75)
+          </button>
+          <div className="my-1 border-t border-slate-50"></div>
+          <button onClick={() => handleMenuSelect('OFF')} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-[#00b050]"></div> Off Day
+          </button>
+          <button onClick={() => handleMenuSelect('HOLIDAY')} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-[#00b050]"></div> Holiday
+          </button>
+        </div>
       )}
 
       {/* Requests Modal */}
       {showRequestsModal && (
-          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
-                  <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
-                      <h3 className="text-xl font-extrabold text-red-900">Sunday Work Requests</h3>
-                      <button onClick={() => setShowRequestsModal(false)} className="p-2 hover:bg-red-100 rounded-full text-red-800"><X size={20}/></button>
-                  </div>
-                  <div className="p-6 space-y-4 overflow-y-auto">
-                      {pendingRequests.length === 0 ? (
-                          <div className="text-center text-slate-400 py-8">No pending requests</div>
-                      ) : (
-                          pendingRequests.map(req => {
-                              const emp = employees.find(e => e.id === req.employeeId);
-                              return (
-                                  <div key={req.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-                                      <div className="flex justify-between items-start mb-2">
-                                          <div>
-                                              <p className="font-bold text-slate-800">{emp?.name}</p>
-                                              <p className="text-xs text-slate-500">{req.date}</p>
-                                          </div>
-                                          <span className="text-xs font-mono text-slate-400">{req.id}</span>
-                                      </div>
-                                      <p className="text-sm text-slate-600 bg-slate-50 p-2 rounded mb-3 italic">"{req.reason}"</p>
-                                      <div className="flex gap-2">
-                                          <button 
-                                              onClick={() => handleRequestAction(req.id, 'APPROVED')}
-                                              className="flex-1 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 flex items-center justify-center gap-1"
-                                          >
-                                              <CheckCircle2 size={14}/> Approve
-                                          </button>
-                                          <button 
-                                              onClick={() => handleRequestAction(req.id, 'REJECTED')}
-                                              className="flex-1 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-xs font-bold hover:bg-red-50 flex items-center justify-center gap-1"
-                                          >
-                                              <XCircle size={14}/> Reject
-                                          </button>
-                                      </div>
-                                  </div>
-                              );
-                          })
-                      )}
-                  </div>
-              </div>
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
+              <h3 className="text-xl font-extrabold text-red-900">Sunday Work Requests</h3>
+              <button onClick={() => setShowRequestsModal(false)} className="p-2 hover:bg-red-100 rounded-full text-red-800"><X size={20} /></button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto">
+              {pendingRequests.length === 0 ? (
+                <div className="text-center text-slate-400 py-8">No pending requests</div>
+              ) : (
+                pendingRequests.map(req => {
+                  const emp = employees.find(e => e.id === req.employeeId);
+                  return (
+                    <div key={req.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <p className="font-bold text-slate-800">{emp?.name}</p>
+                          <p className="text-xs text-slate-500">{req.date}</p>
+                        </div>
+                        <span className="text-xs font-mono text-slate-400">{req.id}</span>
+                      </div>
+                      <p className="text-sm text-slate-600 bg-slate-50 p-2 rounded mb-3 italic">"{req.reason}"</p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleRequestAction(req.id, 'APPROVED')}
+                          className="flex-1 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 flex items-center justify-center gap-1"
+                        >
+                          <CheckCircle2 size={14} /> Approve
+                        </button>
+                        <button
+                          onClick={() => handleRequestAction(req.id, 'REJECTED')}
+                          className="flex-1 py-1.5 bg-white border border-red-200 text-red-600 rounded-lg text-xs font-bold hover:bg-red-50 flex items-center justify-center gap-1"
+                        >
+                          <XCircle size={14} /> Reject
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
+        </div>
       )}
     </div>
   );
