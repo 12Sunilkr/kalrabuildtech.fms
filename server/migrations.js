@@ -173,7 +173,8 @@ export async function runMigrations({ db, dbFile }) {
     end_date: 'TEXT',
     location: 'TEXT',
     total_cost: 'REAL DEFAULT 0',
-    actual_cost: 'REAL DEFAULT 0'
+    actual_cost: 'REAL DEFAULT 0',
+    google_sheet_link: 'TEXT'
   });
 
   ensureTable('pms_daily_work_logs', `CREATE TABLE pms_daily_work_logs (

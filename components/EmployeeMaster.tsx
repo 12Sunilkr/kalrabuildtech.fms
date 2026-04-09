@@ -501,7 +501,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               <h3 className="text-xl font-extrabold text-slate-800">Add New Team Member</h3>
               <button onClick={() => setShowAddModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
             </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
+            <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Member ID</label>
@@ -651,7 +651,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               <h3 className="text-xl font-extrabold text-blue-900">Edit Profile</h3>
               <button onClick={() => setShowEditModal(false)} className="p-2 hover:bg-blue-100 rounded-full text-blue-800"><X size={20} /></button>
             </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
+            <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Name</label>
                 <input
@@ -784,7 +784,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               </div>
               <button onClick={() => setShowDocsModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
             </div>
-            <div className="p-6 overflow-y-auto">
+            <div className="p-6 overflow-y-auto custom-scrollbar">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                 {[
                   { label: 'Aadhar Front', val: currentEmp.documents?.aadharFront },

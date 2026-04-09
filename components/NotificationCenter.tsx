@@ -109,6 +109,74 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       }
   };
 
+  const formatShortMessage = (msg: string) => {
+    if (!msg) return '';
+    let m = msg.replace(/\(Migrated Task\)/g, 'an older task').replace(/\(Migrated Checklist Task\)/g, 'an older checklist');
+
+    try {
+      if (m.includes('marked as completed by')) {
+        const match = m.match(/Task (.+?) marked as completed by (.+?)\.?$/i);
+        if (match) return `✅ ${match[2].trim()} completed ${match[1].trim()}`;
+      }
+      if (m.includes('assigned successfully')) {
+        const match = m.match(/Task ([\w-]+)?\s*"(.+?)" assigned successfully/i);
+        if (match) return `📌 ${match[1] ? match[1] + ' ' : ''}Assigned: ${match[2]}`;
+      }
+      if (m.includes('permanently deleted')) {
+         const match = m.match(/Task (.+?) was permanently deleted/i);
+         if (match) return `🗑️ ${match[1].trim()} deleted`;
+      }
+      if (m.includes('Extension requested for Task')) {
+         const match = m.match(/Extension requested for Task (.+?) by (.+?)\.?$/i);
+         if (match) return `⏳ ${match[2].trim()} asks extension on ${match[1].trim()}`;
+      }
+      if (m.includes('moved to Overdue')) {
+         const match = m.match(/Task (.+?) moved to Overdue/i);
+         if (match) return `🚨 ${match[1].trim()} is Overdue!`;
+      }
+      if (m.includes('acknowledged the extension rejection')) {
+         const match = m.match(/for Task (.+?)\./i);
+         return `👀 Extension rejected for ${match ? match[1].trim() : 'Task'}`;
+      }
+      if (m.includes('reset to Pending by Admin')) {
+         const match = m.match(/Task (.+?) reset to Pending/i);
+         if (match) return `🔄 Admin reset ${match[1].trim()}`;
+      }
+      if (m.includes('is now active again')) {
+         const match = m.match(/Task (.+?) is now active/i);
+         if (match) return `▶️ ${match[1].trim()} resumed`;
+      }
+      if (m.includes('Your extension request for Task')) {
+         const match = m.match(/Task (.+?) was (.+?)\.?$/i);
+         if (match) return `📅 Extension ${match[2].trim()} for ${match[1].trim()}`;
+      }
+      if (m.includes('was holded by Admin') || m.includes('was put on hold')) {
+         const match = m.match(/Task (.+?) was /i);
+         if (match) return `⏸️ ${match[1].trim()} on Hold`;
+      }
+      if (m.includes('was terminated by Admin')) {
+         const match = m.match(/Task (.+?) was terminated/i);
+         if (match) return `🛑 ${match[1].trim()} Terminated`;
+      }
+      if (m.includes('clocked in at')) {
+         const match = m.match(/(.+?) clocked in at (.+)/i);
+         if (match) return `🟢 Shift Start: ${match[1].trim()} at ${match[2].trim()}`;
+      }
+      if (m.includes('clocked out.')) {
+         const match = m.match(/(.+?) clocked out(?:\ out)?\. Shift total: (.+)/i);
+         if (match) return `🔴 Shift End: ${match[1].trim()} (Total: ${match[2].trim()}h)`;
+      }
+      if (m.includes('Shift started at')) {
+         return `🟢 You started shift at ${m.replace('Shift started at', '').trim()}`;
+      }
+      if (m.includes('Shift ended. Total:')) {
+         return `🔴 You ended shift. Total: ${m.replace('Shift ended. Total:', '').trim()}h`;
+      }
+    } catch(e) {}
+
+    return m;
+  };
+
   return (
     <div className={`flex flex-col h-full overflow-hidden ${isOverlay ? 'bg-white rounded-3xl shadow-2xl border border-slate-200' : 'bg-slate-50/50 p-4 md:p-8'}`}>
       <div className={`flex flex-col md:flex-row justify-between items-start md:items-end gap-4 ${isOverlay ? 'p-6 border-b' : 'mb-8'}`}>
@@ -160,19 +228,25 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
             </div>
           ) : (
             myNotifications.map(note => (
-              <div key={note && note.id ? note.id : Math.random().toString(36).slice(2)} className={`p-4 md:p-6 flex items-start gap-4 hover:bg-slate-50 transition-colors ${!note?.read ? 'bg-blue-50/20' : ''}`}>
-                 <div className="shrink-0">{getIcon((note && note.type) as Notification['type'])}</div>
+              <div key={note && note.id ? note.id : Math.random().toString(36).slice(2)} className={`p-5 flex items-start gap-4 hover:bg-slate-50 transition-all border-l-4 ${!note?.read ? 'border-l-blue-500 bg-blue-50/10' : 'border-l-transparent'}`}>
+                 <div className="shrink-0 mt-1">{getIcon((note && note.type) as Notification['type'])}</div>
                  <div className="flex-1 min-w-0">
-                   <div className="flex justify-between items-start mb-1">
-                     <h4 className={`text-sm font-bold truncate ${!note?.read ? 'text-slate-900' : 'text-slate-600'}`}>
-                       {note?.title || 'Untitled'}
-                       {!note?.read && <span className="ml-2 w-2 h-2 rounded-full bg-blue-500 inline-block shadow-[0_0_8px_blue]"></span>}
+                   <div className="flex justify-between items-center mb-1.5">
+                     <h4 className={`text-sm font-black tracking-tight ${!note?.read ? 'text-slate-900' : 'text-slate-500'}`}>
+                       {note?.title || 'Notification'}
+                       {!note?.read && <span className="ml-2 px-1.5 py-0.5 bg-blue-100 text-[10px] text-blue-600 rounded-md uppercase tracking-wider font-black">New</span>}
                      </h4>
-                     <span className="text-[10px] text-slate-400 font-mono shrink-0">{note?.time || ''}</span>
+                     <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded-full shrink-0">{note?.time || ''}</span>
                    </div>
-                   <p className="text-sm text-slate-500 leading-relaxed line-clamp-2">{note?.message || ''}</p>
+                   <p className={`text-sm leading-relaxed ${!note?.read ? 'text-slate-700 font-medium' : 'text-slate-500 font-normal'}`}>
+                     {formatShortMessage(note?.message || '')}
+                   </p>
                  </div>
-                 <button onClick={() => deleteNotification(note && note.id ? note.id : '')} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
+                 <button 
+                   onClick={() => deleteNotification(note && note.id ? note.id : '')} 
+                   className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                   title="Delete notification"
+                 >
                    <Trash2 size={16} />
                  </button>
               </div>

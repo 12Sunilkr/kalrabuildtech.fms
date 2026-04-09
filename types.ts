@@ -41,6 +41,7 @@ export interface AttendanceRecord {
 }
 
 export interface TimeLog {
+  id?: string;        // Unique log ID
   date: string;       // yyyy-MM-dd
   clockIn: string;    // ISO string
   clockOut?: string;  // ISO string
@@ -362,6 +363,7 @@ export interface ChecklistTemplate {
   id: string;
   taskName: string;
   doerId: string; // Employee ID
+  buddyId?: string; // Optional buddy ID
   department: string;
   startDate: string; // YYYY-MM-DD
   config: ChecklistConfig;
@@ -375,6 +377,11 @@ export interface ChecklistInstance {
   status: 'PENDING' | 'COMPLETED';
   completedDate?: string;
   shiftedDueToHoliday?: boolean; // Tracking if it was moved from Sun/Holiday
+  // Enrichment fields populated at load time from the parent template
+  doerId?: string;
+  taskName?: string;
+  department?: string;
+  dbId?: string; // The real DB row ID used to persist mark-done to server
 }
 
 export enum ViewMode {
@@ -424,6 +431,7 @@ export interface PMSProject {
   status: 'Active' | 'Completed' | 'On-Hold';
   createdBy: string;
   createdAt: string;
+  google_sheet_link?: string;
 }
 
 export interface PMSDailyWorkLog {

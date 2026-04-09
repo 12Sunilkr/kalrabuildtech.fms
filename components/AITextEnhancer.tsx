@@ -9,11 +9,11 @@ interface AITextEnhancerProps {
   mini?: boolean;
 }
 
-export const AITextEnhancer: React.FC<AITextEnhancerProps> = ({ 
-  text, 
-  onUpdate, 
-  context = 'professional', 
-  mini = false 
+export const AITextEnhancer: React.FC<AITextEnhancerProps> = ({
+  text,
+  onUpdate,
+  context = 'professional',
+  mini = false
 }) => {
   const [loading, setLoading] = useState(false);
 
@@ -54,9 +54,8 @@ export const AITextEnhancer: React.FC<AITextEnhancerProps> = ({
       <button
         onClick={handleEnhance}
         disabled={loading || !text}
-        className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors ${
-          loading ? 'text-slate-400' : 'text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50'
-        }`}
+        className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors ${loading ? 'text-slate-400' : 'text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50'
+          }`}
         title="AI Fix Grammar"
         type="button"
       >
@@ -69,11 +68,10 @@ export const AITextEnhancer: React.FC<AITextEnhancerProps> = ({
     <button
       onClick={handleEnhance}
       disabled={loading || !text}
-      className={`flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-md transition-all mt-1 ${
-        loading 
-          ? 'bg-slate-100 text-slate-400 cursor-wait' 
-          : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
-      }`}
+      className={`flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-md transition-all mt-1 ${loading
+        ? 'bg-slate-100 text-slate-400 cursor-wait'
+        : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
+        }`}
       title="Fix grammar and improve clarity"
       type="button"
     >

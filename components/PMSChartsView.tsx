@@ -21,7 +21,7 @@ interface ChartData {
   month: string;
   progress: number;
   cost: number;
-  tasks: number;
+  count: number;
 }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
@@ -73,24 +73,34 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
     })).slice(0, 10);
     setCostData(costDataPoints);
 
-    // 3. Timeline & Trends (Synthesized from actual data)
+    // 3. Timeline & Trends (Logical calculation from actual data)
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const currentMonthIdx = new Date().getMonth();
 
-    // Create a trend based on project starts and overall progress
     const trendData = months.map((month, idx) => {
-      const projectsStartedBefore = projectList.filter(p => {
-        const startDate = p.start_date ? new Date(p.start_date) : null;
-        return startDate && startDate.getMonth() <= idx;
-      }).length;
+      const activeProjects = projectList.filter(p => {
+        const start = p.start_date ? new Date(p.start_date) : null;
+        const end = p.end_date ? new Date(p.end_date) : null;
+        if (!start) return false;
+        
+        // Check if the current month index falls within the project's active timeframe
+        if (start.getMonth() > idx) return false;
+        if (end && p.status === 'Completed' && end.getMonth() < idx) return false;
+        return true;
+      });
 
-      const progressFactor = idx <= currentMonthIdx ? (idx + 1) / (currentMonthIdx + 1) : 0;
+      const sumActualCost = activeProjects.reduce((sum, p) => sum + (p.actual_cost || 0), 0);
+      const sumPlannedCost = activeProjects.reduce((sum, p) => sum + (p.total_cost || 0), 0);
+      
+      const avgProgress = activeProjects.length > 0
+        ? Math.round(activeProjects.reduce((sum, p) => sum + (p.progress || 0), 0) / activeProjects.length)
+        : 0;
 
       return {
         month,
-        progress: projectsStartedBefore > 0 ? Math.round(progressFactor * 65 + projectsStartedBefore * 5) : 0,
-        cost: projectsStartedBefore * 25000 * (idx + 1),
-        tasks: projectsStartedBefore * 8
+        progress: avgProgress,
+        cost: sumActualCost || sumPlannedCost, // Default to planned cost if actual cost is 0
+        count: activeProjects.length
       };
     });
 
@@ -143,7 +153,7 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
       </div>
 
       {/* Stats Overview */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-lg shadow-sm p-6 border-l-4 border-blue-500">
           <div className="text-sm text-slate-500 font-medium">Total Projects</div>
           <div className="text-4xl font-bold text-blue-600 mt-2">{projects.length}</div>
@@ -155,13 +165,6 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
             {projects.filter(p => p.status !== 'Completed').length}
           </div>
           <div className="text-xs text-slate-400 mt-2">Currently Running</div>
-        </div>
-        <div className="bg-white rounded-lg shadow-sm p-6 border-l-4 border-amber-500">
-          <div className="text-sm text-slate-500 font-medium">Avg Progress</div>
-          <div className="text-4xl font-bold text-amber-600 mt-2">
-            {Math.round(projects.reduce((sum, p) => sum + (p.progress || 0), 0) / (projects.length || 1))}%
-          </div>
-          <div className="text-xs text-slate-400 mt-2">Overall Completion</div>
         </div>
         <div className="bg-white rounded-lg shadow-sm p-6 border-l-4 border-purple-500">
           <div className="text-sm text-slate-500 font-medium">Total Cost</div>
@@ -215,25 +218,7 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      {/* Progress Over Time */}
-      <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-        <h2 className="text-lg font-semibold text-slate-800 mb-4">Progress Trend</h2>
-        <ResponsiveContainer width="100%" height={350}>
-          <AreaChart data={timelineData}>
-            <defs>
-              <linearGradient id="colorProgress" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8} />
-                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="month" />
-            <YAxis />
-            <Tooltip />
-            <Area type="monotone" dataKey="progress" stroke="#3b82f6" fillOpacity={1} fill="url(#colorProgress)" />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+
 
       {/* Monthly Metrics */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -258,16 +243,16 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
           </ResponsiveContainer>
         </div>
 
-        {/* Monthly Tasks */}
+        {/* Monthly Projects Count */}
         <div className="bg-white rounded-lg shadow-sm p-6">
-          <h2 className="text-lg font-semibold text-slate-800 mb-4">Monthly Task Completion</h2>
+          <h2 className="text-lg font-semibold text-slate-800 mb-4">Monthly Active Projects</h2>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />
               <YAxis />
               <Tooltip />
-              <Bar dataKey="tasks" fill="#f59e0b" radius={[8, 8, 0, 0]} />
+              <Bar dataKey="count" fill="#f59e0b" radius={[8, 8, 0, 0]} name="Active Projects" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -284,7 +269,6 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
                 <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
                 <th className="px-4 py-3 text-right font-semibold text-slate-700">Planned Cost</th>
                 <th className="px-4 py-3 text-right font-semibold text-slate-700">Actual Cost</th>
-                <th className="px-4 py-3 text-right font-semibold text-slate-700">Progress</th>
                 <th className="px-4 py-3 text-center font-semibold text-slate-700">Timeline</th>
               </tr>
             </thead>
@@ -308,19 +292,6 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
                   </td>
                   <td className="px-4 py-3 text-right font-medium text-slate-900">
                     ₹{(project.actual_cost || 0).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2 justify-end">
-                      <div className="w-20 bg-slate-200 rounded-full h-2">
-                        <div
-                          className="h-2 bg-gradient-to-r from-blue-500 to-blue-600 rounded-full"
-                          style={{ width: `${project.progress || 0}%` }}
-                        ></div>
-                      </div>
-                      <span className="text-xs font-medium text-slate-600 w-8 text-right">
-                        {project.progress || 0}%
-                      </span>
-                    </div>
                   </td>
                   <td className="px-4 py-3 text-center">
                     <div className="text-xs text-slate-600">

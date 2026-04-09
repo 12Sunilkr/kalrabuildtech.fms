@@ -548,7 +548,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                             </h3>
                             <button onClick={() => setShowCreateModal(false)} className="p-2 hover:bg-emerald-100 rounded-full text-emerald-800"><X size={20} /></button>
                         </div>
-                        <div className="p-6 space-y-4 overflow-y-auto">
+                        <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
                             {activeTab === 'CLIENT' ? (
                                 <>
                                     <div>
@@ -795,7 +795,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                             <button onClick={() => setShowHistoryModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
                                         </div>
                                     </div>
-                                    <div className="p-6 overflow-y-auto">
+                                    <div className="p-6 overflow-y-auto custom-scrollbar">
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                                             <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl text-center">
                                                 <div className="text-xs font-bold text-blue-500 uppercase tracking-wider">Total Amount</div>

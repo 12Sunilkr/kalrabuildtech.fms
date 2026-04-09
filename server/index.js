@@ -9,6 +9,8 @@ import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { runMigrations } from './migrations.js';
 import { success, failure } from './utils/respond.js';
+import cron from 'node-cron';
+import nodemailer from 'nodemailer';
 
 const app = express();
 
@@ -630,6 +632,76 @@ try {
 // Persist DB in case we created/altered tables
 fs.writeFileSync(dbFile, Buffer.from(db.export()));
 
+// Migrate old 'T-*' tasks to 'KBT-*' format to maintain UI consistency
+try {
+  const oldTasksStmt = db.prepare("SELECT id FROM tasks WHERE id LIKE 'T-%' ORDER BY created_at ASC, createdAt ASC");
+  const oldIds = [];
+  while (oldTasksStmt.step()) { oldIds.push(oldTasksStmt.getAsObject().id); }
+  oldTasksStmt.free();
+
+  if (oldIds.length > 0) {
+    let nextNum = 1;
+    try {
+      const q = db.prepare("SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as maxNum FROM tasks WHERE id LIKE 'KBT-%'");
+      if (q.step()) { const data = q.getAsObject(); if (data.maxNum) nextNum = data.maxNum + 1; }
+      q.free();
+    } catch(e) {}
+
+    let altered = false;
+    for (const oldId of oldIds) {
+      const newId = 'KBT-' + String(nextNum++).padStart(2, '0');
+      try {
+        db.run('UPDATE tasks SET id = ? WHERE id = ?', [newId, oldId]);
+        altered = true;
+      } catch (e) {
+        console.warn('Failed to migrate task ID', oldId, e);
+      }
+    }
+    if (altered) {
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      console.log(`Migrated ${oldIds.length} tasks from T-* to KBT-* format`);
+    }
+  }
+} catch (e) {
+  console.warn('Tasks ID migration check failed', e && (e.message || e));
+}
+
+// Migrate old 'CT-*' templates to 'KCT-*' format to maintain UI consistency
+try {
+  const oldCTsStmt = db.prepare("SELECT id FROM checklist_templates WHERE id LIKE 'CT-%' ORDER BY createdAt ASC");
+  const oldCTIds = [];
+  while (oldCTsStmt.step()) { oldCTIds.push(oldCTsStmt.getAsObject().id); }
+  oldCTsStmt.free();
+
+  if (oldCTIds.length > 0) {
+    let nextNum = 1;
+    try {
+      const q = db.prepare("SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as maxNum FROM checklist_templates WHERE id LIKE 'KCT-%'");
+      if (q.step()) { const data = q.getAsObject(); if (data.maxNum) nextNum = data.maxNum + 1; }
+      q.free();
+    } catch(e) {}
+
+    let altered = false;
+    for (const oldId of oldCTIds) {
+      const newId = 'KCT-' + String(nextNum++).padStart(2, '0');
+      try {
+        db.run('UPDATE checklist_templates SET id = ? WHERE id = ?', [newId, oldId]);
+        // Update references in checklists table
+        db.run('UPDATE checklists SET refId = ? WHERE refId = ?', [newId, oldId]);
+        altered = true;
+      } catch (e) {
+        console.warn('Failed to migrate checklist template ID', oldId, e);
+      }
+    }
+    if (altered) {
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      console.log(`Migrated ${oldCTIds.length} checklist templates from CT-* to KCT-* format`);
+    }
+  }
+} catch (e) {
+  console.warn('Checklist templates ID migration check failed', e && (e.message || e));
+}
+
 // Ensure queries table columns
 try {
   const tblQueryInfo = db.prepare("PRAGMA table_info('queries')");
@@ -688,7 +760,8 @@ try {
 }
 
 // Simple JSON parsing + cookie parsing
-app.use(express.json());
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ limit: '500mb', extended: true }));
 app.use(cookieParser());
 
 // Ensure upload directories exist and configure multer
@@ -892,7 +965,16 @@ app.post('/api/migrate', (req, res) => {
       if (Array.isArray(payload.tasks)) {
         payload.tasks.forEach(t => {
           try {
-            const id = t.id || genId('T-');
+            let id = t.id;
+            if (!id) {
+              let nextNum = 1;
+              try {
+                const q = db.prepare("SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as maxNum FROM tasks WHERE id LIKE 'KBT-%'");
+                if (q.step()) { const data = q.getAsObject(); if (data.maxNum) nextNum = data.maxNum + 1; }
+                q.free();
+              } catch(e) {}
+              id = 'KBT-' + String(nextNum).padStart(2, '0');
+            }
             const insert = db.prepare('INSERT OR IGNORE INTO tasks (id, title, description, assignedTo, priority, dueDate, createdAt) VALUES (?,?,?,?,?,?,?)');
             insert.run([id, t.title || null, t.description || null, t.assignedTo || null, t.priority || null, t.dueDate || null, t.createdAt || new Date().toISOString()]);
             insert.free && insert.free();
@@ -2074,7 +2156,16 @@ app.post('/api/tasks', requireAuth, (req, res) => {
 
       let row;
       if (idIsText) {
-        const id = genId('T-');
+        let nextNum = 1;
+        try {
+          const q = db.prepare("SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as maxNum FROM tasks WHERE id LIKE 'KBT-%'");
+          if (q.step()) {
+            const data = q.getAsObject();
+            if (data.maxNum) nextNum = data.maxNum + 1;
+          }
+          q.free();
+        } catch(e) { console.warn('Could not compute max KBT- id', e); }
+        const id = 'KBT-' + String(nextNum).padStart(2, '0');
         // Insert and populate both camelCase and snake_case columns for compatibility
         const insert = db.prepare('INSERT INTO tasks (id, title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, createdAt, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
         insert.run([id, title, description || '', assignedToEmp || null, assignedBy || null, Number(req.user.id) || null, priority || 'MEDIUM', dueDate, assigned_to, dueDate, 'pending', createdAt, createdAt]);
@@ -2747,6 +2838,27 @@ app.post('/api/checklists', requireAuth, (req, res) => {
   } catch (err) { console.error('Checklists POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
+app.post('/api/checklists/bulk', requireAuth, (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) return failure(res, 'Missing items array', 400);
+    try {
+      db.run('BEGIN TRANSACTION');
+      const insert = db.prepare('INSERT INTO checklists (id, refId, refType, item, done, createdBy, createdAt) VALUES (?,?,?,?,?,?,?)');
+      const createdBy = req.user && (req.user.employeeId || req.user.id) || null;
+      const createdAt = new Date().toISOString();
+      for (const it of items) {
+        const id = genId('CK-');
+        insert.run([id, it.refId, it.refType || null, it.item, 0, createdBy, createdAt]);
+      }
+      insert.free();
+      db.run('COMMIT');
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      return success(res, { count: items.length }, 'Bulk created', 201);
+    } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
+  } catch (err) { console.error('Checklists bulk POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
 app.get('/api/checklists/:refId', requireAuth, (req, res) => {
   try {
     const refId = req.params.refId;
@@ -2823,7 +2935,16 @@ app.post('/api/checklist-templates', requireAuth, (req, res) => {
     if (!taskName || !doerId || !startDate) return failure(res, 'Missing fields', 400);
     try {
       db.run('BEGIN TRANSACTION');
-      const tplId = id || genId('CT-');
+      let tplId = id;
+      if (!tplId) {
+        let nextNum = 1;
+        try {
+          const q = db.prepare("SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) as maxNum FROM checklist_templates WHERE id LIKE 'KCT-%'");
+          if (q.step()) { const d = q.getAsObject(); if (d.maxNum) nextNum = d.maxNum + 1; }
+          q.free();
+        } catch(e) {}
+        tplId = 'KCT-' + String(nextNum).padStart(2, '0');
+      }
       const createdAt = new Date().toISOString();
       const data = JSON.stringify({ taskName, doerId, department, startDate, config, active });
       const insert = db.prepare('INSERT INTO checklist_templates (id, data, createdBy, createdAt) VALUES (?,?,?,?)');
@@ -4477,7 +4598,7 @@ try {
   app.post('/api/pms/projects', requireAuth, isPMSAdmin, (req, res) => {
     console.log('DEBUG: POST /api/pms/projects called');
     try {
-      const { project_name, assigned_employee_id, start_date } = req.body;
+      const { project_name, assigned_employee_id, start_date, google_sheet_link, location } = req.body;
       if (!project_name || !assigned_employee_id || !start_date) {
         return failure(res, 'Missing required fields', 400);
       }
@@ -4486,13 +4607,13 @@ try {
       const now = new Date().toISOString();
 
       db.run(
-        `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, status, createdBy, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [id, project_name, assigned_employee_id, start_date, 'Active', req.user.id, now]
+        `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, status, createdBy, createdAt, location, google_sheet_link)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, project_name, assigned_employee_id, start_date, 'Active', req.user.id, now, location || null, google_sheet_link || null]
       );
 
       saveToDB();
-      success(res, { id, project_name, assigned_employee_id, start_date, status: 'Active', createdAt: now });
+      success(res, { id, project_name, assigned_employee_id, start_date, location, google_sheet_link, status: 'Active', createdAt: now });
     } catch (err) {
       console.error('POST /api/pms/projects error:', err);
       failure(res, 'Failed to create project', 500);
@@ -4674,54 +4795,65 @@ try {
   });
 
   // GET /api/pms/weekly-tasks?project_id= - List weekly tasks for a project
-  app.get('/api/pms/weekly-tasks', requireAuth, (req, res) => {
+
+  // Consolidated WEEKLY-TASKS Route Handler
+  app.all(['/api/pms/weekly-tasks', '/pms/weekly-tasks'], requireAuth, (req, res) => {
     try {
-      const projectId = req.query.projectId || req.query.project_id || req.query.id;
-      if (!projectId) {
-        console.warn('GET /api/pms/weekly-tasks: Missing projectId', { query: req.query });
-        return failure(res, 'projectId or project_id query parameter required', 400);
+      if (req.method === 'GET') {
+        const pId = req.query.projectId || req.query.project_id || req.query.id;
+        const searchQuery = req.query.search || req.query.q;
+
+        let query = 'SELECT wt.*, p.project_name FROM pms_weekly_tasks wt LEFT JOIN pms_projects p ON p.id = wt.project_id WHERE 1=1';
+        const params = [];
+
+        if (pId) {
+          query += ' AND wt.project_id = ?';
+          params.push(pId);
+        }
+
+        if (searchQuery) {
+          query += ' AND (wt.task_name LIKE ? OR wt.notes LIKE ?)';
+          params.push(`%${searchQuery}%`, `%${searchQuery}%`);
+        }
+
+        query += ' ORDER BY wt.week_start_date DESC, wt.createdAt DESC';
+
+        const stmt = db.prepare(query);
+        stmt.bind(params);
+        const rows = [];
+        while (stmt.step()) {
+          rows.push(stmt.getAsObject());
+        }
+        stmt.free();
+        return success(res, rows);
       }
 
-      const stmt = db.prepare('SELECT * FROM pms_weekly_tasks WHERE project_id = ? ORDER BY week_start_date DESC, createdAt DESC');
-      stmt.bind([projectId]);
-      const rows = [];
-      while (stmt.step()) {
-        rows.push(stmt.getAsObject());
+      if (req.method === 'POST') {
+        const { project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes } = req.body;
+        if (!project_id || !task_name) return failure(res, 'Missing required fields', 400);
+
+        const id = 'wt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        const now = new Date().toISOString();
+
+        db.run(
+          `INSERT INTO pms_weekly_tasks (id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, project_id, week_start_date || '', task_name, total_quantity || 0, target_quantity || 0, assigned_to || '', priority || 'Medium', notes || '', now]
+        );
+
+        saveToDB();
+        return success(res, { id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt: now });
       }
-      stmt.free();
 
-      success(res, rows);
+      failure(res, 'Method not allowed', 405);
     } catch (err) {
-      console.error('GET /api/pms/weekly-tasks error:', err);
-      failure(res, 'Failed to fetch weekly tasks', 500);
-    }
-  });
-
-  // POST /api/pms/weekly-tasks - Create a weekly task
-  app.post('/api/pms/weekly-tasks', requireAuth, (req, res) => {
-    try {
-      const { project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes } = req.body;
-      if (!project_id || !task_name) return failure(res, 'Missing required fields', 400);
-
-      const id = 'wt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-      const now = new Date().toISOString();
-
-      db.run(
-        `INSERT INTO pms_weekly_tasks (id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, project_id, week_start_date || '', task_name, total_quantity || 0, target_quantity || 0, assigned_to || '', priority || 'Medium', notes || '', now]
-      );
-
-      saveToDB();
-      success(res, { id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt: now });
-    } catch (err) {
-      console.error('POST /api/pms/weekly-tasks error:', err);
-      failure(res, 'Failed to create weekly task', 500);
+      console.error('Weekly tasks handler error:', err);
+      failure(res, 'Internal server error', 500);
     }
   });
 
   // DELETE /api/pms/weekly-tasks/:id - Delete a weekly task (ADMIN only)
-  app.delete('/api/pms/weekly-tasks/:id', requireAuth, isPMSAdmin, (req, res) => {
+  app.delete(['/api/pms/weekly-tasks/:id', '/pms/weekly-tasks/:id'], requireAuth, isPMSAdmin, (req, res) => {
     try {
       const id = req.params.id;
       if (!id) return failure(res, 'Missing id', 400);
@@ -4730,51 +4862,15 @@ try {
       saveToDB();
       success(res, { id, deleted: true });
     } catch (err) {
-      console.error('DELETE /api/pms/weekly-tasks/:id error:', err);
+      console.error('DELETE weekly-task error:', err);
       failure(res, 'Failed to delete weekly task', 500);
     }
   });
 
 
 
-  // Compatibility duplicate routes under /pms/* to handle clients that bypass middleware
-  app.get('/pms/weekly-tasks', requireAuth, (req, res) => {
-    try {
-      const projectId = req.query.project_id || req.query.projectId;
-      if (!projectId) return failure(res, 'project_id query parameter required', 400);
-
-      const stmt = db.prepare('SELECT * FROM pms_weekly_tasks WHERE project_id = ? ORDER BY week_start_date DESC, createdAt DESC');
-      stmt.bind([projectId]);
-      const rows = [];
-      while (stmt.step()) { rows.push(stmt.getAsObject()); }
-      stmt.free();
-      success(res, rows);
-    } catch (err) {
-      console.error('GET /pms/weekly-tasks error:', err);
-      failure(res, 'Failed to fetch weekly tasks', 500);
-    }
-  });
-
-  app.post('/pms/weekly-tasks', requireAuth, (req, res) => {
-    try {
-      const { project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes } = req.body;
-      if (!project_id || !task_name) return failure(res, 'Missing required fields', 400);
-      const id = 'wt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-      const now = new Date().toISOString();
-      db.run(
-        `INSERT INTO pms_weekly_tasks (id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, project_id, week_start_date || '', task_name, total_quantity || 0, target_quantity || 0, assigned_to || '', priority || 'Medium', notes || '', now]
-      );
-      saveToDB();
-      success(res, { id, project_id, week_start_date, task_name, total_quantity, target_quantity, assigned_to, priority, notes, createdAt: now });
-    } catch (err) {
-      console.error('POST /pms/weekly-tasks error:', err);
-      failure(res, 'Failed to create weekly task', 500);
-    }
-  });
-
-  app.delete('/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
+  // DELETE /api/pms/projects/:id - Delete project (ADMIN only)
+  app.delete(['/api/pms/projects/:id', '/pms/projects/:id'], requireAuth, isPMSAdmin, (req, res) => {
     try {
       const projectId = req.params.id;
       if (!projectId) return failure(res, 'Missing project id', 400);
@@ -4793,7 +4889,7 @@ try {
       saveToDB();
       success(res, { id: projectId, deleted: true });
     } catch (err) {
-      console.error('DELETE /pms/projects/:id error:', err);
+      console.error('DELETE project error:', err);
       failure(res, 'Failed to delete project', 500);
     }
   });
@@ -4806,16 +4902,27 @@ try {
       if (req.method === 'GET') {
         const pId = req.query.projectId || req.query.project_id || req.query.id;
         const wDate = req.query.workDate || req.query.work_date || req.query.date;
+        const searchQuery = req.query.search || req.query.q;
 
-        if (!pId) return failure(res, 'projectId is required', 400);
+        let query = `SELECT dw.*, p.project_name, (SELECT file_path FROM pms_work_photos WHERE work_log_id = dw.id LIMIT 1) as photo_path FROM pms_daily_work_logs dw LEFT JOIN pms_projects p ON p.id = dw.project_id WHERE 1=1`;
+        const params = [];
 
-        let query = `SELECT * FROM pms_daily_work_logs WHERE project_id = ?`;
-        const params = [pId];
+        if (pId) {
+          query += ' AND dw.project_id = ?';
+          params.push(pId);
+        }
+
         if (wDate) {
-          query += ' AND work_date = ?';
+          query += ' AND dw.work_date = ?';
           params.push(wDate);
         }
-        query += ' ORDER BY work_date DESC, session_number ASC';
+
+        if (searchQuery) {
+          query += ' AND (dw.work_done LIKE ? OR dw.details LIKE ?)';
+          params.push(`%${searchQuery}%`, `%${searchQuery}%`);
+        }
+
+        query += ' ORDER BY dw.work_date DESC, dw.session_number ASC';
 
         const stmt = db.prepare(query);
         stmt.bind(params);
@@ -5120,6 +5227,116 @@ app.use('/api', (req, res) => {
 app.use((err, req, res, next) => {
   console.error('Unhandled API error', { path: req && req.path, method: req && req.method, err: err && (err.stack || err.message || err) });
   try { failure(res, 'Internal server error', 500); } catch (e) { /* ignore */ }
+});
+
+/* ───────── CHECKLIST EMAIL REMINDERS CRON ───────── */
+// Default transporter setup (update credentials via env vars)
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: false, // true for 465, false for other ports
+  tls: { rejectUnauthorized: false }, // Avoids strict SSL breaking on local transparent proxies/antivirus
+  auth: {
+    user: process.env.SMTP_USER || 'your-email@gmail.com',
+    pass: process.env.SMTP_PASS || 'your-app-password'
+  }
+});
+
+function getCutoffDays(freq) {
+  if (freq === 'WEEKLY') return 2;
+  if (['MONTHLY', 'QUARTERLY', 'HALF-YEARLY', 'YEARLY', 'PARTICULAR-DATE', 'EVENT-BASED', 'FORTNIGHTLY', 'ONE-TIME'].includes(freq)) return 4;
+  return 0; // DAILY or ALTERNATE
+}
+
+// Run every morning at 09:00 AM
+cron.schedule('0 9 * * *', () => {
+  console.log('Running daily checklist reminder cron at 9:00 AM');
+  try {
+    const today = new Date();
+    today.setHours(0,0,0,0);
+
+    // Get all pending checklist instances
+    const stmt = db.prepare("SELECT c.id as dbId, c.item, c.refId as templateId FROM checklists c WHERE c.done = 0 AND c.refType = 'TEMPLATE_INSTANCE'");
+    
+    // Get templates for matching
+    const tplStmt = db.prepare("SELECT id, data FROM checklist_templates");
+    const templates = {};
+    while (tplStmt.step()) {
+       const row = tplStmt.getAsObject();
+       try { templates[row.id] = JSON.parse(row.data); } catch(e){}
+    }
+    tplStmt.free();
+
+    // Get users map for email lookups
+    const userStmt = db.prepare("SELECT id, employeeId, email, name FROM users");
+    const users = {};
+    while(userStmt.step()) {
+      const row = userStmt.getAsObject();
+      if(row.employeeId && String(row.employeeId).trim() !== '') users[String(row.employeeId)] = row;
+      users[String(row.id)] = row;
+    }
+    userStmt.free();
+
+    // Employee map for fallback email lookups
+    const empStmt = db.prepare("SELECT id, email, name FROM employees");
+    while(empStmt.step()) {
+      const row = empStmt.getAsObject();
+      if(row.id && !users[String(row.id)]) users[String(row.id)] = row;
+    }
+    empStmt.free();
+
+    const emailsToSend = {}; // Map mapped by email to array of task names
+
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      let item;
+      try { item = JSON.parse(row.item); } catch(e) { continue; }
+      const template = templates[row.templateId];
+      if (!template) continue;
+
+      const doerId = String(item.doerId || template.doerId);
+      const user = users[doerId];
+      if (!user || !user.email) continue;
+
+      const freq = template.config ? template.config.frequency : '';
+      const cutoffDays = getCutoffDays(freq);
+
+      const targetDateStr = item.date;
+      const [yyyy, mm, dd] = targetDateStr.split('-');
+      const targetDate = new Date(yyyy, mm - 1, dd);
+      targetDate.setHours(0,0,0,0);
+      
+      const diffTime = targetDate.getTime() - today.getTime();
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+      // Condition: Target date should be coming up soon (within cutoff days) or overdue (diffDays <= 0)
+      if (diffDays <= cutoffDays) {
+         if (!emailsToSend[user.email]) emailsToSend[user.email] = { name: user.name, tasks: [] };
+         const isOverdue = diffDays < 0;
+         const isToday = diffDays === 0;
+         const remainingText = isOverdue ? 'Overdue by ' + Math.abs(diffDays) + ' days' : (isToday ? 'DUE TODAY' : 'Due in ' + diffDays + ' days');
+         emailsToSend[user.email].tasks.push(`- ${item.taskName || template.taskName || 'Routine Task'} (${remainingText}: ${targetDateStr})`);
+      }
+    }
+    stmt.free();
+
+    for (const email in emailsToSend) {
+       const userTasks = emailsToSend[email];
+       const taskList = userTasks.tasks.join('\\n');
+       const mailOptions = {
+         from: '"FMS Checklists" <' + (process.env.SMTP_USER || 'noreply@fms.local') + '>',
+         to: email,
+         subject: 'Checklist Reminder: You have pending tasks',
+         text: `Hello ${userTasks.name},\\n\\nThis is a reminder that you have the following tasks pending in your checklist:\\n\\n${taskList}\\n\\nPlease log in to the FMS portal to complete them.\\n\\nRegards,\\nFMS Admin`
+       };
+       transporter.sendMail(mailOptions).catch(err => console.warn('Cron email error to', email, err.message));
+       console.log('Cron dispatched email to', email, 'with', userTasks.tasks.length, 'tasks');
+    }
+
+  } catch (err) {
+    console.error('Checklist cron job failed', err);
+    try { if (stmt) stmt.free(); } catch(e){}
+  }
 });
 
 const port = process.env.PORT || 4001;

@@ -1,17 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { fetchJSON } from '../src/utils/pmsUtils';
-import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar, ChevronLeft, ChevronRight, Image as ImageIcon, Camera, CheckCircle, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
 
 type Row = { what_to_do?: string; planned?: string; actual?: string; percent?: number };
 
 export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, initialDate }: { projectId?: number, weeklyTaskId?: number, userId?: number, onDone?: (workId?: string) => void, initialDate?: string }) {
   const [date, setDate] = useState(initialDate || new Date().toISOString().split('T')[0]);
   const [submitting, setSubmitting] = useState(false);
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null);
+
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
+
+  const showNotify = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    setNotification({ message, type });
+  };
 
   const [rows, setRows] = useState<{ first: Row; second: Row }>({
     first: { what_to_do: '', planned: '', actual: '', percent: 0 },
     second: { what_to_do: '', planned: '', actual: '', percent: 0 },
   });
+  const [photos, setPhotos] = useState<{ first: File | null; second: File | null }>({ first: null, second: null });
+  const [photoUrls, setPhotoUrls] = useState<{ first: string | null; second: string | null }>({ first: null, second: null });
 
   const sessions = [
     { key: 'first', label: '9:30 - 1:30', number: 1 },
@@ -29,17 +43,27 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
           first: { what_to_do: '', planned: '', actual: '', percent: 0 },
           second: { what_to_do: '', planned: '', actual: '', percent: 0 },
         };
+        const newPhotoUrls = { first: null as string | null, second: null as string | null };
 
         data.forEach((log: any) => {
-          const detail = log.details ? JSON.parse(log.details) : {
-            what_to_do: log.work_done,
-            percent: log.percent_done
+          const detail = log.details ? (typeof log.details === 'string' ? JSON.parse(log.details) : log.details) : {
+            planned: log.work_done,
+            actual: ''
           };
-          if (log.session_number === 1) newRows.first = { ...newRows.first, ...detail };
-          if (log.session_number === 2) newRows.second = { ...newRows.second, ...detail };
+          if (detail.what_to_do && !detail.planned) detail.planned = detail.what_to_do;
+
+          if (log.session_number === 1) {
+            newRows.first = { ...newRows.first, ...detail };
+            if (log.photo_path) newPhotoUrls.first = log.photo_path;
+          }
+          if (log.session_number === 2) {
+            newRows.second = { ...newRows.second, ...detail };
+            if (log.photo_path) newPhotoUrls.second = log.photo_path;
+          }
         });
 
         setRows(newRows);
+        setPhotoUrls(newPhotoUrls);
       } catch (e) { console.warn('Failed to load existing logs', e); }
     }
     loadExisting();
@@ -52,42 +76,149 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
     }));
   };
 
-  const calculateTotal = () => {
-    return Math.round(((rows.first.percent || 0) + (rows.second.percent || 0)) / 2);
+  const handleAutoListKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, field: keyof Row, sessionKey: 'first' | 'second', currentValue: string = '') => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      
+      const target = e.target as HTMLTextAreaElement;
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      
+      const textBefore = currentValue.substring(0, start);
+      const textAfter = currentValue.substring(end);
+      
+      const linesBefore = textBefore.split('\n');
+      if (linesBefore.length >= 50) {
+         updateCell(sessionKey, field, textBefore + '\n' + textAfter);
+         setTimeout(() => { target.selectionStart = target.selectionEnd = start + 1; }, 0);
+         return;
+      }
+      
+      const lastLineBefore = linesBefore[linesBefore.length - 1] || '';
+      const emptyItemMatch = lastLineBefore.match(/^(\d+)\.\s*$/);
+      if (emptyItemMatch) {
+        const withoutEmpty = linesBefore.slice(0, -1).join('\n') + (linesBefore.length > 1 ? '\n' : '');
+        updateCell(sessionKey, field, withoutEmpty + textAfter);
+        setTimeout(() => { target.selectionStart = target.selectionEnd = withoutEmpty.length; }, 0);
+        return;
+      }
+      
+      const match = lastLineBefore.match(/^(\d+)\./);
+      let nextNum = linesBefore.length + 1;
+      if (match) {
+        nextNum = parseInt(match[1]) + 1;
+      }
+      
+      const insertion = `\n${nextNum}. `;
+      updateCell(sessionKey, field, textBefore + insertion + textAfter);
+      
+      setTimeout(() => {
+        target.selectionStart = target.selectionEnd = start + insertion.length;
+      }, 0);
+    }
+  };
+
+  const handleAutoListChange = (e: React.ChangeEvent<HTMLTextAreaElement>, field: keyof Row, sessionKey: 'first' | 'second', currentValue: string = '') => {
+    let val = e.target.value;
+    if ((currentValue || '') === '' && val.length === 1) {
+      if (val === '1') {
+        val = '1. ';
+      } else {
+        val = `1. ${val}`;
+      }
+    }
+    updateCell(sessionKey, field, val);
+  };
+
+  const handlePhotoChange = (sessionKey: 'first' | 'second', file: File | null) => {
+    setPhotos(prev => ({ ...prev, [sessionKey]: file }));
+  };
+
+  const uploadPhoto = async (logId: string, file: File) => {
+    const formData = new FormData();
+    formData.append('photo', file);
+    formData.append('work_log_id', logId);
+
+    try {
+      await fetch('/api/pms/upload-photo', {
+        method: 'POST',
+        body: formData,
+        // Authentication token is usually in cookies, but if it needs headers, add them here
+      });
+    } catch (e) { console.error('Photo upload failed', e); }
   };
 
   const submit = async () => {
-    if (!date) { alert('Please select a date'); return; }
+    if (!date) {
+      showNotify('Please select a valid date for your work log.', 'warning');
+      return;
+    }
+    
+    // Check if at least one session has some data
+    const hasAnyData = sessions.some(s => {
+      const r = rows[s.key as 'first' | 'second'];
+      const photo = photos[s.key as 'first' | 'second'];
+      return r.what_to_do || r.planned || r.actual || r.percent > 0 || photo;
+    });
+
+    if (!hasAnyData) {
+      showNotify('Please enter some work details or upload a photo before saving.', 'info');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const createdIds: string[] = [];
       for (const s of sessions) {
         const r = rows[s.key as 'first' | 'second'];
-        if (!r.what_to_do && !r.planned && !r.actual) continue;
+        const photo = photos[s.key as 'first' | 'second'];
+        
+        // Skip sessions with no data
+        if (!r.what_to_do && !r.planned && !r.actual && !r.percent && !photo) continue;
 
         const payload: any = {
           project_id: projectId,
           weekly_task_id: weeklyTaskId || null,
           work_date: date,
           session_number: s.number,
-          work_done: r.actual || r.planned || r.what_to_do,
+          work_done: r.actual || r.planned || r.what_to_do || 'Work log entry',
           percent_done: r.percent || 0,
           details: r
         };
 
-        // If you had an ID for existing records, you could do a PUT here. 
-        // For simplicity with this current API, we'll POST (which might create duplicates if not handled by server, but usually it's Upsert)
         const res = await fetchJSON('/api/pms/daily-work', { method: 'POST', body: JSON.stringify(payload) });
         const id = res && (res.id || (res.data && res.data.id));
-        if (id) createdIds.push(id);
+        if (id) {
+          createdIds.push(id);
+          if (photo) await uploadPhoto(id, photo);
+        }
       }
-      if (onDone) onDone(createdIds.length ? createdIds[createdIds.length - 1] : undefined);
+
+      if (createdIds.length > 0) {
+        showNotify('Success! Your daily work logs have been updated.', 'success');
+        // Give time for notification to be seen before closing
+        setTimeout(() => {
+          if (onDone) onDone(createdIds[createdIds.length - 1]);
+        }, 1500);
+      } else {
+        showNotify('No changes were saved. Please ensure you have filled in the work details.', 'warning');
+      }
     } catch (err) {
       console.error(err);
-      alert('Submit failed');
+      showNotify('Failed to save logs. Please check your connection and try again.', 'error');
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const notebookWrapperBase = "w-full border rounded-xl pt-2 pb-2 px-3 focus-within:shadow-md transition-all shadow-sm";
+  const notebookStyle: React.CSSProperties = {
+    lineHeight: '1.75rem',
+    backgroundImage: 'repeating-linear-gradient(to bottom, transparent, transparent calc(1.75rem - 1px), #e2e8f0 calc(1.75rem - 1px), #e2e8f0 1.75rem)',
+    backgroundAttachment: 'local',
+    backgroundOrigin: 'content-box',
+    minHeight: '10.5rem',
+    padding: '0',
   };
 
   return (
@@ -113,11 +244,7 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-end sm:items-center justify-between sm:gap-8 gap-4 flex-1">
-          <div className="text-right sm:text-right">
-            <p className="text-[9px] sm:text-[10px] font-black text-slate-300 uppercase tracking-widest sm:tracking-[0.2em]">DAILY PROGRESS</p>
-            <p className="text-2xl sm:text-3xl font-black text-indigo-600 leading-none mt-0.5 sm:mt-1">{calculateTotal()}%</p>
-          </div>
+        <div className="flex flex-col sm:flex-row items-end sm:items-center justify-end sm:gap-8 gap-4 flex-1">
           <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
             <button
               type="button"
@@ -138,79 +265,100 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
         </div>
       </div>
 
-      {/* Table Content */}
-      <div className="overflow-x-auto custom-scrollbar">
-        <table className="w-full text-left border-collapse min-w-max">
-          <thead>
-            <tr className="bg-slate-50/50 border-b border-slate-100">
-              <th className="px-3 sm:px-8 py-3 sm:py-5 text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest bg-white whitespace-nowrap">TIME SLOT</th>
-              <th className="px-3 sm:px-8 py-3 sm:py-5 text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest bg-white text-center whitespace-nowrap">WHAT TO DO</th>
-              <th className="px-3 sm:px-8 py-3 sm:py-5 text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest bg-white text-center text-slate-300 whitespace-nowrap">PLANNED</th>
-              <th className="px-3 sm:px-8 py-3 sm:py-5 text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest bg-white text-center text-slate-300 whitespace-nowrap">ACTUAL</th>
-              <th className="px-3 sm:px-8 py-3 sm:py-5 text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest bg-white text-center whitespace-nowrap">WORK %</th>
-              <th className="px-3 sm:px-8 py-3 sm:py-5 text-[8px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest bg-white text-right whitespace-nowrap">ACTION</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sessions.map((s, idx) => {
-              const r = rows[s.key as 'first' | 'second'];
-              return (
-                <tr key={s.key} className="border-b border-slate-50 hover:bg-slate-50/30 transition-colors group">
-                  <td className="px-3 sm:px-8 py-6 sm:py-10">
-                    <span className="text-sm sm:text-lg font-black text-indigo-600 tracking-tight whitespace-nowrap">{s.label}</span>
-                  </td>
-                  <td className="px-3 sm:px-8 py-6 sm:py-10 text-center">
-                    <input
-                      value={r.what_to_do}
-                      onChange={e => updateCell(s.key as any, 'what_to_do', e.target.value)}
-                      placeholder="Add task"
-                      className="bg-transparent text-slate-600 font-bold focus:outline-none w-full text-center placeholder:text-slate-200 text-xs sm:text-base"
-                    />
-                  </td>
-                  <td className="px-3 sm:px-8 py-6 sm:py-10 text-center">
-                    <input
+      {/* Session Cards */}
+      <div className="divide-y divide-slate-100">
+        {sessions.map((s) => {
+          const r = rows[s.key as 'first' | 'second'];
+          const hasPhoto = photos[s.key as 'first' | 'second'];
+          const hasPhotoUrl = photoUrls[s.key as 'first' | 'second'];
+          return (
+            <div key={s.key} className="p-4 sm:p-6">
+              {/* Session header with time + photo button */}
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-black text-indigo-600 tracking-tight">{s.label}</span>
+                <label
+                  onClick={() => {
+                    if (hasPhotoUrl) window.open(hasPhotoUrl.startsWith('http') ? hasPhotoUrl : `/uploads/${hasPhotoUrl}`, '_blank');
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer transition-all text-[10px] font-black uppercase tracking-wide ${hasPhoto || hasPhotoUrl ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-slate-50 border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200'}`}
+                >
+                  <input type="file" className="hidden" accept="image/*" onChange={(e) => handlePhotoChange(s.key as any, e.target.files?.[0] || null)} />
+                  {hasPhoto ? <Camera size={13} /> : <ImageIcon size={13} />}
+                  {hasPhoto ? 'Photo Added' : hasPhotoUrl ? 'View Photo' : 'Add Photo'}
+                </label>
+              </div>
+              {/* Two-column layout */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-1.5">Planned Work</p>
+                  <div className={`${notebookWrapperBase} border-blue-100 bg-blue-50/30 focus-within:border-blue-300 focus-within:bg-white`}>
+                    <textarea
+                      ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }}
+                      onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }}
                       value={r.planned}
-                      onChange={e => updateCell(s.key as any, 'planned', e.target.value)}
-                      placeholder="—"
-                      className="bg-transparent text-slate-400 italic font-medium focus:outline-none w-full text-center placeholder:text-slate-200 text-xs sm:text-base"
+                      style={notebookStyle}
+                      onChange={e => handleAutoListChange(e, 'planned', s.key as 'first' | 'second', r.planned)}
+                      onKeyDown={e => handleAutoListKeyDown(e, 'planned', s.key as 'first' | 'second', r.planned)}
+                      placeholder="Write planned work..."
+                      rows={6}
+                      className="bg-transparent text-slate-700 font-semibold focus:outline-none w-full placeholder:text-blue-200 text-sm overflow-hidden resize-none"
                     />
-                  </td>
-                  <td className="px-3 sm:px-8 py-6 sm:py-10 text-center">
-                    <input
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest mb-1.5">Actual Work</p>
+                  <div className={`${notebookWrapperBase} border-emerald-100 bg-emerald-50/30 focus-within:border-emerald-300 focus-within:bg-white`}>
+                    <textarea
+                      ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }}
+                      onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; }}
                       value={r.actual}
-                      onChange={e => updateCell(s.key as any, 'actual', e.target.value)}
-                      placeholder="—"
-                      className="bg-transparent text-slate-400 italic font-medium focus:outline-none w-full text-center placeholder:text-slate-200 text-xs sm:text-base"
+                      style={notebookStyle}
+                      onChange={e => handleAutoListChange(e, 'actual', s.key as 'first' | 'second', r.actual)}
+                      onKeyDown={e => handleAutoListKeyDown(e, 'actual', s.key as 'first' | 'second', r.actual)}
+                      placeholder="Write actual output..."
+                      rows={6}
+                      className="bg-transparent text-slate-700 font-semibold focus:outline-none w-full placeholder:text-emerald-200 text-sm overflow-hidden resize-none"
                     />
-                  </td>
-                  <td className="px-3 sm:px-8 py-6 sm:py-10 text-center">
-                    <div className="flex items-center justify-center gap-1 sm:gap-2">
-                      <input
-                        type="number"
-                        value={r.percent}
-                        onChange={e => updateCell(s.key as any, 'percent', parseInt(e.target.value) || 0)}
-                        className="w-12 sm:w-16 bg-transparent text-lg sm:text-2xl font-black text-indigo-600 text-center focus:outline-none"
-                      />
-                      <span className="text-lg sm:text-xl font-black text-indigo-600">%</span>
-                    </div>
-                  </td>
-                  <td className="px-3 sm:px-8 py-6 sm:py-10 text-right">
-                    <button className="px-2.5 sm:px-6 py-1.5 sm:py-2 bg-white border border-slate-200 rounded-lg sm:rounded-xl text-[8px] sm:text-xs font-black text-slate-800 shadow-sm hover:shadow-md transition-all active:scale-95 uppercase tracking-widest">
-                      EDIT
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* Footer Summary */}
-      <div className="p-4 sm:p-8 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-10">
-        <p className="text-[9px] sm:text-[11px] font-black text-slate-400 uppercase tracking-widest sm:tracking-[0.2em] whitespace-nowrap">TOTAL DAILY %</p>
-        <p className="text-3xl sm:text-4xl font-black text-indigo-600 tracking-tighter">{calculateTotal()}%</p>
-      </div>
+      {/* Modern Notification Toast */}
+      {notification && (
+        <div className="fixed bottom-6 right-6 left-6 sm:left-auto sm:w-96 z-[100] animate-fade-in-up">
+          <div className={`p-4 rounded-2xl shadow-2xl border backdrop-blur-md flex items-start gap-3 ${
+            notification.type === 'success' ? 'bg-emerald-50/90 border-emerald-100 text-emerald-900 shadow-emerald-100/50' :
+            notification.type === 'error' ? 'bg-rose-50/90 border-rose-100 text-rose-900 shadow-rose-100/50' :
+            notification.type === 'warning' ? 'bg-amber-50/90 border-amber-100 text-amber-900 shadow-amber-100/50' :
+            'bg-indigo-50/90 border-indigo-100 text-indigo-900 shadow-indigo-100/50'
+          }`}>
+            <div className={`p-2 rounded-xl shrink-0 ${
+              notification.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
+              notification.type === 'error' ? 'bg-rose-100 text-rose-600' :
+              notification.type === 'warning' ? 'bg-amber-100 text-amber-600' :
+              'bg-indigo-100 text-indigo-600'
+            }`}>
+              {notification.type === 'success' && <CheckCircle size={18} />}
+              {notification.type === 'error' && <AlertCircle size={18} />}
+              {notification.type === 'warning' && <AlertTriangle size={18} />}
+              {notification.type === 'info' && <Info size={18} />}
+            </div>
+            <div className="flex-1 pt-1">
+              <p className="text-sm font-bold leading-tight">{notification.message}</p>
+            </div>
+            <button 
+              onClick={() => setNotification(null)}
+              className="p-1 hover:bg-black/5 rounded-lg transition-colors shrink-0"
+            >
+              <X size={16} className="opacity-40" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,8 +1,7 @@
 
 import React, { useState } from 'react';
-import { Employee, Task, AttendanceRecord } from '../types';
-import { BarChart, Printer, UserCircle, Star, CheckCircle2, TrendingUp, ArrowLeft, Clock, XCircle, CalendarCheck, ClipboardList, AlertTriangle, Filter, X, Calendar, CheckCircle, AlertCircle, Pause, XOctagon } from 'lucide-react';
-/* Fix: Removed unused imports isAfter, isBefore, parseISO to resolve module export errors */
+import { Employee, Task, AttendanceRecord, ChecklistInstance, ChecklistTemplate, TimeLog } from '../types';
+import { BarChart, Printer, UserCircle, CalendarCheck, ClipboardList, AlertTriangle, Filter, X, Calendar, CheckCircle, AlertCircle, Pause, XOctagon, ListChecks, Clock, ArrowLeft, TrendingUp } from 'lucide-react';
 import { format } from 'date-fns';
 import { COMPANY_LOGO, LEAVE_QUOTA_YEARLY } from '../constants';
 
@@ -10,6 +9,9 @@ interface PerformanceReportProps {
     employees: Employee[];
     tasks: Task[];
     attendanceData: Record<string, AttendanceRecord>;
+    checklistInstances?: ChecklistInstance[];
+    checklistTemplates?: ChecklistTemplate[];
+    timeLogs?: Record<string, Record<string, TimeLog[]>>;
 }
 
 // Normalize a date string (ISO or with time) to YYYY-MM-DD, return empty string if invalid
@@ -80,10 +82,9 @@ const getActualTaskStatus = (task: Task): string => {
     return task.status || 'PENDING';
 };
 
-export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData }) => {
+export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData, checklistInstances = [], checklistTemplates = [], timeLogs = {} }) => {
     const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
     const [printMode, setPrintMode] = useState(false);
-    const [printTasksOnly, setPrintTasksOnly] = useState(false);
 
     // Date Filters
     const [fromDate, setFromDate] = useState('');
@@ -107,15 +108,20 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             });
         }
 
-        const total = empTasks.length;
-        const completed = empTasks.filter(t => t.completionDate || t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
+        // Active tasks are used for all KPI score calculations (excluding HOLD and TERMINATED)
+        const activeTasks = empTasks.filter(t => {
+            const st = (t.status || '').toUpperCase();
+            return st !== 'HOLD' && st !== 'TERMINATED';
+        });
 
-        // Calculate overdue: check both status field and due date (but NOT for HOLD tasks)
+        const total = activeTasks.length;
+        const completed = activeTasks.filter(t => t.completionDate || t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
+
+        // Calculate overdue: check both status field and due date
         const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-        const overdueOpen = empTasks.filter(t => {
+        const overdueOpen = activeTasks.filter(t => {
             if (t.completionDate) return false; // Completed tasks are not overdue
             if (t.status?.toUpperCase() === 'COMPLETED') return false;
-            if ((t.status || '').toUpperCase() === 'HOLD') return false; // HOLD tasks are not overdue, they're on hold
             // Check if status is marked as OVERDUE or if due date has passed (normalize date)
             if ((t.status || '').toUpperCase() === 'OVERDUE') return true;
             const due = normalizeDate(t.dueDate);
@@ -126,10 +132,9 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
         // Debug: if there are overdue counts, log the candidate tasks so we can trace false positives
         if (overdueOpen > 0) {
             try {
-                const candidates = empTasks.filter(t => {
+                const candidates = activeTasks.filter(t => {
                     if (t.completionDate) return false;
                     if (t.status?.toUpperCase() === 'COMPLETED') return false;
-                    if ((t.status || '').toUpperCase() === 'HOLD') return false;
                     if ((t.status || '').toUpperCase() === 'OVERDUE') return true;
                     const due = normalizeDate(t.dueDate);
                     return !!(due && due < today);
@@ -138,26 +143,13 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             } catch (e) { /* ignore logging errors */ }
         }
 
-        const pending = empTasks.filter(t => {
-            if (t.completionDate) return false; // Completed tasks are not pending
-            if (t.status?.toUpperCase() === 'COMPLETED') return false;
-            if ((t.status || '').toUpperCase() === 'OVERDUE') return false;
-            if ((t.status || '').toUpperCase() === 'HOLD') return false; // HOLD tasks are not pending
-            const due = normalizeDate(t.dueDate);
-            if (due && due < today) return false; // Don't count overdue tasks as pending
-            const st = (t.status || '').toUpperCase();
-            return st === 'PENDING' || st === 'EXTENSION_REQUESTED';
-        }).length;
+        // Pending tasks represent all work that is not yet completed (includes overdue, hold, etc.)
+        const pendingTasks = total - completed;
 
-        // Scoring: only completed and overdue tasks affect score
-        // - completed = +1 point
-        // - overdue open task = -1 point
-        // - score cannot be negative
-        const rawScore = completed - overdueOpen;
-        const finalScore = Math.max(0, rawScore);
-        const completionRate = total > 0 ? Math.round((finalScore / total) * 100) : 0;
+        // Performance Score represents the "Pending Workload" (0% = All Tasks Completed, 100% = No Tasks Completed)
+        const completionRate = total > 0 ? Math.round((pendingTasks / total) * 100) : 0;
 
-        return { total, completed, overdue: overdueOpen, pending, completionRate, empTasks };
+        return { total, completed, overdue: overdueOpen, pending: pendingTasks, completionRate, empTasks };
     };
 
     const getAttendanceStats = (empId: string) => {
@@ -197,39 +189,119 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
         return { present, absent, leaves };
     };
 
+    const getChecklistStats = (empId: string) => {
+        // Resolve the set of template IDs where this employee is doer or buddy
+        const myTemplateIds = new Set(
+            checklistTemplates
+                .filter(t => String(t.doerId || '').trim() === String(empId).trim() ||
+                    String(t.buddyId || '').trim() === String(empId).trim())
+                .map(t => t.id)
+        );
+
+        // Get only instances belonging to those templates
+        const empInstances = checklistInstances.filter(inst => myTemplateIds.has(inst.templateId));
+
+        const today = new Date().toISOString().split('T')[0];
+        
+        // Filter by date range. If no explicit filter, default to current year.
+        // crucially: only include tasks UP TO TODAY so future schedule does not break the KPI score.
+        let filtered = (fromDate && toDate)
+            ? empInstances.filter(i => i.date >= fromDate && i.date <= toDate)
+            : empInstances.filter(i => i.date.startsWith(new Date().getFullYear().toString()));
+            
+        // Cap to today
+        filtered = filtered.filter(i => i.date <= today);
+
+        const total = filtered.length;
+        const completed = filtered.filter(i => i.status === 'COMPLETED').length;
+        const pending = filtered.filter(i => i.status === 'PENDING' && i.date === today).length;
+        const overdue = filtered.filter(i => i.status === 'PENDING' && i.date < today).length;
+        // Logic: 0% = all done, 100% = nothing done
+        const pct = total > 0 ? Math.round(((total - completed) / total) * 100) : 0;
+        return { total, completed, pending, overdue, pct, instances: filtered.sort((a, b) => b.date.localeCompare(a.date)) };
+    };
+
+    const getWorkAnalysis = (empId: string) => {
+        if (!timeLogs || !timeLogs[empId]) return null;
+
+        const empLogsDict = timeLogs[empId];
+        let inRange: TimeLog[] = [];
+
+        Object.keys(empLogsDict).forEach(dateStr => {
+            if (fromDate && dateStr < fromDate) return;
+            if (toDate && dateStr > toDate) return;
+            if (!fromDate && !toDate && !dateStr.startsWith(new Date().getFullYear().toString())) return;
+            inRange.push(...empLogsDict[dateStr]);
+        });
+
+        inRange.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const today = new Date().toISOString().split('T')[0];
+
+        let daysInRangeCount = 0;
+        if (fromDate && toDate) {
+            const startD = new Date(fromDate);
+            const endD = new Date(toDate);
+            daysInRangeCount = Math.max(0, Math.ceil((endD.getTime() - startD.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+        }
+
+        const processed = inRange.map(l => {
+            const isMissed = !l.clockOut && l.date < today;
+            const checkInTime = l.clockIn ? new Date(l.clockIn) : null;
+            const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 0)) : false;
+            const score = typeof attendanceData[empId]?.[l.date] === 'number' ? (attendanceData[empId][l.date] as number) : (l.clockIn ? 1 : 0);
+            return { ...l, isMissed, isLate, score };
+        });
+
+        const validLogs = processed.filter(l => !l.isMissed);
+        const totalHours = validLogs.reduce((acc, curr) => acc + (curr.durationHours || 0), 0);
+        const missedCount = processed.filter(l => l.isMissed).length;
+        const lateCount = processed.filter(l => l.isLate).length;
+        const workingDays = new Set(validLogs.map(l => l.date)).size;
+
+        const avgHours = workingDays > 0 ? totalHours / workingDays : 0;
+        const totalScore = validLogs.reduce((acc, curr) => acc + (curr.score || 0), 0);
+        const attendanceImpact = daysInRangeCount > 0 ? (totalScore / daysInRangeCount) * 100 : 0;
+
+        let tier = "INSUFFICIENT DATA";
+        let tierColor = "slate";
+        if (workingDays > 0) {
+            if (avgHours >= 8 && attendanceImpact >= 85) { tier = "ELITE PERFORMER"; tierColor = "emerald"; }
+            else if (avgHours >= 7 && attendanceImpact >= 70) { tier = "CORE ASSET"; tierColor = "indigo"; }
+            else if (avgHours >= 4) { tier = "REGULAR"; tierColor = "blue"; }
+            else { tier = "UNDER REVIEW"; tierColor = "rose"; }
+        }
+
+        if (totalHours === 0 && workingDays === 0) return null;
+
+        return {
+            totalHours,
+            workingDays,
+            lateCount,
+            missedCount,
+            tier,
+            tierColor
+        };
+    };
+
+    const formatDecimalHours = (hours: number) => {
+        const h = Math.floor(hours);
+        const m = Math.round((hours - h) * 60);
+        return `${h}h ${m}m`;
+    };
+
+    // Format large numbers neatly
+    const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
     const handlePrint = () => {
-        // allow a brief reflow so large task lists become printable
         setTimeout(() => window.print(), 150);
     };
 
     const handlePrintAll = () => {
-        // Show printable reports for all employees, trigger print, then hide
         setPrintMode(true);
-        // wait for render
         setTimeout(() => {
             window.print();
-            // hide printable mode shortly after print dialog
             setTimeout(() => setPrintMode(false), 500);
         }, 300);
-    };
-
-    const handlePrintFull = () => {
-        // Ensure the page is at top and DOM is stable before printing full history
-        try { window.scrollTo(0, 0); } catch (e) { /* ignore */ }
-        // Give more time for large DOMs to render/paint
-        setTimeout(() => {
-            window.print();
-        }, 500);
-    };
-
-    const handlePrintTaskHistory = () => {
-        // Print only the task history section
-        setPrintTasksOnly(true);
-        setTimeout(() => {
-            window.print();
-            // Reset after print dialog closes
-            setTimeout(() => setPrintTasksOnly(false), 500);
-        }, 150);
     };
 
     const clearFilters = () => {
@@ -240,21 +312,36 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
     const selectedEmployee = employees.find(e => e.id === selectedEmpId);
     const selectedStats = selectedEmployee ? getEmployeeStats(selectedEmployee.id) : null;
     const attendanceStats = selectedEmployee ? getAttendanceStats(selectedEmployee.id) : null;
+    const checklistStats = selectedEmployee ? getChecklistStats(selectedEmployee.id) : null;
+
+    let combinedScore = 0;
+    if (selectedStats && checklistStats) {
+        const totalCombined = selectedStats.total + checklistStats.total;
+        const pendingCombined = selectedStats.pending + (checklistStats.total - checklistStats.completed);
+        combinedScore = totalCombined > 0 ? Math.round((pendingCombined / totalCombined) * 100) : 0;
+    }
 
     // --- DETAIL REPORT VIEW ---
-    if (selectedEmployee && selectedStats && attendanceStats) {
+    if (selectedEmployee && selectedStats && attendanceStats && checklistStats) {
         return (
             <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar print:p-0 print:bg-white print:overflow-visible print:h-auto print:static">
+                <style>{`
+                    @media print {
+                        @page {
+                            size: A4 portrait;
+                            margin: 10mm;
+                        }
+                    }
+                `}</style>
                 {/* Action Header - Hidden on Print */}
                 <div className="flex justify-between items-center mb-6 print:hidden">
                     <button
                         onClick={() => setSelectedEmpId(null)}
                         className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold transition-colors"
                     >
-                        <ArrowLeft size={20} /> Back to Team List
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></svg> Back to Team List
                     </button>
                     <div className="flex gap-2">
-                        {/* Show active filter details */}
                         {fromDate && toDate && (
                             <div className="bg-blue-50 text-blue-700 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border border-blue-100">
                                 <Calendar size={14} /> {fromDate} to {toDate}
@@ -267,248 +354,213 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                             <Printer size={18} />
                             Print Report
                         </button>
-                        <button
-                            onClick={handlePrintTaskHistory}
-                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 transition-all active:scale-95 font-bold"
-                            title="Print only the Complete Task History"
-                        >
-                            <Printer size={18} />
-                            Print Tasks
-                        </button>
                     </div>
                 </div>
 
-                {/* Printable KPI Card */}
-                <div className={`bg-white rounded-3xl shadow-xl border border-slate-200 p-6 md:p-8 max-w-5xl mx-auto print:shadow-none print:border-none print:p-0 print:w-full print:max-w-none ${printTasksOnly ? 'print:hidden' : ''}`}>
+                {/* ═══ PRINTABLE KPI REPORT ═══ */}
+                <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-8 max-w-4xl mx-auto print:shadow-none print:border-none print:rounded-none print:p-0 print:m-0 print:max-w-none print:w-full">
 
-                    {/* Professional Header - Matching Screenshot */}
-                    <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6">
+                    {/* ── REPORT HEADER ── */}
+                    <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4 mb-5 print:pb-2.5 print:mb-3">
                         <div className="flex items-center gap-3">
-                            <img
-                                src={COMPANY_LOGO}
-                                alt="Company Logo"
-                                className="w-14 h-14 object-contain"
-                            />
+                            <img src={COMPANY_LOGO} alt="Company Logo" className="w-12 h-12 object-contain print:w-9 print:h-9" />
                             <div>
-                                <h1 className="text-2xl font-black text-slate-900 uppercase tracking-tight leading-none">KALRA BUILDTECH</h1>
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.15em] mt-1.5 font-sans">PERFORMANCE REPORT</p>
+                                <h1 className="text-[22px] font-black text-slate-900 uppercase tracking-tight leading-none print:text-lg">KALRA BUILDTECH</h1>
+                                <p className="text-[9px] font-extrabold text-slate-400 uppercase tracking-[0.2em] mt-1 print:text-[7px]">KPI PERFORMANCE REPORT</p>
                             </div>
                         </div>
                         <div className="text-right">
-                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Date</div>
-                            <div className="text-lg font-black text-slate-800 leading-none">{format(new Date(), 'dd MMM yyyy')}</div>
+                            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest print:text-[7px]">Report Date</div>
+                            <div className="text-xl font-black text-slate-800 print:text-base">{format(new Date(), 'dd MMM yyyy')}</div>
                             {fromDate && toDate && (
-                                <div className="mt-2 inline-block bg-slate-50 px-2 py-1 rounded text-[10px] font-bold text-slate-500 border border-slate-200">
-                                    Period: {fromDate} to {toDate}
+                                <div className="mt-1 text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded print:text-[7px]">
+                                    Period: {fromDate} → {toDate}
                                 </div>
                             )}
                         </div>
                     </div>
 
-                    {/* Employee Profile Section - Matching Screenshot */}
-                    <div className="flex items-center justify-between gap-4 mb-6">
-                        <div className="flex items-center gap-4 flex-1">
-                            <div className="w-16 h-16 rounded-full bg-slate-50 border-2 border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
-                                {selectedEmployee.avatar ? (
-                                    <img src={selectedEmployee.avatar} className="w-full h-full object-cover" />
-                                ) : (
-                                    <UserCircle size={40} className="text-slate-300" />
-                                )}
+                    {/* ── EMPLOYEE PROFILE ── */}
+                    <div className="flex items-center gap-4 mb-5 p-4 bg-slate-50 rounded-2xl border border-slate-100 print:mb-3 print:p-3 print:rounded-xl">
+                        <div className="w-14 h-14 rounded-full bg-white border-2 border-slate-200 overflow-hidden shrink-0 flex items-center justify-center print:w-11 print:h-11">
+                            {selectedEmployee.avatar
+                                ? <img src={selectedEmployee.avatar} className="w-full h-full object-cover" />
+                                : <UserCircle size={36} className="text-slate-300" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <h2 className="text-xl font-black text-slate-900 leading-tight print:text-base">{selectedEmployee.name}</h2>
+                            <div className="flex flex-wrap gap-1.5 mt-1.5 print:mt-1">
+                                <span className="text-[10px] font-bold text-slate-500 bg-white px-2.5 py-0.5 rounded border border-slate-200 print:text-[8px]">ID: {selectedEmployee.id}</span>
+                                <span className="text-[10px] font-bold text-slate-500 bg-white px-2.5 py-0.5 rounded border border-slate-200 print:text-[8px]">{selectedEmployee.designation}</span>
+                                <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-100 print:text-[8px]">{selectedEmployee.department}</span>
                             </div>
-                            <div className="flex-1">
-                                <h2 className="text-xl font-black text-slate-900 mb-1">{selectedEmployee.name}</h2>
-                                <div className="flex flex-wrap gap-2 text-[10px] font-bold">
-                                    <span className="bg-slate-50 text-slate-500 px-3 py-1 rounded-md border border-slate-100">ID: {selectedEmployee.id}</span>
-                                    <span className="bg-slate-50 text-slate-500 px-3 py-1 rounded-md border border-slate-100">{selectedEmployee.designation}</span>
-                                    <span className="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-md border border-indigo-100">{selectedEmployee.department}</span>
+                        </div>
+                        <div className="shrink-0 bg-indigo-600 px-5 py-3 rounded-xl text-center print:px-4 print:py-2.5 print:rounded-lg">
+                            <div className="text-[9px] font-extrabold text-indigo-200 uppercase tracking-widest print:text-[7px]">TASK SCORE</div>
+                            <div className="text-4xl font-black text-white leading-none print:text-3xl">{combinedScore}%</div>
+                        </div>
+                    </div>
+
+                    {/* ── TIME ANALYSIS ── */}
+                    <div className="mb-4 print:mb-3">
+                        <div className="flex items-center gap-2 mb-2.5 print:mb-2">
+                            <div className="w-1 h-4 bg-blue-500 rounded-full"></div>
+                            <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">Time Analysis</h3>
+                        </div>
+                        {(() => {
+                            const analysis = getWorkAnalysis(selectedEmployee.id);
+                            if (!analysis) return <p className="text-xs text-slate-400 italic">No time log data available.</p>;
+                            return (
+                                <div className="grid grid-cols-5 gap-3 print:gap-2">
+                                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 print:p-2">
+                                        <div className="flex items-center gap-1.5 mb-2 print:mb-1">
+                                            <div className="w-5 h-5 bg-blue-500 rounded-md flex items-center justify-center"><Clock size={11} className="text-white" /></div>
+                                            <span className="text-[8px] font-black text-blue-600 uppercase tracking-wide print:text-[7px]">Total Hours</span>
+                                        </div>
+                                        <div className="text-xl font-black text-blue-800 leading-none print:text-base">{formatDecimalHours(analysis.totalHours)}</div>
+                                    </div>
+                                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 print:p-2">
+                                        <div className="flex items-center gap-1.5 mb-2 print:mb-1">
+                                            <div className="w-5 h-5 bg-emerald-500 rounded-md flex items-center justify-center"><CalendarCheck size={11} className="text-white" /></div>
+                                            <span className="text-[8px] font-black text-emerald-600 uppercase tracking-wide print:text-[7px]">Days Worked</span>
+                                        </div>
+                                        <div className="text-xl font-black text-emerald-800 leading-none print:text-base">{analysis.workingDays}<span className="text-[9px] font-bold text-emerald-500 ml-1">d</span></div>
+                                    </div>
+                                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 print:p-2">
+                                        <div className="flex items-center gap-1.5 mb-2 print:mb-1">
+                                            <div className="w-5 h-5 bg-amber-500 rounded-md flex items-center justify-center"><Clock size={11} className="text-white" /></div>
+                                            <span className="text-[8px] font-black text-amber-600 uppercase tracking-wide print:text-[7px]">Late Logins</span>
+                                        </div>
+                                        <div className="text-xl font-black text-amber-800 leading-none print:text-base">{analysis.lateCount}<span className="text-[9px] font-bold text-amber-500 ml-1">d</span></div>
+                                    </div>
+                                    <div className={`bg-${analysis.tierColor}-50 border border-${analysis.tierColor}-100 rounded-xl p-3 print:p-2`}>
+                                        <div className="flex items-center gap-1.5 mb-2 print:mb-1">
+                                            <div className={`w-5 h-5 bg-${analysis.tierColor}-500 rounded-md flex items-center justify-center`}><TrendingUp size={11} className="text-white" /></div>
+                                            <span className={`text-[8px] font-black text-${analysis.tierColor}-600 uppercase tracking-wide print:text-[7px]`}>Perf. Tier</span>
+                                        </div>
+                                        <div className={`text-sm font-black text-${analysis.tierColor}-800 leading-tight print:text-xs`}>{analysis.tier}</div>
+                                    </div>
+                                    <div className={`rounded-xl p-3 print:p-2 border ${analysis.missedCount > 0 ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-100'}`}>
+                                        <div className="flex items-center gap-1.5 mb-2 print:mb-1">
+                                            <div className={`w-5 h-5 rounded-md flex items-center justify-center ${analysis.missedCount > 0 ? 'bg-rose-500' : 'bg-slate-300'}`}><AlertTriangle size={11} className="text-white" /></div>
+                                            <span className={`text-[8px] font-black uppercase tracking-wide print:text-[7px] ${analysis.missedCount > 0 ? 'text-rose-600' : 'text-slate-400'}`}>Audit Flags</span>
+                                        </div>
+                                        <div className={`text-xl font-black leading-none print:text-base ${analysis.missedCount > 0 ? 'text-rose-700' : 'text-slate-300'}`}>{analysis.missedCount}</div>
+                                        {analysis.missedCount > 0 && <div className="text-[7px] font-bold text-rose-400 uppercase mt-0.5">Missing logouts</div>}
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </div>
+
+                    {/* ── ATTENDANCE + TASK EXECUTION (side by side) ── */}
+                    <div className="grid grid-cols-6 gap-4 mb-4 print:gap-3 print:mb-3">
+                        {/* Attendance */}
+                        <div className="col-span-6 md:col-span-2 print:col-span-2">
+                            <div className="flex items-center gap-2 mb-2.5 print:mb-2">
+                                <div className="w-1 h-4 bg-indigo-500 rounded-full"></div>
+                                <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">
+                                    Attendance
+                                    <span className="ml-1 font-bold text-slate-400 normal-case tracking-normal">{fromDate ? '(period)' : '(year)'}</span>
+                                </h3>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 print:gap-1.5">
+                                {[
+                                    { label: 'Present', value: attendanceStats.present.toFixed(1), bg: 'bg-emerald-50', border: 'border-emerald-100', num: 'text-emerald-700', lbl: 'text-emerald-500' },
+                                    { label: 'Absent', value: String(attendanceStats.absent), bg: 'bg-red-50', border: 'border-red-100', num: 'text-red-700', lbl: 'text-red-500' },
+                                ].map(({ label, value, bg, border, num, lbl }) => (
+                                    <div key={label} className={`${bg} border ${border} rounded-xl p-3 print:p-2 print:rounded-lg text-center`}>
+                                        <div className={`text-2xl font-black ${num} leading-none print:text-lg`}>{value}</div>
+                                        <div className={`text-[8px] font-extrabold ${lbl} uppercase mt-1.5 print:mt-1 tracking-wider print:text-[7px]`}>{label}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Task Execution */}
+                        <div className="col-span-6 md:col-span-4 print:col-span-4">
+                            <div className="flex items-center gap-2 mb-2.5 print:mb-2">
+                                <div className="w-1 h-4 bg-violet-500 rounded-full"></div>
+                                <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">Task Execution</h3>
+                            </div>
+                            <div className="grid grid-cols-4 gap-2 print:gap-1.5">
+                                {[
+                                    { label: 'Assigned', value: String(selectedStats.total), bg: 'bg-slate-50', border: 'border-slate-200', num: 'text-slate-800', lbl: 'text-slate-400' },
+                                    { label: 'Done', value: String(selectedStats.completed), bg: 'bg-green-50', border: 'border-green-100', num: 'text-green-700', lbl: 'text-green-500' },
+                                    { label: 'Pending', value: String(selectedStats.pending), bg: 'bg-blue-50', border: 'border-blue-100', num: 'text-blue-700', lbl: 'text-blue-500' },
+                                    { label: 'Overdue', value: String(selectedStats.overdue), bg: selectedStats.overdue > 0 ? 'bg-red-50' : 'bg-slate-50', border: selectedStats.overdue > 0 ? 'border-red-100' : 'border-slate-200', num: selectedStats.overdue > 0 ? 'text-red-700' : 'text-slate-300', lbl: selectedStats.overdue > 0 ? 'text-red-500' : 'text-slate-300' },
+                                ].map(({ label, value, bg, border, num, lbl }) => (
+                                    <div key={label} className={`${bg} border ${border} rounded-xl p-3 print:p-2 print:rounded-lg text-center`}>
+                                        <div className={`text-2xl font-black ${num} leading-none print:text-lg`}>{value}</div>
+                                        <div className={`text-[8px] font-extrabold ${lbl} uppercase mt-1.5 print:mt-1 tracking-wider print:text-[7px]`}>{label}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ── ROUTINE CHECKLIST ── */}
+                    <div className="mb-4 print:mb-3">
+                        <div className="flex items-center gap-2 mb-2.5 print:mb-2">
+                            <div className="w-1 h-4 bg-teal-500 rounded-full"></div>
+                            <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">Routine Checklist</h3>
+                            <span className="ml-auto text-[8px] font-bold text-slate-400 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full print:text-[7px]">
+                                {fromDate && toDate ? `${fromDate} – ${toDate}` : `Jan – Dec ${new Date().getFullYear()}`}
+                            </span>
+                        </div>
+                        {checklistStats.total === 0 ? (
+                            <div className="py-4 text-center text-slate-400 text-xs font-semibold border border-dashed border-slate-200 rounded-xl">
+                                No checklist tasks assigned for this period.
+                            </div>
+                        ) : (
+                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 print:p-2.5 print:rounded-lg">
+                                <div className="grid grid-cols-4 gap-2 print:gap-1.5 mb-3 print:mb-2">
+                                    {[
+                                        { label: 'Total', value: checklistStats.total, bg: 'bg-slate-100', border: 'border-slate-200', num: 'text-slate-800', lbl: 'text-slate-500' },
+                                        { label: 'Completed', value: checklistStats.completed, bg: 'bg-emerald-50', border: 'border-emerald-100', num: 'text-emerald-700', lbl: 'text-emerald-500' },
+                                        { label: 'Pending', value: checklistStats.pending, bg: 'bg-blue-50', border: 'border-blue-100', num: 'text-blue-700', lbl: 'text-blue-500' },
+                                        { label: 'Overdue', value: checklistStats.overdue, bg: checklistStats.overdue > 0 ? 'bg-red-50' : 'bg-slate-50', border: checklistStats.overdue > 0 ? 'border-red-100' : 'border-slate-200', num: checklistStats.overdue > 0 ? 'text-red-700' : 'text-slate-300', lbl: checklistStats.overdue > 0 ? 'text-red-500' : 'text-slate-300' },
+                                    ].map(({ label, value, bg, border, num, lbl }) => (
+                                        <div key={label} className={`${bg} border ${border} rounded-lg p-2 print:p-1.5 text-center`}>
+                                            <div className={`text-lg font-black leading-none ${num} print:text-sm`}>{fmt(value)}</div>
+                                            <div className={`text-[8px] font-bold ${lbl} uppercase mt-1 tracking-wider print:text-[7px]`}>{label}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div>
+                                    <div className="flex justify-between items-center mb-1 print:mb-0.5">
+                                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider print:text-[7px]">Pending Workload</span>
+                                        <span className={`text-xs font-black print:text-[10px] ${checklistStats.pct <= 20 ? 'text-emerald-600' : checklistStats.pct <= 60 ? 'text-amber-600' : 'text-red-500'}`}>{checklistStats.pct}%</span>
+                                    </div>
+                                    <div className="h-2 bg-slate-200 rounded-full overflow-hidden print:h-1.5">
+                                        <div
+                                            className={`h-full rounded-full transition-all ${checklistStats.pct <= 20 ? 'bg-emerald-500' : checklistStats.pct <= 60 ? 'bg-amber-400' : 'bg-red-400'}`}
+                                            style={{ width: `${Math.max(checklistStats.pct, checklistStats.pct > 0 ? 2 : 0)}%` }}
+                                        />
+                                    </div>
+                                    <div className="flex justify-between mt-1 text-[8px] text-slate-400 font-semibold print:text-[7px]">
+                                        <span>{fmt(checklistStats.completed)} done</span>
+                                        <span>{fmt(checklistStats.total - checklistStats.completed)} remaining</span>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                        <div className="bg-[#eff2ff] px-5 py-3 rounded-2xl border border-indigo-100 text-center min-w-[130px]">
-                            <div className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest mb-1.5">PERFORMANCE</div>
-                            <div className="text-4xl font-black text-indigo-700 leading-none">{selectedStats.completionRate}%</div>
-                        </div>
-                    </div>
-
-                    {/* Attendance Overview Section - Matching Screenshot */}
-                    <div className="mb-6">
-                        <h3 className="text-sm font-black text-slate-800 mb-4 flex items-center gap-2 uppercase tracking-wide">
-                            <CalendarCheck size={18} className="text-indigo-500" /> ATTENDANCE {fromDate ? '(SELECTED PERIOD)' : '(CURRENT YEAR)'}
-                        </h3>
-                        <div className="grid grid-cols-4 gap-4">
-                            <div className="p-4 rounded-xl border border-green-100 bg-green-50/50 text-center">
-                                <div className="text-2xl font-black text-slate-900 leading-none">{attendanceStats.present.toFixed(1)}</div>
-                                <div className="text-[10px] font-bold text-green-600 uppercase mt-2">PRESENT</div>
-                            </div>
-                            <div className="p-4 rounded-xl border border-red-100 bg-red-50/50 text-center">
-                                <div className="text-2xl font-black text-slate-900 leading-none">{attendanceStats.absent}</div>
-                                <div className="text-[10px] font-bold text-red-600 uppercase mt-2">ABSENT</div>
-                            </div>
-                            <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/50 text-center">
-                                <div className="text-2xl font-black text-slate-900 leading-none">{attendanceStats.leaves.toFixed(1)}</div>
-                                <div className="text-[10px] font-bold text-blue-600 uppercase mt-2">LEAVES</div>
-                            </div>
-                            <div className="p-4 rounded-xl border border-slate-200 bg-white text-center">
-                                <div className="text-2xl font-black text-slate-900 leading-none">{(LEAVE_QUOTA_YEARLY - attendanceStats.leaves).toFixed(1)}</div>
-                                <div className="text-[10px] font-bold text-slate-400 uppercase mt-2">REMAINING</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Task Execution Section - Box layout matching Screenshot */}
-                    <div className="mb-10">
-                        <h3 className="text-sm font-black text-slate-800 mb-4 flex items-center gap-2 uppercase tracking-wide">
-                            <ClipboardList size={18} className="text-indigo-500" /> TASK EXECUTION
-                        </h3>
-                        <div className="grid grid-cols-4 gap-4">
-                            <div className="p-5 rounded-xl border border-slate-200 bg-white min-h-[100px] flex flex-col justify-between">
-                                <div className="text-[10px] font-bold text-slate-400 uppercase">ASSIGNED</div>
-                                <div className="text-4xl font-black text-slate-900 leading-none">{selectedStats.total}</div>
-                            </div>
-                            <div className="p-5 rounded-xl border border-green-100 bg-green-50/20 min-h-[100px] flex flex-col justify-between">
-                                <div className="text-[10px] font-bold text-green-600 uppercase">COMPLETED</div>
-                                <div className="text-4xl font-black text-green-700 leading-none">{selectedStats.completed}</div>
-                            </div>
-                            <div className="p-5 rounded-xl border border-blue-100 bg-blue-50/20 min-h-[100px] flex flex-col justify-between">
-                                <div className="text-[10px] font-bold text-blue-600 uppercase">PENDING</div>
-                                <div className="text-4xl font-black text-blue-700 leading-none">{selectedStats.pending}</div>
-                            </div>
-                            <div className="p-5 rounded-xl border border-red-100 bg-red-50/20 min-h-[100px] flex flex-col justify-between">
-                                <div className="text-[10px] font-bold text-red-600 uppercase">OVERDUE</div>
-                                <div className="text-4xl font-black text-red-800 leading-none">{selectedStats.overdue}</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Complete Task History - Matching Screenshot title */}
-                    <div className={printTasksOnly ? 'hidden' : ''}>
-                        <h3 className="text-xl font-black text-slate-800 mb-6 mt-10">Complete Task History</h3>
-                        {selectedStats.empTasks.length === 0 ? (
-                            <div className="py-6 text-center text-slate-400 italic">No tasks found for this period.</div>
-                        ) : (
-                            // Browser automatically handles pagination - no manual slicing needed
-                            <table className="print-table w-full text-left text-sm border-collapse">
-                                <thead>
-                                    <tr className="border-b-2 border-slate-200">
-                                        <th className="py-3 px-2 text-[11px] font-black text-slate-500 uppercase tracking-wider">TASK TITLE</th>
-                                        <th className="py-3 px-2 text-[11px] font-black text-slate-500 uppercase tracking-wider">ASSIGNED</th>
-                                        <th className="py-3 px-2 text-[11px] font-black text-slate-500 uppercase tracking-wider">DUE DATE</th>
-                                        <th className="py-3 px-2 text-[11px] font-black text-slate-500 uppercase tracking-wider">STATUS</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {selectedStats.empTasks.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map(t => {
-                                        const actualStatus = getActualTaskStatus(t);
-                                        const statusInfo = getStatusColor(actualStatus);
-                                        const StatusIcon = statusInfo.icon;
-                                        return (
-                                            <tr key={t.id} className="hover:bg-slate-50 print:hover:bg-transparent">
-                                                <td className="py-3 px-2 font-medium text-slate-700 text-sm">{t.title}</td>
-                                                <td className="py-3 px-2 text-slate-500 text-sm">{t.createdDate}</td>
-                                                <td className="py-3 px-2 text-slate-500 text-sm">{t.dueDate}</td>
-                                                <td className="py-3 px-2">
-                                                    <div className={`flex items-center gap-2 w-fit px-3 py-1 rounded-lg font-bold text-xs uppercase ${getStatusBadgeColor(actualStatus)}`}>
-                                                        <StatusIcon size={14} />
-                                                        {actualStatus}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
                         )}
                     </div>
 
-                    {/* Footer */}
-                    <div className="mt-12 pt-6 border-t border-slate-200 flex justify-between items-end">
-                        <div className="text-xs text-slate-400">
-                            <p>Authorized Signature</p>
-                            <div className="h-12 w-48 border-b border-slate-300 mt-2"></div>
+                    {/* ── FOOTER ── */}
+                    <div className="pt-4 mt-3 border-t border-slate-200 flex justify-between items-end print:pt-3 print:mt-2">
+                        <div>
+                            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3 print:text-[7px] print:mb-2">Authorized Signature</div>
+                            <div className="h-8 w-44 border-b border-slate-300 print:h-6 print:w-32"></div>
                         </div>
-                        <div className="text-[10px] text-slate-300 uppercase font-bold tracking-widest">
-                            Generated by Kalra FMS
+                        <div className="text-right">
+                            <div className="text-[9px] text-slate-300 uppercase font-bold tracking-widest print:text-[7px]">Generated by Kalra FMS</div>
+                            <div className="text-[8px] text-slate-300 font-medium mt-0.5 print:text-[6px]">{format(new Date(), 'dd/MM/yyyy HH:mm')}</div>
                         </div>
                     </div>
 
                 </div>
 
-                {/* Complete Task History - Outside KPI Card for independent printing */}
-                <div className={`${printTasksOnly ? 'bg-white p-8 rounded-xl' : 'hidden'}`} style={printTasksOnly ? {} : { display: 'none' }}>
-
-                    {/* Task Execution KPI Section for Print Tasks */}
-                    <div className="mb-8">
-                        <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2 flex items-center gap-2">
-                            <ClipboardList size={20} className="text-indigo-500" /> Task Execution
-                        </h3>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between h-24">
-                                <div className="text-xs font-bold text-slate-400 uppercase">Assigned</div>
-                                <div className="text-3xl font-black text-slate-800">{selectedStats.total}</div>
-                            </div>
-                            <div className="p-4 rounded-xl border border-green-200 bg-green-50 shadow-sm flex flex-col justify-between h-24">
-                                <div className="text-xs font-bold text-green-600 uppercase">Completed</div>
-                                <div className="text-3xl font-black text-green-700">{selectedStats.completed}</div>
-                            </div>
-                            <div className="p-4 rounded-xl border border-blue-200 bg-blue-50 shadow-sm flex flex-col justify-between h-24">
-                                <div className="text-xs font-bold text-blue-600 uppercase">Pending</div>
-                                <div className="text-3xl font-black text-blue-700">{selectedStats.pending}</div>
-                            </div>
-                            <div className="p-4 rounded-xl border border-red-200 bg-red-50 shadow-sm flex flex-col justify-between h-24">
-                                <div className="text-xs font-bold text-red-600 uppercase">Overdue</div>
-                                <div className="text-3xl font-black text-red-700">{selectedStats.overdue}</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Complete Task History</h3>
-                    {selectedStats.empTasks.length === 0 ? (
-                        <div className="py-6 text-center text-slate-400 italic">No tasks found for this period.</div>
-                    ) : (
-                        // Browser automatically handles pagination - render all tasks
-                        <table className="print-table w-full text-left text-sm border-collapse">
-                            <thead>
-                                <tr className="border-b-2 border-slate-300">
-                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Task Title</th>
-                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Assigned</th>
-                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Due Date</th>
-                                    <th className="py-2 px-2 text-xs font-bold text-slate-600 uppercase">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {selectedStats.empTasks.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()).map(t => {
-                                    const actualStatus = getActualTaskStatus(t);
-                                    const statusInfo = getStatusColor(actualStatus);
-                                    const StatusIcon = statusInfo.icon;
-                                    return (
-                                        <tr key={t.id} className="hover:bg-slate-50 print:hover:bg-transparent">
-                                            <td className="py-3 px-2 font-medium text-slate-700 text-sm">{t.title}</td>
-                                            <td className="py-3 px-2 text-slate-500 text-sm">{t.createdDate}</td>
-                                            <td className="py-3 px-2 text-slate-500 text-sm">{t.dueDate}</td>
-                                            <td className="py-3 px-2">
-                                                <div className={`flex items-center gap-2 w-fit px-3 py-1 rounded-lg font-bold text-xs uppercase ${getStatusBadgeColor(actualStatus)}`}>
-                                                    <StatusIcon size={14} />
-                                                    {actualStatus}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    )}
-
-                    {/* Footer for Task History Print */}
-                    <div className="mt-8 pt-6 border-t border-slate-200 flex justify-between items-end">
-                        <div className="text-xs text-slate-400">
-                            <p>Authorized Signature</p>
-                            <div className="h-12 w-48 border-b border-slate-300 mt-2"></div>
-                        </div>
-                        <div className="text-[10px] text-slate-300 uppercase font-bold tracking-widest">
-                            Generated by Kalra FMS
-                        </div>
-                    </div>
-                </div>
             </div>
         );
     }
@@ -532,14 +584,28 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             {/* Printable all reports view (temporarily shown during print) */}
             {printMode && (
                 <div className="hidden print:block" aria-hidden={!printMode}>
+                    <style>{`
+                        @media print {
+                            @page {
+                                size: A4 portrait;
+                                margin: 10mm;
+                            }
+                        }
+                    `}</style>
                     {employees.map(emp => {
                         const stats = getEmployeeStats(emp.id);
                         const att = getAttendanceStats(emp.id);
+                        const checkStats = getChecklistStats(emp.id);
                         const allTasks = stats.empTasks.sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime());
+                        
+                        const totalCombined = stats.total + checkStats.total;
+                        const pendingCombined = stats.pending + (checkStats.total - checkStats.completed);
+                        const bulkCombinedScore = totalCombined > 0 ? Math.round((pendingCombined / totalCombined) * 100) : 0;
+
                         return (
                             <div key={emp.id} className="print-container page-break-after p-8 bg-white text-slate-900 border-none shadow-none">
                                 {/* Letterhead - Bulk Print */}
-                                <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6">
+                                <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6 print:mb-4">
                                     <div className="flex items-center gap-3">
                                         <img src={COMPANY_LOGO} alt="Logo" className="w-14 h-14 object-contain" />
                                         <div>
@@ -554,7 +620,7 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                 </div>
 
                                 {/* Employee Profile - Bulk Print */}
-                                <div className="flex items-center justify-between gap-4 mb-6">
+                                <div className="flex items-center justify-between gap-4 mb-6 print:mb-4">
                                     <div className="flex items-center gap-4 flex-1">
                                         <div className="w-16 h-16 rounded-full bg-slate-50 border-2 border-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
                                             {emp.avatar ? <img src={emp.avatar} className="w-full h-full object-cover" /> : <UserCircle size={40} className="text-slate-300" />}
@@ -568,13 +634,13 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                         </div>
                                     </div>
                                     <div className="bg-[#eff2ff] px-5 py-3 rounded-2xl border border-indigo-100 text-center min-w-[130px]">
-                                        <div className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest mb-1.5">PERFORMANCE</div>
-                                        <div className="text-4xl font-black text-indigo-700">{stats.completionRate}%</div>
+                                        <div className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest mb-1.5">TASK SCORE</div>
+                                        <div className="text-4xl font-black text-indigo-700 leading-none">{bulkCombinedScore}%</div>
                                     </div>
                                 </div>
 
                                 {/* Stats Sections - Bulk Print */}
-                                <div className="grid grid-cols-4 gap-4 mb-6">
+                                <div className="grid grid-cols-4 gap-4 print:gap-2 mb-6 print:mb-4">
                                     <div className="p-4 rounded-xl border border-green-100 bg-green-50/50 text-center">
                                         <div className="text-2xl font-black text-slate-900 leading-none">{att.present.toFixed(1)}</div>
                                         <div className="text-[10px] font-bold text-green-600 uppercase mt-2 font-sans">PRESENT</div>
@@ -592,6 +658,36 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                         <div className="text-3xl font-black text-green-700 leading-none">{stats.completed}</div>
                                     </div>
                                 </div>
+
+                                {/* Time Analysis Section - Bulk Print */}
+                                {(() => {
+                                    const analysis = getWorkAnalysis(emp.id);
+                                    if (!analysis) return null;
+                                    return (
+                                        <div className="grid grid-cols-5 gap-3 print:gap-2 mb-6 print:mb-4">
+                                            <div className="p-4 rounded-2xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between">
+                                                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Hours</div>
+                                                <div className="text-xl font-black text-slate-800">{formatDecimalHours(analysis.totalHours)}</div>
+                                            </div>
+                                            <div className="p-4 rounded-2xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between">
+                                                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Days Worked</div>
+                                                <div className="text-xl font-black text-slate-800">{analysis.workingDays} <span className="text-[10px] font-bold uppercase text-slate-400">Days</span></div>
+                                            </div>
+                                            <div className="p-4 rounded-2xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between">
+                                                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Late Logins</div>
+                                                <div className="text-xl font-black text-slate-800">{analysis.lateCount} <span className="text-[10px] font-bold uppercase text-slate-400">Days</span></div>
+                                            </div>
+                                            <div className={`p-4 rounded-2xl border border-${analysis.tierColor}-200 bg-${analysis.tierColor}-50 shadow-sm flex flex-col justify-between`}>
+                                                <div className={`text-[9px] font-black text-${analysis.tierColor}-400 uppercase tracking-widest mb-2`}>Performance</div>
+                                                <div className={`text-sm font-black text-${analysis.tierColor}-700 truncate`}>{analysis.tier}</div>
+                                            </div>
+                                            <div className={`p-4 rounded-2xl border shadow-sm flex flex-col justify-between ${analysis.missedCount > 0 ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`}>
+                                                <div className={`text-[9px] font-black uppercase tracking-widest mb-2 ${analysis.missedCount > 0 ? 'text-rose-400' : 'text-slate-400'}`}>Audits</div>
+                                                <div className={`text-xl font-black ${analysis.missedCount > 0 ? 'text-rose-600' : 'text-slate-300'}`}>{analysis.missedCount}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
 
                                 {/* Table - Bulk Print */}
                                 <h3 className="text-lg font-black text-slate-800 mb-4 mt-8 uppercase tracking-tight">Complete Task History</h3>
@@ -622,7 +718,7 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                 </table>
 
                                 {/* Footer - Bulk Print */}
-                                <div className="mt-12 pt-6 border-t border-slate-200 flex justify-between items-end">
+                                <div className="mt-12 print:mt-6 pt-6 print:pt-4 border-t border-slate-200 flex justify-between items-end">
                                     <div className="text-xs text-slate-400">
                                         <p className="font-bold">Authorized Signature</p>
                                         <div className="h-12 w-48 border-b border-slate-300 mt-2"></div>
@@ -675,7 +771,11 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {employees.map(emp => {
                     const stats = getEmployeeStats(emp.id);
-                    const score = stats.completionRate;
+                    const checkStats = getChecklistStats(emp.id);
+                    
+                    const totalCombined = stats.total + checkStats.total;
+                    const pendingCombined = stats.pending + (checkStats.total - checkStats.completed);
+                    const score = totalCombined > 0 ? Math.round((pendingCombined / totalCombined) * 100) : 0;
 
                     return (
                         <div key={emp.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 hover:shadow-xl hover:-translate-y-1 transition-all p-6 flex flex-col items-center text-center group cursor-pointer" onClick={() => setSelectedEmpId(emp.id)}>
@@ -688,11 +788,11 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
 
                             <div className="w-full grid grid-cols-2 gap-2 mb-4">
                                 <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-                                    <div className="text-xl font-black text-slate-800">{stats.total}</div>
+                                    <div className="text-xl font-black text-slate-800">{totalCombined}</div>
                                     <div className="text-[10px] font-bold text-slate-400 uppercase">Tasks</div>
                                 </div>
                                 <div className="bg-slate-50 rounded-lg p-2 border border-slate-100">
-                                    <div className={`text-xl font-black ${score >= 80 ? 'text-green-600' : score >= 50 ? 'text-orange-500' : 'text-red-500'}`}>{score}%</div>
+                                    <div className={`text-xl font-black ${score <= 20 ? 'text-green-600' : score <= 50 ? 'text-orange-500' : 'text-red-500'}`}>{score}%</div>
                                     <div className="text-[10px] font-bold text-slate-400 uppercase">Score</div>
                                 </div>
                             </div>

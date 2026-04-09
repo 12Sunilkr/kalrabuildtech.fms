@@ -68,10 +68,10 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                     // Refresh list from server
                     const listRes = await safeGet('/projects');
                     setProjects(ensureArray(extractPayload(listRes)));
-                    addNotification('Project Created', `New project ${newProject.name} initialized.`, 'PROJECT', String('ALL'));
+                    addNotification('Project Created', `New project ${newProject.name} initialized.`, 'PROJECT', 'ALL');
                 } catch (err) {
-                    console.error('Failed to create project on server', err && (err.stack || err.message || err));
-                    alert('Could not create project on server. Please try again.');
+                    console.error('Failed to create project on server', err);
+                    addNotification('Project Error', 'Could not create project on server. Please check your connection.', 'PROJECT', 'ADMIN');
                 } finally {
                     setShowAddProject(false);
                     setNewProject({ status: 'ACTIVE', assignedEmployees: [] });
@@ -94,13 +94,11 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
             const res = await api.put(`/projects/${encodeURIComponent(projectId)}/close`, {}, { withCredentials: true });
             // Refresh projects
             const listRes = await safeGet('/projects');
-            setProjects(ensureArray(extractPayload(listRes)));
-            alert('Project closed successfully.');
+            addNotification('Project Update', 'Project closed successfully. It is now read-only.', 'PROJECT', String('ALL'));
         } catch (e:any) {
             console.error('Failed to close project', e && (e.stack || e.message || e));
-            const status = e && e.response && e.response.status;
             const dataMsg = e && e.response && (e.response.data && (e.response.data.message || e.response.data.error)) ? (e.response.data.message || e.response.data.error) : null;
-            alert(`Failed to close project: ${status || ''} ${dataMsg || (e && e.message) || ''}`);
+            addNotification('Project Error', `Failed to close project: ${dataMsg || (e && e.message) || 'Server error'}`, 'PROJECT', String('ADMIN'));
         }
     };
 
@@ -120,7 +118,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
       );
 
       if (myPhotosToday.length >= 15) {
-          alert("Maximum daily limit of 15 photos reached for this project.");
+          addNotification('Upload Limit', 'Maximum daily limit of 15 photos reached for this project.', 'PROJECT', String(currentUser.employeeId));
           return;
       }
 
@@ -141,7 +139,7 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
               },
               (error) => {
                   console.error("Geo Error", error);
-                  alert("Unable to retrieve location. Please allow location access.");
+                  addNotification('Location Warning', 'Unable to retrieve location. Please allow location access for accurate site logs.', 'SYSTEM', String(currentUser.employeeId));
                   processUpload(file, null);
               },
               { enableHighAccuracy: true }
@@ -189,16 +187,15 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({
                   }
               } catch (err) {
                   console.error('Upload failed', err && (err.stack || err.message || err));
-                  // Remove placeholder on error
                   setPhotos(prev => prev.filter(p => p.id !== placeholder.id));
-                  alert('Failed to upload photo to server');
+                  addNotification('Upload Error', 'Failed to upload photo to server. Please check your signal.', 'PROJECT', String(currentUser.employeeId));
               }
           };
           reader.readAsDataURL(file);
 
       } catch (err) {
           console.error('Upload processing failed', err && (err.stack || err.message || err));
-          alert("Failed to process image.");
+          addNotification('Process Error', 'Failed to process image for upload.', 'SYSTEM', String(currentUser.employeeId));
       }
   };
 

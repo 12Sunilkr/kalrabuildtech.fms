@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { fetchJSON } from '../src/utils/pmsUtils';
 
 export default function ProjectForm({ onDone }:{onDone?:()=>void}){
-  const [form, setForm] = useState({ project_name:'', location:'', assigned_employee_id:'', start_date: '' });
+  const [form, setForm] = useState({ project_name:'', location:'', assigned_employee_id:'', start_date: '', google_sheet_link: '' });
   const [employees, setEmployees] = useState<any[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
@@ -26,7 +26,8 @@ export default function ProjectForm({ onDone }:{onDone?:()=>void}){
         project_name: form.project_name,
         assigned_employee_id: form.assigned_employee_id,
         location: form.location,
-        start_date: form.start_date || null
+        start_date: form.start_date || null,
+        google_sheet_link: form.google_sheet_link || null
       };
       await fetchJSON('/api/pms/projects', { method: 'POST', body: JSON.stringify(payload) });
       onDone && onDone();
@@ -59,6 +60,11 @@ export default function ProjectForm({ onDone }:{onDone?:()=>void}){
       <div>
         <label className="text-sm font-medium">Start date</label>
         <input className="w-full mt-1 p-2 border rounded" type="date" value={form.start_date} onChange={e=>setForm({...form, start_date:e.target.value})} />
+      </div>
+
+      <div className="sm:col-span-2">
+        <label className="text-sm font-medium">Google Sheet Link (Optional)</label>
+        <input className="w-full mt-1 p-2 border rounded" type="url" placeholder="https://docs.google.com/spreadsheets/..." value={form.google_sheet_link} onChange={e=>setForm({...form, google_sheet_link:e.target.value})} />
       </div>
 
       <div className="sm:col-span-2">

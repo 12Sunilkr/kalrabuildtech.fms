@@ -116,7 +116,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
             setNewOrder({ priority: 'Medium' });
             addNotification('Material Request', `New request from ${currentUser.name}. Please approve.`, 'ORDER', String(order.assignedApprover));
         } else {
-            alert("Please fill all fields including the Approver.");
+            addNotification('Form Incomplete', 'Please fill all fields including the Approver to initiate the order.', 'ORDER', String(currentUser.id));
         }
     };
 
@@ -138,7 +138,10 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
 
     // 3. Second Employee Places Order to Vendor
     const handlePlaceToVendor = async () => {
-        if (!vendorName) return alert("Please enter vendor name");
+        if (!vendorName) {
+            addNotification('Missing Info', 'Please enter a vendor name to place the order.', 'ORDER', String(currentUser.id));
+            return;
+        }
 
         const order = safeOrders.find(o => o.id === showVendorModal);
         if (!order) return;
@@ -188,15 +191,14 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                             submitDelivery(imageUrl, { lat: pos.coords.latitude, lng: pos.coords.longitude });
                         },
                         (err) => {
-                            alert("Location access denied. Uploading without GPS.");
+                            addNotification('GPS Warning', 'Location access denied. Uploading proof without GPS coordinates.', 'ORDER', String(currentUser.id));
                             submitDelivery(imageUrl, undefined);
                         }
                     );
 
                 } catch (err: any) {
-                    // Log axios error details when available
                     console.error('Upload failed', { message: err && (err.message || err), status: err && err.response && err.response.status, data: err && err.response && err.response.data });
-                    alert('Upload failed, please try again.');
+                    addNotification('Upload Failed', 'Failed to upload proof. Please check your internet connection.', 'ORDER', String(currentUser.id));
                     setLoadingLoc(false);
                 }
             } catch (err) {
@@ -249,9 +251,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
             addNotification('Order Deleted', `Order ${orderId} was deleted.`, 'ORDER', String('ADMIN'));
         } catch (err: any) {
             console.warn('O2D delete failed', err && (err.stack || err.message || err));
-            const status = err && err.response && err.response.status;
             const serverMsg = err && err.response && (err.response.data && (err.response.data.message || err.response.data.error)) ? (err.response.data.message || err.response.data.error) : null;
-            alert(`Failed to delete order: ${status || ''} ${serverMsg || (err && err.message) || ''}`);
+            addNotification('Delete Error', `Failed to delete order: ${serverMsg || (err && err.message) || 'Server Error'}`, 'ORDER', String('ADMIN'));
         }
     };
 

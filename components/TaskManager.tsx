@@ -36,7 +36,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   const [mobileMenuOpenId, setMobileMenuOpenId] = useState<string | null>(null); // For mobile 3-dots menu
   const [searchTerm, setSearchTerm] = useState(''); // Text Search
-  const [searchDate, setSearchDate] = useState(''); // Date Search
+  const [searchDateFrom, setSearchDateFrom] = useState(''); // Date Search From
+  const [searchDateTo, setSearchDateTo] = useState(''); // Date Search To
 
   // Form States for New Task
   const [newTask, setNewTask] = useState<Partial<Task>>({ priority: 'MEDIUM' });
@@ -90,7 +91,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     if (task.completionDate) return 'COMPLETED';
 
     // If pending and due date is strictly in the past (not today), it is OVERDUE
-    if ((task.status || '').toUpperCase() === 'PENDING' && task.dueDate && isPast(new Date(task.dueDate)) && !isSameDay(new Date(), new Date(task.dueDate))) {
+    const dueDateObj = task.dueDate ? new Date(task.dueDate) : null;
+    const isValidDate = dueDateObj && !isNaN(dueDateObj.getTime());
+    if ((task.status || '').toUpperCase() === 'PENDING' && isValidDate && isPast(dueDateObj!) && !isSameDay(new Date(), dueDateObj!)) {
       return 'OVERDUE';
     }
 
@@ -109,8 +112,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         const base64 = await convertFileToBase64(e.target.files[0]);
         setAttachment(base64);
       } catch (err) {
-        console.error("File upload failed", err);
-        alert("Failed to upload file.");
+        addNotification('System Error', 'Failed to upload task attachment. Please try again.', 'SYSTEM', String(currentUser.id));
       }
     }
   };
@@ -260,11 +262,13 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       const r = await api.post('/tasks', payload);
       console.log('TaskManager.createTask -> POST /tasks response:', r && r.data ? r.data : r);
       // Use returned task to update local state immediately so DB writes are not lost
+      let newId = '';
       try {
         const created = extractPayload(r);
-        if (created && (Array.isArray(created) ? created.length > 0 : created.id)) {
+        if (created) {
           // If API returned created resource (object or array), add to local list
-          const createdTask = Array.isArray(created) ? created[0] : created;
+          const createdTask = Array.isArray(created) ? created[0] : (created.task || created);
+          if (createdTask && createdTask.id) newId = createdTask.id;
           setTasks(prev => [createdTask as Task, ...prev]);
         }
       } catch (e) {
@@ -278,7 +282,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       // Clear selected assignee
       setNewAssignedUserId('');
       // Notify using the employee id if available, otherwise numeric id
-      addNotification('New Task', `Task "${payload.title}" assigned successfully.`, 'TASK', String(payload.assignedTo || payload.assigned_to));
+      addNotification('New Task', `Task ${newId ? newId : ''} "${payload.title}" assigned successfully.`, 'TASK', String(payload.assignedTo || payload.assigned_to));
     } catch (err: any) {
       console.error('Create task failed', err);
       const message = err && err.response && (err.response.data?.message || err.response.data?.error) ? (err.response.data.message || err.response.data.error) : (err && err.message) || 'Failed to create task';
@@ -364,12 +368,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   const confirmAdminAction = async () => {
     if (!actionPrompt) return;
+    
+    const { taskId, type } = actionPrompt;
     if (!actionReason.trim()) {
-      alert("Please provide a reason for this action.");
+      setError(`Please provide a reason before performing the ${type.toLowerCase()} action.`);
       return;
     }
-
-    const { taskId, type } = actionPrompt;
     setIsLoading(true);
     setError(null);
     try {
@@ -494,29 +498,39 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     }
   };
 
-  const handleAcknowledgeRejection = async (taskId: string) => {
+  const handleAcknowledgeRejection = async (taskId: string, acknowledgedBy: 'DOER' | 'ADMIN') => {
     setIsLoading(true);
     setError(null);
     try {
-      // Clear the rejection by removing the extensionRequest and statusNote, set status back to PENDING
+      const task = tasks.find(t => t.id === taskId);
+      const currentRejections = (task as any)?.rejectionCount || 0;
+
+      // Doer acknowledging → task moves to OVERDUE (extension denied, task is now late)
+      // Admin acknowledging → task moves back to PENDING (admin reviewed & resets)
+      const newStatus = acknowledgedBy === 'DOER' ? 'OVERDUE' : 'PENDING';
+
       await api.put(`/tasks/${taskId}`, {
-        status: 'PENDING',
+        status: newStatus,
         extensionRequest: null,
         statusNote: null,
-        extensionHistory: []
+        rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
       });
 
-      // Optimistic UI update - task goes back to normal PENDING status
-      setTasks(prev => prev.map(task => task.id === taskId ? {
-        ...task,
-        status: 'PENDING',
+      setTasks(prev => prev.map(t => t.id === taskId ? {
+        ...t,
+        status: newStatus,
         extensionRequest: null,
         statusNote: null,
-        extensionHistory: []
-      } : task));
+        rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
+      } : t));
 
       await fetchTasks();
-      addNotification('Acknowledgement', `You acknowledged the extension rejection for Task ${taskId}. Task is now back to normal.`, 'TASK', String(currentUser.id));
+      const msg = acknowledgedBy === 'DOER'
+        ? `Task ${taskId} moved to Overdue — extension rejected and acknowledged.`
+        : `Task ${taskId} reset to Pending by Admin after rejection review.`;
+      addNotification('Acknowledged', msg, 'TASK', String(currentUser.id));
+      // Auto-navigate to destination tab so user sees the task immediately
+      setActiveTab(acknowledgedBy === 'DOER' ? 'OVERDUE' : 'PENDING');
     } catch (e) {
       console.error('Acknowledge rejection failed', e);
       setError('Failed to acknowledge rejection');
@@ -562,16 +576,31 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       // Overdue tab should show calculated OVERDUE items
       matchesTab = (displayStatus === 'OVERDUE');
     } else if (activeTab === 'OBJECTIONS') {
-      // Objections tab shows only pending extension/objection requests
-      // Exclude TERMINATED and COMPLETED tasks (use displayStatus which accounts for completionDate)
-      matchesTab = (t.extensionRequest && t.extensionRequest.status === 'PENDING' && displayStatus !== 'TERMINATED' && displayStatus !== 'COMPLETED');
+      // Objections tab: pending extension requests only
+      // Exclude tasks already acknowledged (OVERDUE/PENDING/COMPLETED/TERMINATED)
+      matchesTab = Boolean(
+        t.extensionRequest &&
+        t.extensionRequest.status === 'PENDING' &&
+        t.status === 'EXTENSION_REQUESTED' &&
+        displayStatus !== 'TERMINATED' &&
+        displayStatus !== 'COMPLETED' &&
+        displayStatus !== 'OVERDUE' &&
+        displayStatus !== 'PENDING'
+      );
     } else if (activeTab === 'TERMINATE') {
       // Terminate tab shows tasks with TERMINATED status
       matchesTab = (t.status === 'TERMINATED');
     } else if (activeTab === 'REJECT') {
-      // Reject tab shows tasks with rejected extension requests
-      // Exclude tasks that are already completed/terminated
-      matchesTab = (t.extensionRequest && t.extensionRequest.status === 'REJECTED' && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED');
+      // Reject tab: rejected extension requests awaiting acknowledgement
+      // Once acknowledged the task moves to OVERDUE or PENDING — exclude those here
+      matchesTab = Boolean(
+        t.extensionRequest &&
+        t.extensionRequest.status === 'REJECTED' &&
+        displayStatus !== 'COMPLETED' &&
+        displayStatus !== 'TERMINATED' &&
+        displayStatus !== 'OVERDUE' &&
+        displayStatus !== 'PENDING'
+      );
     }
 
     // 2. Search Filter (Text)
@@ -587,9 +616,29 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       assignedByName.includes(term);
 
     // 3. Search Filter (Date)
-    const matchesDate = searchDate
-      ? t.dueDate === searchDate || t.createdDate === searchDate
-      : true;
+    let matchesDate = true;
+    if (searchDateFrom || searchDateTo) {
+      const normalizeTaskDate = (dStr?: string | null) => {
+          if (!dStr) return '';
+          try {
+              const d = new Date(dStr);
+              if (isNaN(d.getTime())) return '';
+              return d.toISOString().split('T')[0];
+          } catch {
+              return '';
+          }
+      };
+      
+      const due = normalizeTaskDate(t.dueDate);
+      const created = normalizeTaskDate(t.createdDate);
+      
+      if (searchDateFrom && searchDateTo) {
+        matchesDate = (due && due >= searchDateFrom && due <= searchDateTo) || (created && created >= searchDateFrom && created <= searchDateTo);
+      } else {
+        const singleDate = searchDateFrom || searchDateTo;
+        matchesDate = (due === singleDate) || (created === singleDate);
+      }
+    }
 
     return matchesTab && matchesSearch && matchesDate;
   });
@@ -604,12 +653,21 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const overdueCount = relevantTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
   const objectionCount = relevantTasks.filter(t => {
     const ds = getDisplayStatus(t);
-    return t.extensionRequest && t.extensionRequest.status === 'PENDING' && ds !== 'TERMINATED' && ds !== 'COMPLETED';
+    return Boolean(
+      t.extensionRequest &&
+      t.extensionRequest.status === 'PENDING' &&
+      t.status === 'EXTENSION_REQUESTED' &&
+      ds !== 'TERMINATED' && ds !== 'COMPLETED' && ds !== 'OVERDUE' && ds !== 'PENDING'
+    );
   }).length;
   const terminateCount = relevantTasks.filter(t => getDisplayStatus(t) === 'TERMINATED' || t.status === 'TERMINATED').length;
   const rejectCount = relevantTasks.filter(t => {
     const ds = getDisplayStatus(t);
-    return t.extensionRequest && t.extensionRequest.status === 'REJECTED' && ds !== 'COMPLETED' && ds !== 'TERMINATED';
+    return Boolean(
+      t.extensionRequest &&
+      t.extensionRequest.status === 'REJECTED' &&
+      ds !== 'COMPLETED' && ds !== 'TERMINATED' && ds !== 'OVERDUE' && ds !== 'PENDING'
+    );
   }).length;
 
   const getPriorityColor = (p: string) => {
@@ -633,8 +691,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   // Helper to check if task is "New" (created in last 48 hours)
-  const isNewTask = (dateStr: string) => {
+  const isNewTask = (dateStr?: string) => {
+    if (!dateStr) return false;
     const created = new Date(dateStr);
+    if (isNaN(created.getTime())) return false;
     return differenceInHours(new Date(), created) < 48;
   };
 
@@ -784,15 +844,31 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
           </div>
 
           {/* Date Search Input */}
-          <div className="relative w-full md:w-48">
-            <input
-              type="date"
-              value={searchDate}
-              onChange={(e) => setSearchDate(e.target.value)}
-              className="w-full pl-4 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-slate-600 font-medium"
-            />
-            {searchDate && (
-              <button onClick={() => setSearchDate('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500">
+          <div className="flex w-full md:w-auto gap-2">
+            <div className="relative flex-1 md:w-40 items-center justify-center">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 uppercase tracking-wider pointer-events-none">From</span>
+              <input
+                type="date"
+                value={searchDateFrom}
+                onChange={(e) => setSearchDateFrom(e.target.value)}
+                className="w-full pl-12 pr-2 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-xs font-medium text-slate-700 h-full"
+              />
+            </div>
+            <div className="relative flex-1 md:w-40 items-center justify-center">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 uppercase tracking-wider pointer-events-none">To</span>
+              <input
+                type="date"
+                value={searchDateTo}
+                onChange={(e) => setSearchDateTo(e.target.value)}
+                className="w-full pl-8 pr-2 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-xs font-medium text-slate-700 h-full"
+              />
+            </div>
+            {(searchDateFrom || searchDateTo) && (
+              <button 
+                onClick={() => { setSearchDateFrom(''); setSearchDateTo(''); }} 
+                className="flex items-center justify-center px-3 text-slate-400 hover:text-red-500 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors h-[42px]"
+                title="Clear Dates"
+              >
                 <X size={16} />
               </button>
             )}
@@ -809,7 +885,11 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
           </div>
         ) : (
           filteredTasks
-            .sort((a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()) // Sort by Newest First
+            .sort((a, b) => {
+              const bTime = b.createdDate ? new Date(b.createdDate).getTime() : 0;
+              const aTime = a.createdDate ? new Date(a.createdDate).getTime() : 0;
+              return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+            }) // Sort by Newest First
             .map(task => {
               const displayStatus = getDisplayStatus(task);
               const isTaskOverdue = displayStatus === 'OVERDUE';
@@ -863,6 +943,29 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                       <h3 className="text-xl font-bold text-slate-800 mb-2">{task.title}</h3>
                       <p className="text-slate-500 text-sm leading-relaxed mb-4 max-w-2xl">{task.description}</p>
 
+                      {/* Rejection / Objection counters */}
+                      {((task as any).rejectionCount > 0 || (task as any).objectionCount > 0 ||
+                        (task.extensionHistory && task.extensionHistory.length > 0)) && (() => {
+                        const rejCount = (task as any).rejectionCount ||
+                          (task.extensionHistory || []).filter((h: any) => h.status === 'REJECTED').length;
+                        const objCount = (task as any).objectionCount ||
+                          (task.extensionHistory || []).filter((h: any) => h.status === 'PENDING' || h.status === 'APPROVED' || h.status === 'REJECTED').length;
+                        return (
+                          <div className="flex flex-wrap gap-2 mb-3">
+                            {objCount > 0 && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide bg-purple-50 text-purple-600 border border-purple-200">
+                                <AlertTriangle size={10} /> {objCount} Objection{objCount > 1 ? 's' : ''}
+                              </span>
+                            )}
+                            {rejCount > 0 && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide bg-red-50 text-red-600 border border-red-200">
+                                <Ban size={10} /> {rejCount} Rejection{rejCount > 1 ? 's' : ''}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-3 sm:gap-6 text-sm text-slate-500">
                         <div className="flex items-center gap-2">
                           <UserIcon size={16} className="text-slate-400" />
@@ -874,12 +977,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                         </div>
                         <div className="flex items-center gap-2">
                           <Calendar size={16} className="text-slate-400" />
-                          <span className="font-medium">Assigned: <span className="text-slate-700">{format(new Date(task.createdDate), 'MMM do, yyyy')}</span></span>
+                          <span className="font-medium">Assigned: <span className="text-slate-700">{task.createdDate && !isNaN(new Date(task.createdDate).getTime()) ? format(new Date(task.createdDate), 'MMM do, yyyy') : 'N/A'}</span></span>
                         </div>
                         <div className="flex items-center gap-2">
                           <Calendar size={16} className="text-slate-400" />
                           <span className={`font-medium ${isTaskOverdue ? 'text-red-600 font-bold' : ''}`}>
-                            Due: {format(new Date(task.dueDate), 'MMM do, yyyy')}
+                            Due: {task.dueDate && !isNaN(new Date(task.dueDate).getTime()) ? format(new Date(task.dueDate), 'MMM do, yyyy') : 'N/A'}
                           </span>
                         </div>
                         {task.attachment && (
@@ -952,14 +1055,29 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                                 </p>
                                 <p className={`${task.status === 'HOLD' ? 'text-yellow-700' : (task.status === 'TERMINATED' ? 'text-gray-600' : 'text-red-700')} italic`}>&quot;{task.statusNote}&quot;</p>
                               </div>
-                              {task.extensionRequest?.status === 'REJECTED' && (isAssignee || isAdmin) && (
-                                <button
-                                  onClick={() => handleAcknowledgeRejection(task.id)}
-                                  disabled={isLoading}
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${isLoading ? 'bg-red-300 text-white cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
-                                >
-                                  Acknowledge
-                                </button>
+                              {task.extensionRequest?.status === 'REJECTED' && (isAssignee || isAdmin) && displayStatus !== 'OVERDUE' && displayStatus !== 'PENDING' && (
+                                <div className="flex flex-col gap-1.5">
+                                  {isAssignee && (
+                                    <button
+                                      onClick={() => handleAcknowledgeRejection(task.id, 'DOER')}
+                                      disabled={isLoading}
+                                      title="Acknowledge rejection — task will move to Overdue"
+                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${isLoading ? 'bg-red-300 text-white cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                                    >
+                                      Acknowledge → Overdue
+                                    </button>
+                                  )}
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() => handleAcknowledgeRejection(task.id, 'ADMIN')}
+                                      disabled={isLoading}
+                                      title="Admin: reset task to Pending"
+                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${isLoading ? 'bg-indigo-300 text-white cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                                    >
+                                      Reset → Pending
+                                    </button>
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>

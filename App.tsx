@@ -25,14 +25,11 @@ import { Notepad } from './components/Notepad';
 import { ChecklistSystem } from './components/ChecklistSystem';
 import { DatabaseManager } from './components/DatabaseManager';
 import PMSDashboard from './components/PMSDashboard';
-import ProjectForm from './components/ProjectForm';
-import WeeklyPlanner from './components/WeeklyPlanner';
-import DailyLogForm from './components/DailyLogForm';
 import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, Project, SitePhoto, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance } from './types';
 import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_PROJECTS, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
 import { differenceInMinutes } from 'date-fns';
-import { Menu, Bell } from 'lucide-react';
+import { Menu, Bell, CheckCircle, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from './src/utils/api';
 
 const App: React.FC = () => {
@@ -171,113 +168,8 @@ const App: React.FC = () => {
       }
 
       // Load attendance records from server
-      try {
-        const sat = await safeGet('/attendance');
-        const arrPayload = extractPayload(sat);
-        const arr = ensureArray(arrPayload);
-        const ag: Record<string, AttendanceRecord> = {};
-        arr.forEach((a: any) => {
-          if (!a) return;
-          if (!ag[a.userId]) ag[a.userId] = {};
-          ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
-        });
-        setAttendanceData(ag);
-      } catch (err) {
-        console.warn('Attendance API unreachable', err && (err.stack || err.message || err));
-      }
-
-      // Load timelogs from server
-      try {
-        const stl = await safeGet('/timelogs');
-        const tlPayload = extractPayload(stl);
-        const arr = ensureArray(tlPayload);
-        const ag: Record<string, Record<string, TimeLog>> = {};
-        arr.forEach((t: any) => {
-          if (!t) return;
-          const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
-          if (!ag[t.userId]) ag[t.userId] = {};
-
-          // Calculate duration if not provided by server
-          let duration = t.durationHours;
-          if (!duration && t.startTime && t.endTime) {
-            const start = new Date(t.startTime).getTime();
-            const end = new Date(t.endTime).getTime();
-            const diffMs = end - start;
-            duration = Math.max(0, diffMs / (1000 * 60 * 60));
-          }
-
-          ag[t.userId][dateKey] = { date: dateKey, clockIn: t.startTime || undefined, clockOut: t.endTime || undefined, durationHours: duration } as TimeLog;
-        });
-        setTimeLogs(ag);
-      } catch (err) {
-        console.warn('TimeLog API unreachable', err && (err.stack || err.message || err));
-      }
-
-      // Load projects
-      try {
-        const p = await safeGet('/projects');
-        setProjects(ensureArray(extractPayload(p)));
-      } catch (err) { console.warn('Projects API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load holidays
-      try {
-        const h = await safeGet('/holidays');
-        setHolidays(ensureArray(extractPayload(h)));
-      } catch (err) { console.warn('Holidays API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load reminders (personal reminders stored server-side)
-      try {
-        const r = await safeGet('/reminders');
-        setReminders(ensureArray(extractPayload(r)));
-      } catch (err) { console.warn('Reminders API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load material orders (O2D)
-      try {
-        const o2 = await safeGet('/o2d');
-        const raw = ensureArray(extractPayload(o2));
-        // Normalize server rows that may wrap order under `data`
-        const { normalizeO2dArray } = await import('./src/utils/o2d');
-        setOrders(normalizeO2dArray(raw));
-      } catch (err) { console.warn('O2D API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load notifications for current user if available
-      try {
-        if (currentUser && (currentUser.employeeId || currentUser.id)) {
-          const uid = currentUser.employeeId || currentUser.id;
-          const n = await safeGet(`/notifications/${encodeURIComponent(uid)}`);
-          setNotifications(ensureArray(extractPayload(n)));
-        }
-      } catch (err) { console.warn('Notifications API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load queries
-      try {
-        const q = await safeGet('/queries');
-        setQueries(ensureArray(extractPayload(q)));
-      } catch (err) { console.warn('Queries API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load notepad for current user
-      try {
-        if (currentUser && (currentUser.employeeId || currentUser.id)) {
-          const uid = currentUser.employeeId || currentUser.id;
-          const np = await safeGet(`/notepad/${encodeURIComponent(uid)}`);
-          setNotes(ensureArray(extractPayload(np)));
-        }
-      } catch (err) { console.warn('Notepad API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load leaves for current user or all if admin
-      try {
-        const qUser = currentUser && (currentUser.employeeId || currentUser.id);
-        const leavesUrl = qUser ? `/leave?userId=${encodeURIComponent(qUser)}` : '/leave';
-        const lv = await safeGet(leavesUrl);
-        setLeaveRequests(ensureArray(extractPayload(lv)));
-      } catch (err) { console.warn('Leave API unreachable', err && (err.stack || err.message || err)); }
-
-      // Load finance records
-      try {
-        const f = await safeGet('/finance');
-        setClientFinancials(ensureArray(extractPayload(f)));
-      } catch (err) { console.warn('Finance API unreachable', err && (err.stack || err.message || err)); }
-
+      // NOTE: Removed massive pre-loading here!
+      // This is now handled lazily by the currentView useEffect below
     };
     init();
   }, []);
@@ -338,7 +230,7 @@ const App: React.FC = () => {
   const [attendanceData, setAttendanceData] = useState<Record<string, AttendanceRecord>>({});
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
-  const [timeLogs, setTimeLogs] = useState<Record<string, Record<string, TimeLog>>>({});
+  const [timeLogs, setTimeLogs] = useState<Record<string, Record<string, TimeLog[]>>>({});
   const [tasks, setTasks] = React.useState<Task[]>(INITIAL_TASKS); // Tasks now fetched from backend, no longer persisted to localStorage
   const [orders, setOrders] = useState<MaterialOrder[]>([]);
   const [queries, setQueries] = useState<Query[]>([]);
@@ -355,6 +247,177 @@ const App: React.FC = () => {
   const [checklistInstances, setChecklistInstances] = useState<ChecklistInstance[]>(INITIAL_CHECKLIST_INSTANCES);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null);
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  // Fetch data specific to the current view ON DEMAND (lazy loading)
+  useEffect(() => {
+    if (!currentUser) return;
+    
+    // Helper to run a specific fetch safely
+    const fetchForView = async () => {
+      try {
+        switch (currentView) {
+          case ViewMode.DASHBOARD:
+          case ViewMode.EMPLOYEE_HOME:
+          case ViewMode.ATTENDANCE:
+          case ViewMode.TIME_LOGS:
+          case ViewMode.PERFORMANCE: {
+            // Fetch Attendance
+            const sat = await safeGet('/attendance');
+            const arr = ensureArray(extractPayload(sat));
+            const ag: Record<string, AttendanceRecord> = {};
+            arr.forEach((a: any) => {
+              if (!a) return;
+              if (!ag[a.userId]) ag[a.userId] = {};
+              ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+            });
+            setAttendanceData(ag);
+
+            // Fetch Timelogs
+            const stl = await safeGet('/timelogs');
+            const tlPayload = ensureArray(extractPayload(stl));
+            const tlAg: Record<string, Record<string, TimeLog[]>> = {};
+            tlPayload.forEach((t: any) => {
+              if (!t) return;
+              const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
+              if (!tlAg[t.userId]) tlAg[t.userId] = {};
+              if (!tlAg[t.userId][dateKey]) tlAg[t.userId][dateKey] = [];
+              let duration = t.durationHours;
+              if (!duration && t.startTime && t.endTime) duration = Math.max(0, (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 3600000);
+              tlAg[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration });
+            });
+            setTimeLogs(tlAg);
+            
+            // Also refresh tasks when hitting Performance/Dashboard
+            const tRes = await safeGet('/tasks');
+            setTasks(ensureArray(extractPayload(tRes)));
+
+            // Fetch Checklists to display stats natively
+            try {
+              const ctRes = await safeGet('/checklist-templates');
+              const mappedTpl = ensureArray(extractPayload(ctRes)).map((x: any) => ({
+                 id: x.id,
+                 taskName: x.data?.taskName || x.taskName,
+                 doerId: x.data?.doerId || x.doerId,
+                 buddyId: x.data?.buddyId || x.buddyId,
+                 department: x.data?.department || x.department,
+                 startDate: x.data?.startDate || x.startDate,
+                 config: x.data?.config ?? x.config ?? { frequency: 'DAILY' },
+                 active: x.data?.active ?? x.active ?? true
+              }));
+              setChecklistTemplates(mappedTpl);
+              
+              const insts: any[] = [];
+              await Promise.all(mappedTpl.map(async (tpl) => {
+                 try {
+                   const ir = await safeGet(`/checklists/${encodeURIComponent(tpl.id)}`);
+                   const rows = ensureArray(extractPayload(ir));
+                   rows.forEach((it: any) => {
+                     try {
+                       const p = JSON.parse(it.item);
+                       insts.push({
+                         ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId,
+                         department: p.department ?? tpl.department,
+                         taskName: p.taskName ?? tpl.taskName,
+                         templateId: String(tpl.id),
+                         status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'),
+                         completedDate: p.completedDate
+                       });
+                     } catch {
+                       insts.push({
+                         id: it.id, templateId: String(tpl.id), date: it.item,
+                         status: it.done ? 'COMPLETED' : 'PENDING',
+                         dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName
+                       });
+                     }
+                   });
+                 } catch { /* ignore */ }
+              }));
+              setChecklistInstances(insts);
+            } catch (e) {
+              console.warn('Failed to load checklists in dashboard', e);
+            }
+            break;
+          }
+          case ViewMode.FMS_TASKS:
+          case ViewMode.EMPLOYEE_TASKS: {
+            const tRes = await safeGet('/tasks');
+            setTasks(ensureArray(extractPayload(tRes)));
+            break;
+          }
+          case ViewMode.PROJECTS:
+          case ViewMode.EMPLOYEE_PROJECTS: {
+            const p = await safeGet('/projects');
+            setProjects(ensureArray(extractPayload(p)));
+            break;
+          }
+          case ViewMode.CALENDAR:
+          case ViewMode.HOLIDAYS: {
+            const h = await safeGet('/holidays');
+            setHolidays(ensureArray(extractPayload(h)));
+            const r = await safeGet('/reminders');
+            setReminders(ensureArray(extractPayload(r)));
+            break;
+          }
+          case ViewMode.MATERIAL_ORDERS:
+          case ViewMode.EMPLOYEE_ORDERS: {
+            const o2 = await safeGet('/o2d');
+            const { normalizeO2dArray } = await import('./src/utils/o2d');
+            setOrders(normalizeO2dArray(ensureArray(extractPayload(o2))));
+            break;
+          }
+          case ViewMode.QUERIES:
+          case ViewMode.EMPLOYEE_QUERIES: {
+            const q = await safeGet('/queries');
+            setQueries(ensureArray(extractPayload(q)));
+            break;
+          }
+          case ViewMode.NOTEPAD: {
+             const uid = currentUser.employeeId || currentUser.id;
+             if (uid) {
+               const np = await safeGet(`/notepad/${encodeURIComponent(uid)}`);
+               setNotes(ensureArray(extractPayload(np)));
+             }
+             break;
+          }
+          case ViewMode.LEAVES: {
+            const qUser = currentUser && (currentUser.employeeId || currentUser.id);
+            const leavesUrl = currentUser.role === 'ADMIN' ? '/leave' : (qUser ? `/leave?userId=${encodeURIComponent(qUser)}` : '/leave');
+            const lv = await safeGet(leavesUrl);
+            setLeaveRequests(ensureArray(extractPayload(lv)));
+            break;
+          }
+          case ViewMode.FINANCE: {
+            const f = await safeGet('/finance');
+            setClientFinancials(ensureArray(extractPayload(f)));
+            break;
+          }
+        }
+        
+        // Fetch notifications regularly or on view change so they are updated
+        if (currentUser && (currentUser.employeeId || currentUser.id)) {
+           const uid = currentUser.employeeId || currentUser.id;
+           const n = await safeGet(`/notifications/${encodeURIComponent(uid)}`);
+           setNotifications(ensureArray(extractPayload(n)));
+        }
+      } catch (err) {
+        console.warn('Lazy fetch for view failed', currentView, err);
+      }
+    };
+    
+    fetchForView();
+  }, [currentView, currentUser]);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+    setToast({ message, type });
+  };
 
   // --- Handlers ---
 
@@ -473,6 +536,11 @@ const App: React.FC = () => {
       time: new Date().toLocaleTimeString(),
       read: false, type, targetUser
     };
+    
+    // Show on-screen toast for immediate visibility
+    const toastType = type === 'SYSTEM' || type === 'ORDER' ? 'info' : (type === 'TASK' ? 'success' : 'info');
+    showToast(`${title}: ${message}`, toastType as any);
+
     // Optimistically update UI
     setNotifications(prev => [newNote, ...prev]);
 
@@ -508,25 +576,50 @@ const App: React.FC = () => {
       }
     }
 
-    const tId = `T-${empId}-${dateKey}`;
+    const tId = `TL-${empId}-${Date.now()}`;
     const aId = `A-${empId}-${dateKey}`;
 
     try {
       // Create timelog
       await api.post('/timelogs', { id: tId, userId: empId, startTime: now.toISOString() }, { withCredentials: true });
       // Create attendance record (value may be null until clock out)
+      // Note: Attendance usually tracks one record per day, but timelogs track sessions.
       await api.post('/attendance', { id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null }, { withCredentials: true });
 
+      const newLog: TimeLog = { id: tId, date: dateKey, clockIn: now.toISOString() };
+
       // Update local state to reflect server
-      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { date: dateKey, clockIn: now.toISOString() } } }));
+      setTimeLogs(prev => {
+        const userLogs = prev[empId] || {};
+        const dayLogs = userLogs[dateKey] || [];
+        return {
+          ...prev,
+          [empId]: {
+            ...userLogs,
+            [dateKey]: [...dayLogs, newLog]
+          }
+        };
+      });
       setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
       addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
+      addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
     } catch (err) {
       console.warn('Clock-in server call failed, falling back to local update', err);
-      // Fallback to local only
-      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { date: dateKey, clockIn: now.toISOString() } } }));
+      const newLog: TimeLog = { id: tId, date: dateKey, clockIn: now.toISOString() };
+      setTimeLogs(prev => {
+        const userLogs = prev[empId] || {};
+        const dayLogs = userLogs[dateKey] || [];
+        return {
+          ...prev,
+          [empId]: {
+            ...userLogs,
+            [dateKey]: [...dayLogs, newLog]
+          }
+        };
+      });
       setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
       addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
+      addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
     }
   };
 
@@ -535,15 +628,21 @@ const App: React.FC = () => {
     const empId = currentUser.employeeId;
     const now = new Date();
     const dateKey = formatDateKey(now);
-    const currentLog = timeLogs[empId]?.[dateKey];
+    const dayLogs = timeLogs[empId]?.[dateKey] || [];
+    const currentLog = dayLogs.find(l => !l.clockOut);
+
     if (!currentLog?.clockIn) return;
     const diffMinutes = differenceInMinutes(now, new Date(currentLog.clockIn));
     const hoursWorked = diffMinutes / 60;
 
-    const tId = `T-${empId}-${dateKey}`;
+    const tId = currentLog.id || `TL-${empId}-${dateKey}`;
     const aId = `A-${empId}-${dateKey}`;
 
-    const computedVal: AttendanceValue = hoursWorked >= 7.5 ? 1 : (hoursWorked >= 6 ? 0.75 : (hoursWorked >= 4 ? 0.5 : (hoursWorked >= 2 ? 0.25 : 0)));
+    // Compute day total hours for attendance value
+    const otherLogsHours = dayLogs.filter(l => l.id !== currentLog.id).reduce((sum, l) => sum + (l.durationHours || 0), 0);
+    const totalDayHours = otherLogsHours + hoursWorked;
+
+    const computedVal: AttendanceValue = totalDayHours >= 7.5 ? 1 : (totalDayHours >= 6 ? 0.75 : (totalDayHours >= 4 ? 0.5 : (totalDayHours >= 2 ? 0.25 : 0)));
 
     try {
       // Update timelog endTime
@@ -553,14 +652,51 @@ const App: React.FC = () => {
       await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: now.toISOString(), value: computedVal }, { withCredentials: true });
 
       // Update local state
-      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { ...currentLog, clockOut: now.toISOString(), durationHours: hoursWorked } } }));
+      setTimeLogs(prev => {
+        const userLogs = prev[empId] || {};
+        const dLogs = userLogs[dateKey] || [];
+        const updatedLogs = dLogs.map(l => l.id === currentLog.id ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
+        return {
+          ...prev,
+          [empId]: {
+            ...userLogs,
+            [dateKey]: updatedLogs
+          }
+        };
+      });
       setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
-      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(hoursWorked)}`, 'SYSTEM', String(empId));
+      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
+      addNotification('System Alert', `${currentUser.name} clocked out out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
     } catch (err) {
       console.warn('Clock-out server call failed, falling back to local update', err);
-      setTimeLogs(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: { ...currentLog, clockOut: now.toISOString(), durationHours: hoursWorked } } }));
+      setTimeLogs(prev => {
+        const userLogs = prev[empId] || {};
+        const dLogs = userLogs[dateKey] || [];
+        const updatedLogs = dLogs.map(l => l.id === currentLog.id ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
+        return {
+          ...prev,
+          [empId]: {
+            ...userLogs,
+            [dateKey]: updatedLogs
+          }
+        };
+      });
       setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
-      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(hoursWorked)}`, 'SYSTEM', String(empId));
+      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
+      addNotification('System Alert', `${currentUser.name} clocked out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
+    }
+  };
+
+  const handleUpdateProfile = async (empId: string, data: Partial<Employee>) => {
+    try {
+      await api.put(`/employees/${encodeURIComponent(empId)}`, data, { withCredentials: true });
+      const res = await safeGet('/employees');
+      setEmployees(ensureArray(extractPayload(res)));
+      showToast('Profile Updated Successfully', 'success');
+      addNotification('Security Hub', 'Compliance documentation or profile details have been updated.', 'SYSTEM', empId);
+    } catch (err) {
+      console.error('Failed to update profile', err);
+      showToast('Profile update failed', 'error');
     }
   };
 
@@ -630,7 +766,7 @@ const App: React.FC = () => {
         case ViewMode.PMS_ADMIN: return <PMSDashboard />;
         case ViewMode.FINANCE: return <FinanceDashboard {...commonProps} clientFinancials={clientFinancials} setClientFinancials={setClientFinancials} vendorFinancials={vendorFinancials} setVendorFinancials={setVendorFinancials} />;
         case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} />;
-        case ViewMode.PERFORMANCE: return <PerformanceReport {...commonProps} />;
+        case ViewMode.PERFORMANCE: return <PerformanceReport {...commonProps} checklistInstances={checklistInstances} checklistTemplates={checklistTemplates} />;
         case ViewMode.QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
         case ViewMode.CHAT: return <ChatSystem messages={chatMessages} setMessages={setChatMessages} groups={chatGroups} setGroups={setChatGroups} {...commonProps} />;
         case ViewMode.NOTEPAD: return <Notepad {...commonProps} />;
@@ -658,14 +794,14 @@ const App: React.FC = () => {
         case ViewMode.EMPLOYEE_QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
-        default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={() => { }} {...commonProps} />;
+        default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
       }
     }
   };
 
   return (
-    <div className="flex h-screen w-full font-sans text-slate-900 overflow-hidden relative">
-      <div className="fixed inset-0 z-0 bg-slate-50 pointer-events-none">
+    <div className="flex h-screen w-full font-sans text-slate-900 overflow-hidden relative print:h-auto print:overflow-visible">
+      <div className="fixed inset-0 z-0 bg-slate-50 pointer-events-none print:hidden">
         <div className="absolute top-0 -left-4 w-96 h-96 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob"></div>
         <div className="absolute top-0 -right-4 w-96 h-96 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000"></div>
         <div className="absolute -bottom-32 left-20 w-96 h-96 bg-pink-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-4000"></div>
@@ -698,7 +834,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden relative">
+        <div className="flex-1 overflow-hidden relative print:overflow-visible print:h-auto">
           <div key={currentView} className="h-full animate-fade-in-up">
             {renderView()}
           </div>
@@ -708,6 +844,39 @@ const App: React.FC = () => {
       {showNotifications && (
         <div className="fixed top-20 right-4 w-full max-w-sm z-[100] animate-in slide-in-from-right-4 fade-in duration-300">
           <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onCloseOverlay={() => setShowNotifications(false)} />
+        </div>
+      )}
+
+      {/* Global Toast Notification */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 left-6 md:left-auto md:w-96 z-[200] animate-fade-in-up">
+          <div className={`p-4 rounded-2xl shadow-2xl border backdrop-blur-md flex items-start gap-3 ${
+            toast.type === 'success' ? 'bg-emerald-50/90 border-emerald-100 text-emerald-900' :
+            toast.type === 'error' ? 'bg-rose-50/90 border-rose-100 text-rose-900' :
+            toast.type === 'warning' ? 'bg-amber-50/90 border-amber-100 text-amber-900' :
+            'bg-indigo-50/90 border-indigo-100 text-indigo-900'
+          }`}>
+            <div className={`p-2 rounded-xl shrink-0 ${
+              toast.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
+              toast.type === 'error' ? 'bg-rose-100 text-rose-600' :
+              toast.type === 'warning' ? 'bg-amber-100 text-amber-600' :
+              'bg-indigo-100 text-indigo-600'
+            }`}>
+              {toast.type === 'success' && <CheckCircle size={18} />}
+              {toast.type === 'error' && <AlertCircle size={18} />}
+              {toast.type === 'warning' && <AlertTriangle size={18} />}
+              {toast.type === 'info' && <Info size={18} />}
+            </div>
+            <div className="flex-1 pt-1">
+              <p className="text-sm font-bold leading-tight">{toast.message}</p>
+            </div>
+            <button 
+              onClick={() => setToast(null)}
+              className="p-1 hover:bg-black/5 rounded-lg transition-colors shrink-0"
+            >
+              <X size={16} className="opacity-40" />
+            </button>
+          </div>
         </div>
       )}
     </div>
