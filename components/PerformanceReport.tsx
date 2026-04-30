@@ -2,8 +2,8 @@
 import React, { useState } from 'react';
 import { Employee, Task, AttendanceRecord, ChecklistInstance, ChecklistTemplate, TimeLog } from '../types';
 import { BarChart, Printer, UserCircle, CalendarCheck, ClipboardList, AlertTriangle, Filter, X, Calendar, CheckCircle, AlertCircle, Pause, XOctagon, ListChecks, Clock, ArrowLeft, TrendingUp } from 'lucide-react';
-import { format } from 'date-fns';
-import { COMPANY_LOGO, LEAVE_QUOTA_YEARLY } from '../constants';
+import { format, isPast } from 'date-fns';
+import { COMPANY_LOGO } from '../constants';
 
 interface PerformanceReportProps {
     employees: Employee[];
@@ -14,72 +14,59 @@ interface PerformanceReportProps {
     timeLogs?: Record<string, Record<string, TimeLog[]>>;
 }
 
-// Normalize a date string (ISO or with time) to YYYY-MM-DD, return empty string if invalid
-const normalizeDate = (d?: string | null) => {
-    if (!d) return '';
-    try {
-        const dt = new Date(d);
-        if (isNaN(dt.getTime())) return '';
-        return dt.toISOString().split('T')[0];
-    } catch (e) { return ''; }
+// ── Exact mirror of TaskManager's getDisplayStatus ──────────────────────────
+// Both helpers must stay in sync so KPI numbers match the Task Manager tabs.
+
+const isSameDay = (d1: Date, d2: Date) =>
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate();
+
+/**
+ * Returns the display status for a task — identical logic to TaskManager.getDisplayStatus.
+ * PENDING tasks whose due-date is strictly in the past (not today) become OVERDUE.
+ */
+const getDisplayStatus = (task: Task): string => {
+    if (task.completionDate) return 'COMPLETED';
+
+    const dueDateObj = task.dueDate ? new Date(task.dueDate) : null;
+    const isValidDate = dueDateObj && !isNaN(dueDateObj.getTime());
+
+    if (
+        (task.status || '').toUpperCase() === 'PENDING' &&
+        isValidDate &&
+        isPast(dueDateObj!) &&
+        !isSameDay(new Date(), dueDateObj!)
+    ) {
+        return 'OVERDUE';
+    }
+
+    return task.status || 'PENDING';
 };
 
-// Helper function to get status color and icon
+// Alias kept for the bulk-print task table (uses same logic)
+const getActualTaskStatus = getDisplayStatus;
+
 const getStatusColor = (status: string) => {
     switch (status?.toUpperCase()) {
-        case 'PENDING':
-            return { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: AlertCircle };
-        case 'HOLD':
-            return { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: Pause };
-        case 'OVERDUE':
-            return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: AlertTriangle };
-        case 'TERMINATED':
-            return { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: XOctagon };
-        case 'EXTENSION_REQUESTED':
-            return { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: Clock };
-        default: // 'COMPLETED' and others
-            return { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: CheckCircle };
+        case 'PENDING':          return { bg: 'bg-blue-50',   border: 'border-blue-200',   text: 'text-blue-700',   icon: AlertCircle };
+        case 'HOLD':             return { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', icon: Pause };
+        case 'OVERDUE':          return { bg: 'bg-red-50',    border: 'border-red-200',    text: 'text-red-700',    icon: AlertTriangle };
+        case 'TERMINATED':       return { bg: 'bg-gray-50',   border: 'border-gray-200',   text: 'text-gray-700',   icon: XOctagon };
+        case 'EXTENSION_REQUESTED': return { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: Clock };
+        default:                 return { bg: 'bg-green-50',  border: 'border-green-200',  text: 'text-green-700',  icon: CheckCircle };
     }
 };
 
 const getStatusBadgeColor = (status: string) => {
     switch (status?.toUpperCase()) {
-        case 'PENDING':
-            return 'bg-blue-100 text-blue-700';
-        case 'HOLD':
-            return 'bg-yellow-100 text-yellow-700';
-        case 'OVERDUE':
-            return 'bg-red-100 text-red-700';
-        case 'TERMINATED':
-            return 'bg-gray-100 text-gray-700';
-        case 'EXTENSION_REQUESTED':
-            return 'bg-purple-100 text-purple-700';
-        default: // 'COMPLETED' and others
-            return 'bg-green-100 text-green-700';
+        case 'PENDING':          return 'bg-blue-100 text-blue-700';
+        case 'HOLD':             return 'bg-yellow-100 text-yellow-700';
+        case 'OVERDUE':          return 'bg-red-100 text-red-700';
+        case 'TERMINATED':       return 'bg-gray-100 text-gray-700';
+        case 'EXTENSION_REQUESTED': return 'bg-purple-100 text-purple-700';
+        default:                 return 'bg-green-100 text-green-700';
     }
-};
-
-// Helper function to get actual task status considering completion and due date
-const getActualTaskStatus = (task: Task): string => {
-    // If task has a completionDate, consider it COMPLETED regardless of other flags
-    if (task.completionDate) return 'COMPLETED';
-
-    // HOLD tasks should always stay as HOLD, never convert to OVERDUE
-    if ((task.status || '').toUpperCase() === 'HOLD') {
-        return 'HOLD';
-    }
-
-    // For PENDING and EXTENSION_REQUESTED, check if overdue
-    const st = (task.status || '').toUpperCase();
-    if (st === 'PENDING' || st === 'EXTENSION_REQUESTED') {
-        const today = new Date().toISOString().split('T')[0];
-        const due = normalizeDate(task.dueDate);
-        if (due && due < today) {
-            return 'OVERDUE';
-        }
-    }
-
-    return task.status || 'PENDING';
 };
 
 export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData, checklistInstances = [], checklistTemplates = [], timeLogs = {} }) => {
@@ -91,65 +78,66 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
     const [toDate, setToDate] = useState('');
 
     const getEmployeeStats = (empId: string) => {
-        // Tasks may store assignee in different fields depending on source: assignedTo (employee id string), assignedToEmployeeId, or assigned_to (numeric user id)
+        // Collect tasks assigned to this employee (handle camelCase and snake_case field names)
         let empTasks = tasks.filter(t => {
             const tx: any = t as any;
-            const assigneeCamel = tx.assignedTo || tx.assignedToEmployeeId || tx.assignedToName || '';
-            const assigneeSnake = tx.assigned_to !== undefined && tx.assigned_to !== null ? String(tx.assigned_to) : '';
-            return String(assigneeCamel) === String(empId) || String(assigneeSnake) === String(empId);
+            const assigneeCamel = String(tx.assignedTo || tx.assignedToEmployeeId || tx.assignedToName || '');
+            const assigneeSnake = tx.assigned_to != null ? String(tx.assigned_to) : '';
+            return assigneeCamel === String(empId) || assigneeSnake === String(empId);
         });
 
-        // Filter by Date Range if applied
+        // Optional date-range filter — for completed/overdue tasks match against completionDate,
+        // for all others match against dueDate. This ensures a date search for e.g. "April"
+        // returns tasks actually completed in April, not just tasks that were due in April.
         if (fromDate && toDate) {
             empTasks = empTasks.filter(t => {
-                // Check if Due Date falls within range using normalized dates
+                const ds = getDisplayStatus(t);
+                const isFinished = ds === 'COMPLETED' || ds === 'OVERDUE' || ds === 'TERMINATED';
+                const normalizeDate = (dStr?: string | null) => {
+                    if (!dStr) return '';
+                    try { const d = new Date(dStr); return isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0]; } catch { return ''; }
+                };
                 const due = normalizeDate(t.dueDate);
-                return due && due >= fromDate && due <= toDate;
+                const completion = isFinished ? normalizeDate(t.completionDate) : '';
+                // Match if dueDate OR completionDate falls in range
+                return (due && due >= fromDate && due <= toDate) ||
+                       (completion && completion >= fromDate && completion <= toDate);
             });
         }
 
-        // Active tasks are used for all KPI score calculations (excluding HOLD and TERMINATED)
-        const activeTasks = empTasks.filter(t => {
-            const st = (t.status || '').toUpperCase();
-            return st !== 'HOLD' && st !== 'TERMINATED';
-        });
+        // ── Use the SAME getDisplayStatus as Task Manager for every task ──
+        // This is the single source of truth — all counts derive from here.
+        const withStatus = empTasks.map(t => ({ task: t, ds: getDisplayStatus(t) }));
 
-        const total = activeTasks.length;
-        const completed = activeTasks.filter(t => t.completionDate || t.status === 'COMPLETED' || t.status?.toUpperCase() === 'COMPLETED').length;
+        // Assigned = everything except TERMINATED (mirrors Task Manager "All" tab minus Terminate)
+        const assignedTasks = withStatus.filter(({ ds }) => ds !== 'TERMINATED');
+        const total = assignedTasks.length;
 
-        // Calculate overdue: check both status field and due date
-        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-        const overdueOpen = activeTasks.filter(t => {
-            if (t.completionDate) return false; // Completed tasks are not overdue
-            if (t.status?.toUpperCase() === 'COMPLETED') return false;
-            // Check if status is marked as OVERDUE or if due date has passed (normalize date)
-            if ((t.status || '').toUpperCase() === 'OVERDUE') return true;
-            const due = normalizeDate(t.dueDate);
-            if (due && due < today) return true;
-            return false;
+        // Done
+        const completed = assignedTasks.filter(({ ds }) => ds === 'COMPLETED').length;
+
+        // Overdue — exact same predicate as Task Manager OVERDUE tab
+        const overdue = assignedTasks.filter(({ ds }) => ds === 'OVERDUE').length;
+
+        // Pending — exact same predicate as Task Manager PENDING tab
+        const pending = assignedTasks.filter(({ ds }) => ds === 'PENDING').length;
+
+        // Objections — exact same predicate as Task Manager OBJECTIONS tab
+        const objections = assignedTasks.filter(({ task, ds }) => {
+            const t = task as any;
+            return Boolean(
+                t.extensionRequest &&
+                t.extensionRequest.status === 'PENDING' &&
+                task.status === 'EXTENSION_REQUESTED' &&
+                ds !== 'TERMINATED' && ds !== 'COMPLETED' && ds !== 'OVERDUE' && ds !== 'PENDING'
+            );
         }).length;
 
-        // Debug: if there are overdue counts, log the candidate tasks so we can trace false positives
-        if (overdueOpen > 0) {
-            try {
-                const candidates = activeTasks.filter(t => {
-                    if (t.completionDate) return false;
-                    if (t.status?.toUpperCase() === 'COMPLETED') return false;
-                    if ((t.status || '').toUpperCase() === 'OVERDUE') return true;
-                    const due = normalizeDate(t.dueDate);
-                    return !!(due && due < today);
-                }).map(t => ({ id: t.id, title: t.title, status: t.status, dueDate: normalizeDate(t.dueDate), completionDate: t.completionDate }));
-                console.debug('PerformanceReport: overdue candidates for emp', empId, candidates);
-            } catch (e) { /* ignore logging errors */ }
-        }
+        // Task Score % — incomplete / total (same formula used before)
+        const incompleteTasks = total - completed;
+        const completionRate = total > 0 ? Math.round((incompleteTasks / total) * 100) : 0;
 
-        // Pending tasks represent all work that is not yet completed (includes overdue, hold, etc.)
-        const pendingTasks = total - completed;
-
-        // Performance Score represents the "Pending Workload" (0% = All Tasks Completed, 100% = No Tasks Completed)
-        const completionRate = total > 0 ? Math.round((pendingTasks / total) * 100) : 0;
-
-        return { total, completed, overdue: overdueOpen, pending: pendingTasks, completionRate, empTasks };
+        return { total, completed, overdue, pending, objections, completionRate, empTasks };
     };
 
     const getAttendanceStats = (empId: string) => {
@@ -222,7 +210,8 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
     };
 
     const getWorkAnalysis = (empId: string) => {
-        if (!timeLogs || !timeLogs[empId]) return null;
+        const defaultStats = { totalHours: 0, workingDays: 0, lateCount: 0, missedCount: 0, tier: "INSUFFICIENT DATA", tierColor: "slate" };
+        if (!timeLogs || !timeLogs[empId]) return defaultStats;
 
         const empLogsDict = timeLogs[empId];
         let inRange: TimeLog[] = [];
@@ -271,7 +260,7 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
             else { tier = "UNDER REVIEW"; tierColor = "rose"; }
         }
 
-        if (totalHours === 0 && workingDays === 0) return null;
+        if (totalHours === 0 && workingDays === 0) return defaultStats;
 
         return {
             totalHours,
@@ -409,7 +398,6 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                         </div>
                         {(() => {
                             const analysis = getWorkAnalysis(selectedEmployee.id);
-                            if (!analysis) return <p className="text-xs text-slate-400 italic">No time log data available.</p>;
                             return (
                                 <div className="grid grid-cols-5 gap-3 print:gap-2">
                                     <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 print:p-2">
@@ -453,49 +441,47 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                         })()}
                     </div>
 
-                    {/* ── ATTENDANCE + TASK EXECUTION (side by side) ── */}
-                    <div className="grid grid-cols-6 gap-4 mb-4 print:gap-3 print:mb-3">
-                        {/* Attendance */}
-                        <div className="col-span-6 md:col-span-2 print:col-span-2">
-                            <div className="flex items-center gap-2 mb-2.5 print:mb-2">
-                                <div className="w-1 h-4 bg-indigo-500 rounded-full"></div>
-                                <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">
-                                    Attendance
-                                    <span className="ml-1 font-bold text-slate-400 normal-case tracking-normal">{fromDate ? '(period)' : '(year)'}</span>
-                                </h3>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 print:gap-1.5">
-                                {[
-                                    { label: 'Present', value: attendanceStats.present.toFixed(1), bg: 'bg-emerald-50', border: 'border-emerald-100', num: 'text-emerald-700', lbl: 'text-emerald-500' },
-                                    { label: 'Absent', value: String(attendanceStats.absent), bg: 'bg-red-50', border: 'border-red-100', num: 'text-red-700', lbl: 'text-red-500' },
-                                ].map(({ label, value, bg, border, num, lbl }) => (
-                                    <div key={label} className={`${bg} border ${border} rounded-xl p-3 print:p-2 print:rounded-lg text-center`}>
-                                        <div className={`text-2xl font-black ${num} leading-none print:text-lg`}>{value}</div>
-                                        <div className={`text-[8px] font-extrabold ${lbl} uppercase mt-1.5 print:mt-1 tracking-wider print:text-[7px]`}>{label}</div>
-                                    </div>
-                                ))}
-                            </div>
+                    {/* ── ATTENDANCE ── */}
+                    <div className="mb-4 print:mb-3">
+                        <div className="flex items-center gap-2 mb-2.5 print:mb-2">
+                            <div className="w-1 h-4 bg-indigo-500 rounded-full"></div>
+                            <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">
+                                Attendance
+                                <span className="ml-1 font-bold text-slate-400 normal-case tracking-normal">{fromDate ? '(period)' : '(year)'}</span>
+                            </h3>
                         </div>
+                        <div className="grid grid-cols-2 gap-2 print:gap-1.5">
+                            {[
+                                { label: 'Present', value: attendanceStats.present.toFixed(1), bg: 'bg-emerald-50', border: 'border-emerald-100', num: 'text-emerald-700', lbl: 'text-emerald-500' },
+                                { label: 'Absent', value: String(attendanceStats.absent), bg: 'bg-red-50', border: 'border-red-100', num: 'text-red-700', lbl: 'text-red-500' },
+                            ].map(({ label, value, bg, border, num, lbl }) => (
+                                <div key={label} className={`${bg} border ${border} rounded-xl p-3 print:p-2 print:rounded-lg text-center`}>
+                                    <div className={`text-2xl font-black ${num} leading-none print:text-lg`}>{value}</div>
+                                    <div className={`text-[8px] font-extrabold ${lbl} uppercase mt-1.5 print:mt-1 tracking-wider print:text-[7px]`}>{label}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
 
-                        {/* Task Execution */}
-                        <div className="col-span-6 md:col-span-4 print:col-span-4">
-                            <div className="flex items-center gap-2 mb-2.5 print:mb-2">
-                                <div className="w-1 h-4 bg-violet-500 rounded-full"></div>
-                                <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">Task Execution</h3>
-                            </div>
-                            <div className="grid grid-cols-4 gap-2 print:gap-1.5">
-                                {[
-                                    { label: 'Assigned', value: String(selectedStats.total), bg: 'bg-slate-50', border: 'border-slate-200', num: 'text-slate-800', lbl: 'text-slate-400' },
-                                    { label: 'Done', value: String(selectedStats.completed), bg: 'bg-green-50', border: 'border-green-100', num: 'text-green-700', lbl: 'text-green-500' },
-                                    { label: 'Pending', value: String(selectedStats.pending), bg: 'bg-blue-50', border: 'border-blue-100', num: 'text-blue-700', lbl: 'text-blue-500' },
-                                    { label: 'Overdue', value: String(selectedStats.overdue), bg: selectedStats.overdue > 0 ? 'bg-red-50' : 'bg-slate-50', border: selectedStats.overdue > 0 ? 'border-red-100' : 'border-slate-200', num: selectedStats.overdue > 0 ? 'text-red-700' : 'text-slate-300', lbl: selectedStats.overdue > 0 ? 'text-red-500' : 'text-slate-300' },
-                                ].map(({ label, value, bg, border, num, lbl }) => (
-                                    <div key={label} className={`${bg} border ${border} rounded-xl p-3 print:p-2 print:rounded-lg text-center`}>
-                                        <div className={`text-2xl font-black ${num} leading-none print:text-lg`}>{value}</div>
-                                        <div className={`text-[8px] font-extrabold ${lbl} uppercase mt-1.5 print:mt-1 tracking-wider print:text-[7px]`}>{label}</div>
-                                    </div>
-                                ))}
-                            </div>
+                    {/* ── TASK EXECUTION ── */}
+                    <div className="mb-4 print:mb-3">
+                        <div className="flex items-center gap-2 mb-2.5 print:mb-2">
+                            <div className="w-1 h-4 bg-violet-500 rounded-full"></div>
+                            <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em] print:text-[9px]">Task Execution</h3>
+                        </div>
+                        <div className="grid grid-cols-5 gap-2 print:gap-1.5">
+                            {[
+                                { label: 'Assigned', value: String(selectedStats.total), bg: 'bg-slate-50', border: 'border-slate-200', num: 'text-slate-800', lbl: 'text-slate-400' },
+                                { label: 'Done', value: String(selectedStats.completed), bg: 'bg-green-50', border: 'border-green-100', num: 'text-green-700', lbl: 'text-green-500' },
+                                { label: 'Pending', value: String(selectedStats.pending), bg: 'bg-blue-50', border: 'border-blue-100', num: 'text-blue-700', lbl: 'text-blue-500' },
+                                { label: 'Overdue', value: String(selectedStats.overdue), bg: selectedStats.overdue > 0 ? 'bg-red-50' : 'bg-slate-50', border: selectedStats.overdue > 0 ? 'border-red-100' : 'border-slate-200', num: selectedStats.overdue > 0 ? 'text-red-700' : 'text-slate-300', lbl: selectedStats.overdue > 0 ? 'text-red-500' : 'text-slate-300' },
+                                { label: 'Objections', value: String(selectedStats.objections), bg: selectedStats.objections > 0 ? 'bg-purple-50' : 'bg-slate-50', border: selectedStats.objections > 0 ? 'border-purple-100' : 'border-slate-200', num: selectedStats.objections > 0 ? 'text-purple-700' : 'text-slate-300', lbl: selectedStats.objections > 0 ? 'text-purple-500' : 'text-slate-300' },
+                            ].map(({ label, value, bg, border, num, lbl }) => (
+                                <div key={label} className={`${bg} border ${border} rounded-xl p-3 print:p-2 print:rounded-lg text-center`}>
+                                    <div className={`text-2xl font-black ${num} leading-none print:text-lg`}>{value}</div>
+                                    <div className={`text-[8px] font-extrabold ${lbl} uppercase mt-1.5 print:mt-1 tracking-wider print:text-[7px]`}>{label}</div>
+                                </div>
+                            ))}
                         </div>
                     </div>
 
@@ -508,43 +494,37 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                 {fromDate && toDate ? `${fromDate} – ${toDate}` : `Jan – Dec ${new Date().getFullYear()}`}
                             </span>
                         </div>
-                        {checklistStats.total === 0 ? (
-                            <div className="py-4 text-center text-slate-400 text-xs font-semibold border border-dashed border-slate-200 rounded-xl">
-                                No checklist tasks assigned for this period.
+                        <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 print:p-2.5 print:rounded-lg">
+                            <div className="grid grid-cols-4 gap-2 print:gap-1.5 mb-3 print:mb-2">
+                                {[
+                                    { label: 'Total', value: checklistStats.total, bg: 'bg-slate-100', border: 'border-slate-200', num: 'text-slate-800', lbl: 'text-slate-500' },
+                                    { label: 'Completed', value: checklistStats.completed, bg: 'bg-emerald-50', border: 'border-emerald-100', num: 'text-emerald-700', lbl: 'text-emerald-500' },
+                                    { label: 'Pending', value: checklistStats.pending, bg: 'bg-blue-50', border: 'border-blue-100', num: 'text-blue-700', lbl: 'text-blue-500' },
+                                    { label: 'Overdue', value: checklistStats.overdue, bg: checklistStats.overdue > 0 ? 'bg-red-50' : 'bg-slate-50', border: checklistStats.overdue > 0 ? 'border-red-100' : 'border-slate-200', num: checklistStats.overdue > 0 ? 'text-red-700' : 'text-slate-300', lbl: checklistStats.overdue > 0 ? 'text-red-500' : 'text-slate-300' },
+                                ].map(({ label, value, bg, border, num, lbl }) => (
+                                    <div key={label} className={`${bg} border ${border} rounded-lg p-2 print:p-1.5 text-center`}>
+                                        <div className={`text-lg font-black leading-none ${num} print:text-sm`}>{fmt(value)}</div>
+                                        <div className={`text-[8px] font-bold ${lbl} uppercase mt-1 tracking-wider print:text-[7px]`}>{label}</div>
+                                    </div>
+                                ))}
                             </div>
-                        ) : (
-                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 print:p-2.5 print:rounded-lg">
-                                <div className="grid grid-cols-4 gap-2 print:gap-1.5 mb-3 print:mb-2">
-                                    {[
-                                        { label: 'Total', value: checklistStats.total, bg: 'bg-slate-100', border: 'border-slate-200', num: 'text-slate-800', lbl: 'text-slate-500' },
-                                        { label: 'Completed', value: checklistStats.completed, bg: 'bg-emerald-50', border: 'border-emerald-100', num: 'text-emerald-700', lbl: 'text-emerald-500' },
-                                        { label: 'Pending', value: checklistStats.pending, bg: 'bg-blue-50', border: 'border-blue-100', num: 'text-blue-700', lbl: 'text-blue-500' },
-                                        { label: 'Overdue', value: checklistStats.overdue, bg: checklistStats.overdue > 0 ? 'bg-red-50' : 'bg-slate-50', border: checklistStats.overdue > 0 ? 'border-red-100' : 'border-slate-200', num: checklistStats.overdue > 0 ? 'text-red-700' : 'text-slate-300', lbl: checklistStats.overdue > 0 ? 'text-red-500' : 'text-slate-300' },
-                                    ].map(({ label, value, bg, border, num, lbl }) => (
-                                        <div key={label} className={`${bg} border ${border} rounded-lg p-2 print:p-1.5 text-center`}>
-                                            <div className={`text-lg font-black leading-none ${num} print:text-sm`}>{fmt(value)}</div>
-                                            <div className={`text-[8px] font-bold ${lbl} uppercase mt-1 tracking-wider print:text-[7px]`}>{label}</div>
-                                        </div>
-                                    ))}
+                            <div>
+                                <div className="flex justify-between items-center mb-1 print:mb-0.5">
+                                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider print:text-[7px]">Pending Workload</span>
+                                    <span className={`text-xs font-black print:text-[10px] ${checklistStats.pct <= 20 ? 'text-emerald-600' : checklistStats.pct <= 60 ? 'text-amber-600' : 'text-red-500'}`}>{checklistStats.pct}%</span>
                                 </div>
-                                <div>
-                                    <div className="flex justify-between items-center mb-1 print:mb-0.5">
-                                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider print:text-[7px]">Pending Workload</span>
-                                        <span className={`text-xs font-black print:text-[10px] ${checklistStats.pct <= 20 ? 'text-emerald-600' : checklistStats.pct <= 60 ? 'text-amber-600' : 'text-red-500'}`}>{checklistStats.pct}%</span>
-                                    </div>
-                                    <div className="h-2 bg-slate-200 rounded-full overflow-hidden print:h-1.5">
-                                        <div
-                                            className={`h-full rounded-full transition-all ${checklistStats.pct <= 20 ? 'bg-emerald-500' : checklistStats.pct <= 60 ? 'bg-amber-400' : 'bg-red-400'}`}
-                                            style={{ width: `${Math.max(checklistStats.pct, checklistStats.pct > 0 ? 2 : 0)}%` }}
-                                        />
-                                    </div>
-                                    <div className="flex justify-between mt-1 text-[8px] text-slate-400 font-semibold print:text-[7px]">
-                                        <span>{fmt(checklistStats.completed)} done</span>
-                                        <span>{fmt(checklistStats.total - checklistStats.completed)} remaining</span>
-                                    </div>
+                                <div className="h-2 bg-slate-200 rounded-full overflow-hidden print:h-1.5">
+                                    <div
+                                        className={`h-full rounded-full transition-all ${checklistStats.pct <= 20 ? 'bg-emerald-500' : checklistStats.pct <= 60 ? 'bg-amber-400' : 'bg-red-400'}`}
+                                        style={{ width: `${Math.max(checklistStats.pct, checklistStats.pct > 0 ? 2 : 0)}%` }}
+                                    />
+                                </div>
+                                <div className="flex justify-between mt-1 text-[8px] text-slate-400 font-semibold print:text-[7px]">
+                                    <span>{fmt(checklistStats.completed)} done</span>
+                                    <span>{fmt(checklistStats.total - checklistStats.completed)} remaining</span>
                                 </div>
                             </div>
-                        )}
+                        </div>
                     </div>
 
                     {/* ── FOOTER ── */}
@@ -662,7 +642,6 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
                                 {/* Time Analysis Section - Bulk Print */}
                                 {(() => {
                                     const analysis = getWorkAnalysis(emp.id);
-                                    if (!analysis) return null;
                                     return (
                                         <div className="grid grid-cols-5 gap-3 print:gap-2 mb-6 print:mb-4">
                                             <div className="p-4 rounded-2xl border border-slate-200 bg-white shadow-sm flex flex-col justify-between">

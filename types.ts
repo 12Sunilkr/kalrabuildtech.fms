@@ -34,7 +34,7 @@ export interface User {
   employeeId?: string; // Link to Employee record if role is EMPLOYEE
 }
 
-export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO';
+export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO' | 'LEAVE';
 
 export interface AttendanceRecord {
   [dateIso: string]: AttendanceValue;
@@ -343,6 +343,7 @@ export type FrequencyType =
   | 'ONE-TIME'
   | 'DAILY'
   | 'ALTERNATE'
+  | 'ALTERNATE-WEEK'
   | 'WEEKLY'
   | 'FORTNIGHTLY'
   | 'MONTHLY'
@@ -374,7 +375,7 @@ export interface ChecklistInstance {
   id: string;
   templateId: string;
   date: string; // YYYY-MM-DD (Scheduled Date)
-  status: 'PENDING' | 'COMPLETED';
+  status: 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED';
   completedDate?: string;
   shiftedDueToHoliday?: boolean; // Tracking if it was moved from Sun/Holiday
   // Enrichment fields populated at load time from the parent template
@@ -408,6 +409,7 @@ export enum ViewMode {
   NOTEPAD = 'NOTEPAD',
   DATABASE = 'DATABASE',
   PMS_ADMIN = 'PMS_ADMIN',
+  CRM = 'CRM',
 
   // Employee Views
   EMPLOYEE_HOME = 'EMPLOYEE_HOME',
@@ -417,7 +419,28 @@ export enum ViewMode {
   EMPLOYEE_QUERIES = 'EMPLOYEE_QUERIES',
   EMPLOYEE_CHAT = 'EMPLOYEE_CHAT',
   EMPLOYEE_HISTORY = 'EMPLOYEE_HISTORY',
-  PMS_EMPLOYEE = 'PMS_EMPLOYEE'
+  PMS_EMPLOYEE = 'PMS_EMPLOYEE',
+  EMPLOYEE_CRM = 'EMPLOYEE_CRM'
+}
+
+// --- CRM Types ---
+
+export interface CRMLead {
+  id: string;
+  s_no: number;
+  date: string;
+  name: string;
+  mobile: string;
+  source: 'Call' | 'Walk-in' | 'Reference' | 'Online';
+  site_visit: boolean;
+  status: 'New' | 'Follow-up' | 'Closed';
+  priority: 'Hot' | 'Warm' | 'Cold';
+  next_followup_date?: string;
+  deal_value?: number;
+  remarks?: string;
+  assigned_to?: string; // Employee ID
+  created_at: string;
+  updated_at: string;
 }
 
 // --- PMS (Project Management System) Types ---

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
 import { Employee, User, Role, ViewMode } from '../types';
 import { DEPARTMENT_ROLES } from '../constants';
-import { Users, ShieldCheck, UserPlus, Search, Mail, Phone, LogIn, FileText, Edit2, Archive, X, Lock } from 'lucide-react';
+import { Users, ShieldCheck, UserPlus, Search, Mail, Phone, LogIn, FileText, Edit2, Archive, X, Lock, Trash2, AlertTriangle } from 'lucide-react';
 
 interface EmployeeMasterProps {
   employees: Employee[];
@@ -32,6 +32,10 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
+  const [reassignToId, setReassignToId] = useState<string>('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // State for Add/Edit
   const [currentEmp, setCurrentEmp] = useState<Partial<Employee>>({ status: 'Active' });
@@ -260,6 +264,27 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     }
   };
 
+  const handlePermanentDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    try {
+      await api.delete(
+        `/employees/${deleteTarget.id}/permanent`,
+        { data: { replacementEmployeeId: reassignToId || undefined }, withCredentials: true } as any
+      );
+      setEmployees(employees.filter(e => e.id !== deleteTarget.id));
+      setUsers(users.filter(u => u.employeeId !== deleteTarget.id));
+      setShowDeleteModal(false);
+      setDeleteTarget(null);
+      setReassignToId('');
+    } catch (err) {
+      console.error('Permanent delete failed', err);
+      alert('Failed to permanently delete. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const handleArchive = async (id: string) => {
     if (window.confirm('Are you sure you want to archive this team member? Data will be moved to the Archive section.')) {
       const empToArchive = employees.find(e => e.id === id);
@@ -465,10 +490,22 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
 
                       <button
                         onClick={() => handleArchive(emp.id)}
-                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        className="p-2 text-slate-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
                         title="Archive Member"
                       >
                         <Archive size={16} />
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setDeleteTarget(emp);
+                          setReassignToId('');
+                          setShowDeleteModal(true);
+                        }}
+                        className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Permanently Delete"
+                      >
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </td>
@@ -910,6 +947,87 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100">
               <button onClick={() => setLoginTarget(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
               <button onClick={attemptLogin} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20">Access Dashboard</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PERMANENT DELETE MODAL */}
+      {showDeleteModal && deleteTarget && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+            {/* Header */}
+            <div className="p-6 bg-red-50 border-b border-red-100 flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 flex items-center justify-center shrink-0">
+                <Trash2 size={22} className="text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-extrabold text-red-900">Permanently Delete Member</h3>
+                <p className="text-sm text-red-600 font-medium mt-0.5">
+                  {deleteTarget.name} &nbsp;·&nbsp; <span className="font-mono">{deleteTarget.id}</span>
+                </p>
+              </div>
+              <button onClick={() => setShowDeleteModal(false)} className="ml-auto p-2 hover:bg-red-100 rounded-full text-red-400">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-5">
+              {/* Warning */}
+              <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex gap-3">
+                <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
+                <div className="text-xs text-red-700 leading-relaxed space-y-1">
+                  <p><strong>This action is irreversible.</strong> The following will be permanently removed:</p>
+                  <ul className="list-disc ml-4 space-y-0.5">
+                    <li>Employee record ({deleteTarget.id})</li>
+                    <li>Linked login account ({deleteTarget.email || 'none'})</li>
+                    <li>All checklist templates & schedules assigned to them</li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Reassign tasks */}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Reassign Their Tasks To (Optional)
+                </label>
+                <select
+                  className="w-full border border-slate-200 rounded-xl p-3 bg-slate-50 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-red-400"
+                  value={reassignToId}
+                  onChange={e => setReassignToId(e.target.value)}
+                >
+                  <option value="">— Leave tasks unassigned —</option>
+                  {employees
+                    .filter(e => e.id !== deleteTarget.id && e.status === 'Active')
+                    .map(e => (
+                      <option key={e.id} value={e.id}>{e.name} ({e.id})</option>
+                    ))}
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  If no replacement is selected, tasks will remain in the system as unassigned.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePermanentDelete}
+                disabled={isDeleting}
+                className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-xl font-bold shadow-lg shadow-red-600/20 active:scale-95 transition-all text-sm"
+              >
+                {isDeleting
+                  ? <><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Deleting…</>
+                  : <><Trash2 size={14} /> Permanently Delete</>
+                }
+              </button>
             </div>
           </div>
         </div>

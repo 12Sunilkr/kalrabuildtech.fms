@@ -1,8 +1,7 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ChatMessage, Employee, User, ChatGroup, Notification } from '../types';
-import { MessageCircle, Search, Paperclip, Send, User as UserIcon, Eye, Users, Plus, X, ArrowLeft } from 'lucide-react';
-import { AITextEnhancer } from './AITextEnhancer';
+import { MessageCircle, Search, Send, Users, Plus, X, ArrowLeft, Check, CheckCheck, MoreVertical, Paperclip, Shield, ChevronDown } from 'lucide-react';
 import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 
 interface ChatSystemProps {
@@ -15,741 +14,480 @@ interface ChatSystemProps {
   addNotification: (title: string, msg: string, type: Notification['type'], targetUser: string) => void;
 }
 
+const ADMIN_ID = 'ADMIN';
+
+function getInitials(name: string) {
+  return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
+function formatTime(ts: string) {
+  if (!ts || isNaN(Date.parse(ts))) return '';
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDay(ts: string) {
+  if (!ts || isNaN(Date.parse(ts))) return '';
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+const avatarColors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#14b8a6'];
+function getColor(id: string) { let h = 0; for (let i = 0; i < id.length; i++) h = id.charCodeAt(i) + ((h << 5) - h); return avatarColors[Math.abs(h) % avatarColors.length]; }
+
 export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, groups, setGroups, currentUser, employees, addNotification }) => {
-  const [selectedChatId, setSelectedChatId] = useState<string | null>(null); // EmployeeID or GroupID
+  const myId = currentUser.employeeId || ADMIN_ID;
+  const isAdmin = currentUser.role === 'ADMIN';
+
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
-  const [attachment, setAttachment] = useState<File | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Message action state
-  const [menuForMessage, setMenuForMessage] = useState<{ id: string, x: number, y: number } | null>(null);
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [editText, setEditText] = useState('');
-  const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
-  const [showInfoMessageId, setShowInfoMessageId] = useState<string | null>(null);
-  // Track local cache of teamIds marked as read with timestamp to avoid repeated read POSTs
-  const [markedReadTimes, setMarkedReadTimes] = useState<Record<string,string>>({});
-  // Guard to avoid overlapping/duplicate fetches for the same teamId (prevents double-calls in StrictMode and overlapping polls)
-  const activeFetches = useRef<Record<string, boolean>>({});
-  // Poll control handle
-  const pollStopRef = useRef<Record<string, boolean>>({});
-
-  // Admin Monitoring Mode State
-  const [adminMonitorTarget, setAdminMonitorTarget] = useState<string | null>(null);
-  const [adminMonitorPartner, setAdminMonitorPartner] = useState<string | null>(null);
-  // Monitoring messages state (for admin monitor detail view)
-  const [monitorMessages, setMonitorMessages] = useState<ChatMessage[]>([]);
-  const [monitorLoading, setMonitorLoading] = useState(false);
-  
-  // Create Group Modal
+  const [search, setSearch] = useState('');
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupMembers, setNewGroupMembers] = useState<string[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [menuMsgId, setMenuMsgId] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  // Use ref (not state) for seen timestamps — avoids stale closure in poll callbacks
+  const lastSeenTsRef = useRef<Record<string, number>>({});
+  const mountTs = useRef(Date.now());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const activeFetch = useRef(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const isAdmin = currentUser.role === 'ADMIN';
+  // Helper: mark a chat as seen RIGHT NOW (clears badge, updates baseline)
+  const markChatSeen = useCallback((chatId: string) => {
+    lastSeenTsRef.current[chatId] = Date.now();
+    setUnreadCounts(prev => prev[chatId] ? { ...prev, [chatId]: 0 } : prev);
+  }, []);
 
-  // --- Helpers ---
-  const getDirectTeamId = (a: string, b: string) => `DM-${[a, b].sort().join('-')}`;
-  const isDirectTeamId = (id?: string | null) => !!id && id.startsWith && id.startsWith('DM-');
-  const extractDirectPartnerId = (teamId: string, me: string) => {
-      if (!isDirectTeamId(teamId)) return null;
-      const parts = teamId.split('-').slice(1);
-      return parts.find(p => p !== me) || null;
-  };
+  // ── Helpers ──
+  const getDmId = (a: string, b: string) => `DM-${[a, b].sort().join('-')}`;
+  const isDmId = (id?: string | null) => !!id && id.startsWith('DM-');
+  const getPartnerId = (dmId: string) => dmId.split('-').slice(1).find(p => p !== myId) || null;
 
-  const getConversation = (user1: string, user2: string) => {
-    // Check if user2 is a group
-    const isGroup = groups.some(g => g.id === user2);
-    const isDirect = isDirectTeamId(user2);
+  // ── Get last message for any chatId ──
+  const getLastMsg = (chatId: string) => [...messages].filter(m => m.teamId === chatId || m.receiverId === chatId).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
 
-    if (isGroup) {
-        return messages.filter(m => m.receiverId === user2).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    } else if (isDirect) {
-        // Direct message (canonical DM id) -> filter by teamId
-        return messages.filter(m => m.teamId === user2).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    } else {
-        // Legacy / transient format: use sender/receiver pairs
-        return messages.filter(
-            m => (m.senderId === user1 && m.receiverId === user2) || 
-                 (m.senderId === user2 && m.receiverId === user1)
-        ).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  // ── Load messages when chat selected ──
+  const loadMessages = useCallback(async (chatId: string, silent = false) => {
+    if (!chatId || activeFetch.current) return;
+    activeFetch.current = true;
+    try {
+      const r = await safeGet(`/chat/${encodeURIComponent(chatId)}`);
+      const msgs = ensureArray(extractPayload(r));
+      setMessages(msgs);
+      if (!silent) {
+        markChatSeen(chatId);
+        try { await api.post(`/chat/${encodeURIComponent(chatId)}/read`); } catch {}
+      }
+    } catch (e) { console.warn('Chat load failed', e); }
+    finally { activeFetch.current = false; }
+  }, [setMessages, markChatSeen]);
+
+  // ── Background poll: detect new messages in background chats ──
+  const pollAllChats = useCallback(async () => {
+    try {
+      const res = await safeGet('/chat/unread_summary');
+      const counts = extractPayload(res);
+      if (!counts || typeof counts !== 'object') return;
+
+      setUnreadCounts(prev => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [chatId, unread] of Object.entries(counts)) {
+          if (chatId === selectedChatId) continue;
+          if (next[chatId] !== unread) {
+            next[chatId] = unread as number;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    } catch (e) {
+      // ignore
     }
-  };
-
-  const handleSendMessage = () => {
-    if ((!inputText.trim() && !attachment) || !selectedChatId) return;
-
-    // Determine canonical receiver and team id for direct messages
-    const partnerId = isDirectTeamId(selectedChatId || null) ? extractDirectPartnerId(selectedChatId!, currentUser.employeeId || 'ADMIN') : null;
-    const receiverForOptimistic = partnerId || selectedChatId || (currentUser.employeeId || 'ADMIN');
-
-    const newMessage: ChatMessage = {
-        id: `C-${Date.now()}`,
-        senderId: currentUser.employeeId || 'ADMIN',
-        receiverId: receiverForOptimistic || (selectedChatId || ''),
-        content: inputText,
-        timestamp: new Date().toISOString(),
-        attachment: attachment ? attachment.name : undefined,
-        teamId: selectedChatId || undefined
-    };
-
-        // Optimistic UI update then persist to server
-        setMessages([...messages, newMessage]);
-        setInputText('');
-        setAttachment(null);
-        const meta: any = {};
-        if (newMessage.attachment) meta.attachment = newMessage.attachment;
-        if (replyToMessageId) meta.replyTo = replyToMessageId;
-        (async () => {
-            try {
-                await api.post('/chat', { teamId: selectedChatId, message: newMessage.content, meta: Object.keys(meta).length ? meta : undefined });
-                const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId!)}`);
-                const p = extractPayload(r);
-                setMessages(ensureArray(p));
-            } catch (e) {
-                console.warn('Chat send failed', e && (e.stack || e.message || e));
-            }
-        })();
-        if (!groups.some(g => g.id === selectedChatId)) addNotification('New Message', `Message from ${currentUser.name}`, 'CHAT', String(selectedChatId));
-        setReplyToMessageId(null);
-  };
-
-  const handleCreateGroup = () => {
-    if (newGroupName && newGroupMembers.length > 0) {
-        const newGroup: ChatGroup = {
-            id: `G-${Date.now()}`,
-            name: newGroupName,
-            members: [...newGroupMembers, currentUser.employeeId || 'ADMIN'],
-            createdBy: currentUser.employeeId || 'ADMIN'
-        };
-        setGroups([...groups, newGroup]);
-        setShowGroupModal(false);
-        setNewGroupName('');
-        setNewGroupMembers([]);
-        addNotification('Chat Group', `Group "${newGroupName}" created.`, 'CHAT', String('ALL'));
-    }
-  };
-
-  const toggleGroupMember = (empId: string) => {
-    if (newGroupMembers.includes(empId)) {
-        setNewGroupMembers(newGroupMembers.filter(id => id !== empId));
-    } else {
-        setNewGroupMembers([...newGroupMembers, empId]);
-    }
-  };
+  }, [selectedChatId]);
 
   useEffect(() => {
-    if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, selectedChatId, adminMonitorPartner]);
+    if (!selectedChatId) return;
+    setIsLoading(true);
+    loadMessages(selectedChatId).finally(() => setIsLoading(false));
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => loadMessages(selectedChatId, true), 6000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [selectedChatId, loadMessages]);
 
-    // Load messages for selected chat from server and mark as read
-    useEffect(() => {
-        let mounted = true;
-        const load = async () => {
-            if (!selectedChatId) return;
-            // Prevent duplicate simultaneous fetches for same teamId
-            if (activeFetches.current[selectedChatId]) return;
-            activeFetches.current[selectedChatId] = true;
-            try {
-                const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId)}`);
-                const p = extractPayload(r);
-                if (mounted) setMessages(ensureArray(p));
+  // Background poll for unread badges
+  useEffect(() => {
+    const interval = setInterval(pollAllChats, 10000);
+    return () => clearInterval(interval);
+  }, [pollAllChats]);
 
-                // Mark this conversation as read for the current user, but avoid repeated POSTs for same last message
-                try {
-                    const payloadArr = ensureArray(p) as any[];
-                    const latestMsgTs = (payloadArr && payloadArr.length) ? payloadArr[payloadArr.length - 1].timestamp : undefined;
-                    const lastMarked = markedReadTimes[selectedChatId || ''];
-                    if (!latestMsgTs || !lastMarked || Date.parse(latestMsgTs) > Date.parse(lastMarked)) {
-                        try {
-                            await api.post(`/chat/${encodeURIComponent(selectedChatId)}/read`);
-                        } catch (err) {
-                            // If route returned 404, try alternate team ids (fallback) and log for debugging
-                            const status = err && err.response && err.response.status;
-                            console.warn('Mark chat read failed', status || err && (err.message || err));
-                            if (status === 404) {
-                                // Try fallback: if canonical DM id, try posting to partner id; if plain emp id, try canonical DM id
-                                try {
-                                    let fallbackTarget = selectedChatId || '';
-                                    if (isDirectTeamId(selectedChatId)) {
-                                        const partner = extractDirectPartnerId(selectedChatId!, currentUser.employeeId || 'ADMIN');
-                                        if (partner) fallbackTarget = partner;
-                                    } else if (selectedChatId && !selectedChatId.startsWith('G-')) {
-                                        // try canonical DM with my id
-                                        fallbackTarget = getDirectTeamId(currentUser.employeeId || 'ADMIN', selectedChatId);
-                                    }
-                                    if (fallbackTarget) await api.post(`/chat/${encodeURIComponent(fallbackTarget)}/read`);
-                                } catch (err2) { console.warn('Fallback mark chat read failed', err2 && (err2.message || err2)); }
-                            }
-                        }
-                        // On success (or regardless for now), cache lastMarked time
-                        const now = new Date().toISOString();
-                        setMarkedReadTimes(prev => ({ ...prev, [selectedChatId as string]: now }));
-                        // Re-fetch messages after marking read so seen/delivered status is updated
-                        try {
-                            const r2 = await safeGet(`/chat/${encodeURIComponent(selectedChatId)}`);
-                            const p2 = extractPayload(r2);
-                            if (mounted) setMessages(ensureArray(p2));
-                        } catch (e2) { /* ignore refetch failures */ }
-                    }
-                } catch (e) { console.warn('Mark chat read failed', e && (e.message || e)); }
-            } catch (e) { console.warn('Failed to load chat messages', e && (e.stack || e.message || e)); }
-            finally { activeFetches.current[selectedChatId] = false; }
-        };
-        load();
-        return () => { mounted = false; };
-    }, [selectedChatId]);
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, selectedChatId]);
 
-    // Poll for updates (read receipts, edits, pins) while a conversation is open so sender sees updates when partner reads
-    useEffect(() => {
-        if (!selectedChatId) return;
-        let mounted = true;
-        pollStopRef.current[selectedChatId] = false;
+  useEffect(() => {
+    if (selectedChatId) inputRef.current?.focus();
+  }, [selectedChatId]);
 
-        // Poll loop using setTimeout to avoid overlapping requests; only poll when document is visible
-        const pollOnce = async () => {
-            if (!mounted || pollStopRef.current[selectedChatId]) return;
-            try {
-                if (document.visibilityState === 'visible' && !activeFetches.current[selectedChatId]) {
-                    activeFetches.current[selectedChatId] = true;
-                    try {
-                        const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId)}`);
-                        const p = extractPayload(r);
-                        if (mounted) setMessages(ensureArray(p));
-                    } catch (e) {
-                        // ignore poll fetch errors
-                    } finally {
-                        activeFetches.current[selectedChatId] = false;
-                    }
-                }
-            } catch (e) { }
-            if (!mounted || pollStopRef.current[selectedChatId]) return;
-            // schedule next poll
-            setTimeout(() => { try { pollOnce(); } catch (e) { /* ignore */ } }, 7000);
-        };
+  // ── Derive chat history ──
+  const chatHistory = React.useMemo(() => {
+    if (!selectedChatId) return [];
+    const isGroup = groups.some(g => g.id === selectedChatId);
+    if (isGroup) return messages.filter(m => m.receiverId === selectedChatId).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    if (isDmId(selectedChatId)) return messages.filter(m => m.teamId === selectedChatId).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    return messages.filter(m => (m.senderId === myId && m.receiverId === selectedChatId) || (m.senderId === selectedChatId && m.receiverId === myId)).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }, [messages, selectedChatId, groups, myId]);
 
-        // Start the first poll cycle
-        setTimeout(() => { try { pollOnce(); } catch (e) { /* ignore */ } }, 7000);
+  // ── Send message ──
+  const handleSend = async () => {
+    if (!inputText.trim() || !selectedChatId || isSending) return;
+    const text = inputText.trim();
+    setInputText('');
+    setIsSending(true);
 
-        return () => { mounted = false; pollStopRef.current[selectedChatId] = true; };
-    }, [selectedChatId]);
+    const partnerId = isDmId(selectedChatId) ? getPartnerId(selectedChatId) : selectedChatId;
+    const newMsg: ChatMessage = {
+      id: `C-${Date.now()}`,
+      senderId: myId,
+      receiverId: partnerId || selectedChatId,
+      content: text,
+      timestamp: new Date().toISOString(),
+      teamId: selectedChatId,
+    };
+    setMessages(prev => [...prev, newMsg]);
 
+    try {
+      await api.post('/chat', { teamId: selectedChatId, message: text, senderId: myId });
+      const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId)}`);
+      setMessages(ensureArray(extractPayload(r)));
+    } catch (e) { console.warn('Send failed', e); }
+    finally { setIsSending(false); }
+  };
 
-  // --- ADMIN VIEW RENDER ---
-  if (isAdmin && !selectedChatId && !adminMonitorTarget) {
-      return (
-          <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
-              <div className="mb-8 flex justify-between items-end">
-                <div>
-                    <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
-                        <div className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 shrink-0">
-                        <MessageCircle size={20} />
-                        </div>
-                        Team Chat
-                    </h2>
-                    <p className="text-slate-500 mt-2 font-medium">Chat with staff, manage groups, or monitor logs.</p>
-                </div>
-                <button 
-                  onClick={() => setShowGroupModal(true)}
-                  className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold shadow-lg shadow-indigo-600/20 flex items-center gap-2 hover:bg-indigo-700"
-                >
-                    <Plus size={18}/> Create Group
-                </button>
-              </div>
+  // ── Create group ──
+  const handleCreateGroup = async () => {
+    if (!newGroupName || newGroupMembers.length === 0) return;
+    const grp: ChatGroup = { id: `G-${Date.now()}`, name: newGroupName, members: [...newGroupMembers, myId], createdBy: myId };
+    setGroups(prev => [...prev, grp]);
+    setShowGroupModal(false);
+    setNewGroupName('');
+    setNewGroupMembers([]);
+    addNotification('Group Chat', `Group "${newGroupName}" created`, 'CHAT', 'ALL');
+  };
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                      <h3 className="font-bold text-lg mb-4 text-slate-800">Direct Messages</h3>
-                      <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {employees.filter(e => e.id !== 'ADMIN').map(emp => (
-                            <button 
-                                key={emp.id}
-                                onClick={() => setSelectedChatId(getDirectTeamId(currentUser.employeeId || 'ADMIN', emp.id))}
-                                className="w-full text-left p-3 hover:bg-slate-50 rounded-xl flex items-center gap-3 transition-colors border border-transparent hover:border-slate-100"
-                            >
-                                <div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center font-bold">
-                                    {emp.name.charAt(0)}
-                                </div>
-                                <div>
-                                    <p className="font-bold text-slate-700">{emp.name}</p>
-                                    <p className="text-xs text-slate-400">{emp.department}</p>
-                                </div>
-                            </button>
-                        ))}
-                      </div>
-                  </div>
+  // ── Chat info ──
+  const activeGroup = selectedChatId ? groups.find(g => g.id === selectedChatId) : null;
+  const activePartner = selectedChatId && isDmId(selectedChatId) ? employees.find(e => e.id === getPartnerId(selectedChatId)) : null;
+  const chatName = activeGroup ? activeGroup.name : (activePartner ? activePartner.name : isAdmin ? 'Admin' : 'Unknown');
 
-                   <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                      <h3 className="font-bold text-lg mb-4 text-slate-800">Group Chats</h3>
-                      <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {groups.length === 0 ? <p className="text-slate-400 text-sm">No active groups.</p> : groups.map(grp => (
-                             <button 
-                                key={grp.id}
-                                onClick={() => setSelectedChatId(grp.id)}
-                                className="w-full text-left p-3 hover:bg-slate-50 rounded-xl flex items-center gap-3 transition-colors border border-transparent hover:border-slate-100"
-                            >
-                                <div className="w-10 h-10 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center font-bold">
-                                    <Users size={18}/>
-                                </div>
-                                <div>
-                                    <p className="font-bold text-slate-700">{grp.name}</p>
-                                    <p className="text-xs text-slate-400">{grp.members.length} members</p>
-                                </div>
-                            </button>
-                        ))}
-                      </div>
-                  </div>
+  // ── Filter contacts ──
+  const filteredEmployees = employees.filter(e => e.id !== myId && e.name.toLowerCase().includes(search.toLowerCase()));
+  const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(search.toLowerCase()));
 
-                  <div className="col-span-1 md:col-span-2 bg-white p-6 rounded-3xl shadow-sm border border-slate-100 border-l-4 border-l-orange-400">
-                      <h3 className="font-bold text-lg mb-4 text-slate-800 flex items-center gap-2">
-                          <Eye size={20} className="text-orange-500"/> Monitor Staff Chats
-                      </h3>
-                      <p className="text-xs text-slate-400 mb-4">Select an employee to view their chat history.</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                        {employees.map(emp => (
-                            <button 
-                                key={emp.id}
-                                onClick={() => setAdminMonitorTarget(emp.id)}
-                                className="w-full text-left p-3 hover:bg-orange-50 rounded-xl flex items-center gap-3 transition-colors border border-transparent hover:border-orange-100"
-                            >
-                                <div className="w-8 h-8 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center font-bold text-xs">
-                                    {emp.name.charAt(0)}
-                                </div>
-                                <span className="font-bold text-slate-700 text-sm">{emp.name}</span>
-                            </button>
-                        ))}
-                      </div>
-                  </div>
-              </div>
+  // ── Sender display ──
+  const getSenderName = (senderId: string) => {
+    if (senderId === ADMIN_ID || senderId === 'ADMIN') return 'Admin';
+    return employees.find(e => e.id === senderId)?.name || senderId;
+  };
 
-               {/* CREATE GROUP MODAL */}
-               {showGroupModal && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
-                        <div className="p-6 border-b border-slate-100 bg-indigo-50/50 flex justify-between items-center shrink-0">
-                        <h3 className="text-xl font-extrabold text-indigo-900">Create Team Group</h3>
-                        <button onClick={() => setShowGroupModal(false)} className="p-2 hover:bg-indigo-100 rounded-full text-indigo-800"><X size={20}/></button>
-                        </div>
-                        <div className="p-6 space-y-4 overflow-y-auto">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Group Name</label>
-                                <input 
-                                    type="text" 
-                                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none font-bold"
-                                    value={newGroupName}
-                                    onChange={e => setNewGroupName(e.target.value)}
-                                    placeholder="e.g. Sales Team"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Select Members</label>
-                                <div className="space-y-2 max-h-40 overflow-y-auto border border-slate-200 rounded-xl p-2">
-                                    {employees.filter(e => e.id !== 'ADMIN').map(emp => (
-                                        <div key={emp.id} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer" onClick={() => toggleGroupMember(emp.id)}>
-                                            <div className={`w-5 h-5 rounded border flex items-center justify-center ${newGroupMembers.includes(emp.id) ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300'}`}>
-                                                {newGroupMembers.includes(emp.id) && <Plus size={14} className="text-white transform rotate-45" />}
-                                            </div>
-                                            <span className="text-sm font-medium text-slate-700">{emp.name}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-                            <button onClick={() => setShowGroupModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-                            <button onClick={handleCreateGroup} className="px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20">Create Group</button>
-                        </div>
-                    </div>
-                </div>
-               )}
-          </div>
-      );
-  }
-
-  // --- ADMIN MONITORING DETAIL VIEW ---
-  if (adminMonitorTarget) {
-      const targetEmp = employees.find(e => e.id === adminMonitorTarget);
-      
-      // If partner selected, show chat (supporting DM canonical ids, groups, and an 'ALL' view)
-      if (adminMonitorPartner) {
-
-
-          const partnerName = adminMonitorPartner === 'ALL' ? 'All Conversations' : (isDirectTeamId(adminMonitorPartner) ? (extractDirectPartnerId(adminMonitorPartner, adminMonitorTarget) || adminMonitorPartner) : (groups.find(g => g.id === adminMonitorPartner)?.name || employees.find(e => e.id === adminMonitorPartner)?.name || adminMonitorPartner));
-
-          const history = monitorMessages.slice().sort((a,b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-          return (
-             <div className="flex flex-col h-full bg-slate-50">
-                 <div className="p-4 bg-white border-b border-slate-200 shadow-sm flex items-center justify-between">
-                     <div className="flex items-center gap-3">
-                         <button onClick={() => setAdminMonitorPartner(null)} className="text-sm font-bold text-slate-500 hover:text-slate-800">← Back</button>
-                         <div>
-                            <h3 className="font-bold text-slate-800 text-lg">Monitoring: {targetEmp?.name} & {partnerName}</h3>
-                            <p className="text-xs text-orange-500 font-bold uppercase tracking-wider">Read Only Mode</p>
-                         </div>
-                     </div>
-                     <button onClick={() => { setAdminMonitorTarget(null); setAdminMonitorPartner(null); }} className="text-slate-400 hover:text-red-500">Close Monitor</button>
-                 </div>
-                 
-                 <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-100" ref={scrollRef}>
-                    {history.length === 0 ? (
-                        <p className="text-center text-slate-400 mt-10">No messages found for this selection.</p>
-                    ) : (
-                        history.map(msg => {
-                            const isTargetSender = msg.senderId === adminMonitorTarget;
-                            const partnerLbl = (msg.senderId === adminMonitorTarget) ? (employees.find(e => e.id === msg.receiverId)?.name || msg.receiverId) : (employees.find(e => e.id === msg.senderId)?.name || msg.senderId);
-                            return (
-                                <div key={msg.id} className={`flex ${isTargetSender ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[70%] p-4 rounded-2xl shadow-sm ${isTargetSender ? 'bg-white text-slate-800 rounded-tr-none' : 'bg-slate-200 text-slate-800 rounded-tl-none'}`}>
-                                        <p className="text-xs font-bold mb-1 opacity-50">{isTargetSender ? targetEmp?.name : partnerLbl}</p>
-                                        <p>{msg.content}</p>
-                                        {msg.attachment && (
-                                            <div className="mt-2 p-2 bg-slate-50 border border-slate-200 rounded flex items-center gap-2 text-xs">
-                                                <Paperclip size={14}/> {msg.attachment}
-                                            </div>
-                                        )}
-                                        <p className="text-[10px] opacity-40 mt-1 text-right">{new Date(msg.timestamp).toLocaleTimeString()}</p>
-                                    </div>
-                                </div>
-                            );
-                        })
-                    )}
-                 </div>
-             </div>
-          );
-      }
-
-      // Build partners list for the target: DMs (canonical), legacy partners, and groups where target is a member
-      const myTarget = String(adminMonitorTarget);
-      const dmPartners = Array.from(new Set(messages.filter(m => m.teamId && isDirectTeamId(m.teamId) && m.teamId.split('-').slice(1).includes(myTarget)).map(m => String(m.teamId))));
-      const legacyPartners = Array.from(new Set([
-          ...messages.filter(m => m.senderId === myTarget).map(m => m.receiverId),
-          ...messages.filter(m => m.receiverId === myTarget).map(m => m.senderId)
-      ].filter(Boolean).map(String)));
-      const groupPartners = Array.from(new Set(groups.filter(g => g.members.includes(myTarget)).map(g => g.id)));
-
-      // Merge and normalize: ALL, DM canonical ids, legacy partners converted to canonical DM, then group ids
-      const partnerList: string[] = ['ALL', ...dmPartners, ...legacyPartners.map(id => getDirectTeamId(myTarget, id as string)), ...groupPartners];
-
-      // Fetch monitor messages when admin selects a partner
-      useEffect(() => {
-          let mounted = true;
-          setMonitorMessages([]);
-          if (!adminMonitorTarget || !adminMonitorPartner) return;
-          (async () => {
-              setMonitorLoading(true);
-              try {
-                  if (adminMonitorPartner === 'ALL') {
-                      const r = await safeGet(`/chat/employee/${encodeURIComponent(adminMonitorTarget)}`);
-                      const p = extractPayload(r);
-                      if (mounted) setMonitorMessages(ensureArray(p));
-                  } else if (isDirectTeamId(adminMonitorPartner) || adminMonitorPartner.startsWith('G-')) {
-                      const r = await safeGet(`/chat/${encodeURIComponent(adminMonitorPartner)}`);
-                      const p = extractPayload(r);
-                      if (mounted) setMonitorMessages(ensureArray(p));
-                  } else {
-                      // Legacy employee id — convert to canonical DM and fetch
-                      const canonical = getDirectTeamId(adminMonitorTarget, adminMonitorPartner);
-                      const r = await safeGet(`/chat/${encodeURIComponent(canonical)}`);
-                      const p = extractPayload(r);
-                      if (mounted) setMonitorMessages(ensureArray(p));
-                  }
-              } catch (err) { console.warn('Failed to load monitor messages', err && (err.message || err)); }
-              finally { if (mounted) setMonitorLoading(false); }
-          })();
-          return () => { mounted = false; };
-      }, [adminMonitorPartner, adminMonitorTarget]);
-
-      return (
-        <div className="p-8 bg-slate-50 h-full">
-            <button onClick={() => setAdminMonitorTarget(null)} className="mb-4 text-sm font-bold text-slate-500 hover:text-slate-800">← Back to Dashboard</button>
-            <h2 className="text-2xl font-bold text-slate-800 mb-6">Select conversation for {targetEmp?.name}</h2>
-            <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-                {partnerList.length === 0 ? (
-                    <div className="p-10 text-center text-slate-400">No conversations found for this user.</div>
-                ) : (
-                    partnerList.map(id => {
-                        const isAll = id === 'ALL';
-                        const isGroup = groups.some(g => g.id === id);
-                        const partnerEmpId = isDirectTeamId(id) ? extractDirectPartnerId(id, adminMonitorTarget) : (!isGroup && !isAll ? id : null);
-                        const partnerEmp = partnerEmpId ? employees.find(e => e.id === partnerEmpId) : null;
-                        const group = groups.find(g => g.id === id);
-                        const displayName = isAll ? 'All Conversations' : (group ? group.name : (partnerEmp ? partnerEmp.name : (isDirectTeamId(id) ? (extractDirectPartnerId(id, adminMonitorTarget) || id) : id)));
-                        return (
-                             <button 
-                                key={id}
-                                onClick={() => setAdminMonitorPartner(id)}
-                                className="w-full text-left p-4 hover:bg-slate-50 border-b border-slate-100 last:border-0 flex items-center gap-3"
-                            >
-                                <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 font-bold text-sm">
-                                    {displayName.charAt(0)}
-                                </div>
-                                <div className="flex-1">
-                                    <div className="font-bold text-slate-800 truncate">{displayName}</div>
-                                    <div className="text-xs text-slate-400">{isAll ? 'View all messages for this user' : (group ? `${group.members.length} members` : (partnerEmp ? partnerEmp.designation || '' : 'Direct message'))}</div>
-                                </div>
-                            </button>
-                        );
-                    })
-                )}
-            </div>
-        </div>
-      );
-  }
-
-  // --- REGULAR CHAT VIEW (Employee or Admin Chatting) ---
-
-  const myId = currentUser.employeeId || 'ADMIN';
-  const chatHistory = selectedChatId ? getConversation(myId, selectedChatId) : [];
-
-  let activePartnerEmp = null as Employee | null;
-  let activeGroup = null as ChatGroup | null;
-  let chatName = 'Unknown';
-
-  if (selectedChatId) {
-      if (isDirectTeamId(selectedChatId)) {
-          const partnerId = extractDirectPartnerId(selectedChatId, myId);
-          activePartnerEmp = employees.find(e => e.id === partnerId) || null;
-          chatName = activePartnerEmp ? activePartnerEmp.name : (partnerId || 'Direct Message');
-      } else {
-          activePartnerEmp = employees.find(e => e.id === selectedChatId) || null;
-          activeGroup = groups.find(g => g.id === selectedChatId) || null;
-          chatName = activePartnerEmp ? activePartnerEmp.name : (activeGroup ? activeGroup.name : 'Unknown');
-      }
-  }
+  // ── Group messages by date ──
+  const groupedMessages = React.useMemo(() => {
+    const groups: { date: string; messages: ChatMessage[] }[] = [];
+    let lastDate = '';
+    chatHistory.forEach(msg => {
+      const d = formatDay(msg.timestamp);
+      if (d !== lastDate) { groups.push({ date: d, messages: [] }); lastDate = d; }
+      groups[groups.length - 1]?.messages.push(msg);
+    });
+    return groups;
+  }, [chatHistory]);
 
   return (
-    <div className="flex h-full bg-slate-50 overflow-hidden">
-      {/* Sidebar List */}
-      <div className={`${selectedChatId ? 'hidden md:flex' : 'flex'} w-full md:w-80 bg-white border-r border-slate-200 flex-col`}>
-        <div className="p-4 border-b border-slate-100">
-            <h2 className="font-bold text-xl text-slate-800 mb-4">Messages</h2>
-            <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input type="text" placeholder="Search people..." className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+    <div className="flex h-full overflow-hidden" style={{ fontFamily: "'Inter', sans-serif", background: '#f0f2f5' }}>
+      {/* ── Sidebar ── */}
+      <div className={`${selectedChatId ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-96 bg-white border-r`} style={{ borderColor: '#e9edef' }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3" style={{ background: '#f0f2f5' }}>
+          <div className="flex items-center gap-2">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm" style={{ background: '#00a884' }}>
+              {getInitials(currentUser.name || 'ME')}
             </div>
+            <div>
+              <p className="text-sm font-semibold text-gray-800">{currentUser.name}</p>
+              {isAdmin && <span className="text-xs font-bold px-1.5 py-0.5 rounded text-white" style={{ background: '#7c3aed', fontSize: '9px' }}>ADMIN</span>}
+            </div>
+          </div>
+          {isAdmin && (
+            <button onClick={() => setShowGroupModal(true)} className="p-2 rounded-full hover:bg-gray-200 transition-colors" title="New Group">
+              <Users size={20} className="text-gray-600" />
+            </button>
+          )}
         </div>
-        <div className="flex-1 overflow-y-auto">
-            {/* Groups */}
-            {groups.length > 0 && (
-                <>
-                <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider">Groups</div>
-                {groups.map(grp => (
-                     <button
-                        key={grp.id}
-                        onClick={() => setSelectedChatId(grp.id)}
-                        className={`w-full text-left p-4 flex items-center gap-3 hover:bg-slate-50 transition-colors ${selectedChatId === grp.id ? 'bg-indigo-50 border-r-4 border-indigo-500' : ''}`}
-                    >
-                        <div className="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center text-purple-600 font-bold shrink-0">
-                            <Users size={20} />
-                        </div>
-                        <div className="overflow-hidden">
-                            <p className="font-bold text-slate-800 truncate">{grp.name}</p>
-                            <p className="text-xs text-slate-400 truncate">{grp.members.length} members</p>
-                        </div>
-                    </button>
-                ))}
-                </>
-            )}
 
-            {/* People */}
-            <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mt-2">People</div>
-            {/* DEBUG: show current employees count and current user id to help debug empty list for non-admins */}
-            <div className="px-4 pb-2 text-xs text-slate-400">Employees: <span className="font-bold">{employees.length}</span> • You: <span className="font-bold">{myId}</span></div>
-            {employees.filter(e => e.id !== myId).map(emp => (
-                <button
-                    key={emp.id}
-                    title={emp.name}
-                    aria-label={`Open conversation with ${emp.name}`}
-                    onClick={() => setSelectedChatId(getDirectTeamId(myId, emp.id))}
-                    className={`w-full text-left p-4 flex items-center gap-3 hover:bg-slate-50 transition-colors ${selectedChatId === getDirectTeamId(myId, emp.id) ? 'bg-indigo-50 border-r-4 border-indigo-500' : ''}`}
-                >
-                    <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 font-bold shrink-0">
-                        {emp.name.charAt(0)}
+        {/* Search */}
+        <div className="px-3 py-2" style={{ background: '#fff' }}>
+          <div className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: '#f0f2f5' }}>
+            <Search size={16} className="text-gray-400 shrink-0" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search or start new chat" className="bg-transparent flex-1 text-sm outline-none text-gray-700 placeholder-gray-400" />
+          </div>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Groups sorted by latest message */}
+          {filteredGroups
+            .map(grp => ({ grp, lastMsg: getLastMsg(grp.id), unread: unreadCounts[grp.id] || 0 }))
+            .sort((a, b) => (b.lastMsg ? new Date(b.lastMsg.timestamp).getTime() : 0) - (a.lastMsg ? new Date(a.lastMsg.timestamp).getTime() : 0))
+            .map(({ grp, lastMsg, unread }) => {
+              const active = selectedChatId === grp.id;
+              return (
+                <button key={grp.id} onClick={() => { setSelectedChatId(grp.id); markChatSeen(grp.id); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors border-b"
+                  style={{ borderColor: '#f0f2f5', background: active ? '#ebebeb' : unread > 0 ? '#f0fdf4' : undefined }}>
+                  <div className="relative">
+                    <div className="w-12 h-12 rounded-full flex items-center justify-center shrink-0" style={{ background: '#7c3aed' }}>
+                      <Users size={20} className="text-white" />
                     </div>
-                    <div className="overflow-hidden">
-                        <p className="font-bold text-slate-800 truncate">{emp.name}</p>
-                        <p className="text-xs text-slate-400 truncate">{emp.designation}</p>
+                    {unread > 0 && <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style={{ background: '#00a884' }}>{unread > 9 ? '9+' : unread}</span>}
+                  </div>
+                  <div className="flex-1 text-left overflow-hidden">
+                    <div className="flex justify-between items-baseline">
+                      <p className={`text-sm truncate ${unread > 0 ? 'font-bold text-gray-900' : 'font-semibold text-gray-800'}`}>{grp.name}</p>
+                      {lastMsg && <span className="text-xs shrink-0 ml-1" style={{ color: unread > 0 ? '#00a884' : '#667781' }}>{formatTime(lastMsg.timestamp)}</span>}
                     </div>
+                    <p className={`text-xs truncate ${unread > 0 ? 'font-semibold text-gray-700' : 'text-gray-400'}`}>{lastMsg ? lastMsg.content : `${grp.members.length} members`}</p>
+                  </div>
                 </button>
-            ))}
+              );
+            })}
+
+          {/* Separator */}
+          {!search && filteredGroups.length > 0 && <div className="px-4 py-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest" style={{ background: '#f0f2f5' }}>Direct Messages</div>}
+
+          {/* Employees sorted by latest message */}
+          {filteredEmployees
+            .map(emp => {
+              const dmId = getDmId(myId, emp.id);
+              const lastMsg = getLastMsg(dmId);
+              const unread = unreadCounts[dmId] || 0;
+              return { emp, dmId, lastMsg, unread, ts: lastMsg ? new Date(lastMsg.timestamp).getTime() : 0 };
+            })
+            .sort((a, b) => b.ts - a.ts)
+            .map(({ emp, dmId, lastMsg, unread }) => {
+              const active = selectedChatId === dmId;
+              const lastSender = lastMsg ? getSenderName(lastMsg.senderId) : '';
+              return (
+                <button key={emp.id} onClick={() => { setSelectedChatId(dmId); markChatSeen(dmId); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-all border-b"
+                  style={{ borderColor: '#f0f2f5', background: active ? '#ebebeb' : unread > 0 ? '#f0fdf4' : undefined }}>
+                  <div className="relative shrink-0">
+                    <div className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-sm" style={{ background: getColor(emp.id) }}>
+                      {getInitials(emp.name)}
+                    </div>
+                    {unread > 0 && <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style={{ background: '#00a884' }}>{unread > 9 ? '9+' : unread}</span>}
+                  </div>
+                  <div className="flex-1 text-left overflow-hidden">
+                    <div className="flex justify-between items-baseline">
+                      <p className={`text-sm truncate ${unread > 0 ? 'font-bold text-gray-900' : 'font-semibold text-gray-700'}`}>{emp.name}</p>
+                      {lastMsg && <span className="text-[11px] shrink-0 ml-1" style={{ color: unread > 0 ? '#00a884' : '#667781' }}>{formatTime(lastMsg.timestamp)}</span>}
+                    </div>
+                    <p className={`text-xs truncate ${unread > 0 ? 'font-semibold text-gray-800' : 'text-gray-400'}`}>
+                      {lastMsg ? (lastMsg.senderId === myId ? `You: ${lastMsg.content}` : lastMsg.content) : emp.designation || emp.department || ''}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
         </div>
       </div>
 
-      {/* Chat Window */}
+      {/* ── Chat Window ── */}
       {selectedChatId ? (
-          <div className="flex-1 flex flex-col h-full">
-              {/* Header */}
-              <div className="p-4 bg-white border-b border-slate-200 flex items-center gap-3 shadow-sm z-10">
-                  <button onClick={() => setSelectedChatId(null)} className="md:hidden text-slate-500 p-1"><ArrowLeft size={20}/></button>
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${activeGroup ? 'bg-purple-100 text-purple-600' : 'bg-indigo-100 text-indigo-600'}`}>
-                      {activeGroup ? <Users size={20}/> : chatName.charAt(0)}
-                  </div>
-                  <div>
-                      <h3 className="font-bold text-slate-800">{chatName}</h3>
-                      {activePartnerEmp && <p className="text-xs text-green-500 font-bold flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-green-500"></div> Online</p>}
-                      {activeGroup && <p className="text-xs text-slate-400">{activeGroup.members.length} members</p>}
-                  </div>
+        <div className="flex-1 flex flex-col h-full" style={{ background: '#efeae2' }}>
+          {/* Chat Header */}
+          <div className="flex items-center gap-3 px-4 py-3 shadow-sm z-10" style={{ background: '#f0f2f5' }}>
+            <button onClick={() => setSelectedChatId(null)} className="md:hidden p-1 text-gray-500 hover:text-gray-800">
+              <ArrowLeft size={22} />
+            </button>
+            <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 text-white font-bold text-sm" style={{ background: activeGroup ? '#7c3aed' : activePartner ? getColor(activePartner.id) : '#00a884' }}>
+              {activeGroup ? <Users size={18} /> : getInitials(chatName)}
+            </div>
+            <div className="flex-1">
+              <p className="font-semibold text-gray-900 text-sm">{chatName}</p>
+              <p className="text-xs text-gray-500">{activeGroup ? `${activeGroup.members.length} members` : activePartner ? activePartner.designation || activePartner.department || 'Employee' : 'Administrator'}</p>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-1" onClick={() => setMenuMsgId(null)}
+            style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E\")", backgroundSize: '400px' }}>
+            {isLoading ? (
+              <div className="flex justify-center mt-20"><div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#00a884', borderTopColor: 'transparent' }} /></div>
+            ) : chatHistory.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3 mt-20">
+                <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: '#d9fdd3' }}>
+                  <MessageCircle size={36} style={{ color: '#00a884' }} />
+                </div>
+                <p className="font-medium">No messages yet</p>
+                <p className="text-sm text-center max-w-xs">Start the conversation by sending a message below.</p>
               </div>
+            ) : (
+              groupedMessages.map((group, gi) => (
+                <div key={gi}>
+                  {/* Date separator */}
+                  <div className="flex justify-center my-3">
+                    <span className="text-xs px-3 py-1 rounded-full font-medium shadow-sm" style={{ background: '#fff', color: '#667781' }}>{group.date}</span>
+                  </div>
+                  {group.messages.map((msg, mi) => {
+                    const isMe = msg.senderId === myId;
+                    const senderName = getSenderName(msg.senderId);
+                    const senderIsAdmin = msg.senderId === ADMIN_ID;
+                    const showName = !isMe && (!!activeGroup || senderIsAdmin);
+                    const prevMsg = mi > 0 ? group.messages[mi - 1] : null;
+                    const isSameGroup = prevMsg && prevMsg.senderId === msg.senderId;
 
-              {/* Messages */}
-              <div onClick={() => setMenuForMessage(null)} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50" ref={scrollRef}>
-                  {chatHistory.length === 0 ? (
-                      <div className="text-center text-slate-400 mt-10 opacity-50">
-                          <MessageCircle size={48} className="mx-auto mb-2"/>
-                          <p>Start the conversation</p>
-                      </div>
-                  ) : (
-                    chatHistory.map(msg => {
-                        const isMe = msg.senderId === myId;
-                        const senderName = employees.find(e => e.id === msg.senderId)?.name || msg.senderId;
+                    return (
+                      <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} ${isSameGroup ? 'mt-0.5' : 'mt-2'}`}>
+                        {/* Avatar for others */}
+                        {!isMe && (
+                          <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mr-1 self-end mb-0.5 text-white font-bold text-xs" style={{ background: senderIsAdmin ? '#7c3aed' : getColor(msg.senderId), visibility: isSameGroup ? 'hidden' : 'visible' }}>
+                            {senderIsAdmin ? <Shield size={12} /> : getInitials(senderName)}
+                          </div>
+                        )}
 
-                        const timeStr = msg.timestamp && !isNaN(Date.parse(msg.timestamp)) ? new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : (msg.updatedAt && !isNaN(Date.parse(msg.updatedAt)) ? new Date(msg.updatedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '');
+                        <div className={`relative max-w-[70%] group`}>
+                          <div className={`px-3 py-2 rounded-2xl shadow-sm text-sm leading-relaxed ${isMe ? 'rounded-tr-sm text-gray-900' : 'rounded-tl-sm text-gray-900'}`}
+                            style={{ background: isMe ? '#d9fdd3' : '#fff' }}>
+                            {showName && !isSameGroup && (
+                              <p className="text-xs font-bold mb-1" style={{ color: senderIsAdmin ? '#7c3aed' : getColor(msg.senderId) }}>
+                                {senderIsAdmin ? '🛡 Admin' : senderName}
+                              </p>
+                            )}
 
-                        return (
-                            <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`relative max-w-[75%] p-4 rounded-2xl shadow-sm text-sm ${isMe ? 'bg-indigo-600 text-white rounded-tr-none' : msg.isDeleted ? 'bg-slate-100 text-slate-400 italic' : 'bg-white text-slate-800 border border-slate-100 rounded-tl-none'}`}>
-                                    {!isMe && <p className="text-[10px] font-bold opacity-60 mb-1 text-slate-600">{senderName}</p>} 
+                            {editingId === msg.id ? (
+                              <div className="flex gap-2 items-center">
+                                <input value={editText} onChange={e => setEditText(e.target.value)} className="flex-1 border rounded px-2 py-1 text-sm outline-none" style={{ borderColor: '#00a884' }} autoFocus />
+                                <button onClick={async () => { try { await api.put(`/chat/${msg.id}`, { message: editText }); await loadMessages(selectedChatId); } catch {} setEditingId(null); }} className="text-xs font-bold text-white px-2 py-1 rounded" style={{ background: '#00a884' }}>Save</button>
+                                <button onClick={() => setEditingId(null)} className="text-xs text-gray-500">✕</button>
+                              </div>
+                            ) : (
+                              <p className={msg.isDeleted ? 'italic text-gray-400' : ''}>{msg.isDeleted ? 'This message was deleted' : msg.content}</p>
+                            )}
 
-                                    {/* Edit mode */}
-                                    {editingMessageId === msg.id ? (
-                                        <div className="flex gap-2">
-                                            <input className="flex-1 rounded p-2 border border-slate-200" value={editText} onChange={(e) => setEditText(e.target.value)} />
-                                            <button className="px-3 py-1 bg-green-600 text-white rounded" onClick={async () => {
-                                                try { await api.put(`/chat/${encodeURIComponent(msg.id)}`, { message: editText }); const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId!)}`); const p = extractPayload(r); setMessages(ensureArray(p)); } catch (e) { console.warn('Edit failed', e && (e.message || e)); }
-                                                setEditingMessageId(null); setEditText('');
-                                            }}>Save</button>
-                                            <button className="px-3 py-1 bg-slate-200 rounded" onClick={() => { setEditingMessageId(null); setEditText(''); }}>Cancel</button>
-                                        </div>
-                                    ) : (
-                                        <>
-                                            <p>{msg.isDeleted ? 'Message deleted' : (msg.content && String(msg.content).trim() !== '' && msg.content !== 'Invalid Date' ? msg.content : (msg.attachment ? '(Attachment)' : ''))}</p>
-                                            {msg.attachment && (
-                                                <div className={`mt-2 p-2 rounded flex items-center gap-2 text-xs ${isMe ? 'bg-indigo-500' : 'bg-slate-100'}`}>
-                                                    <Paperclip size={14}/> {msg.attachment}
-                                                </div>
-                                            )}
-                                        </>
-                                    )}
+                            {msg.attachment && (
+                              <div className="flex items-center gap-1 mt-1 text-xs rounded px-2 py-1" style={{ background: 'rgba(0,0,0,0.05)' }}>
+                                <Paperclip size={11} /> {msg.attachment}
+                              </div>
+                            )}
 
-                                    {/* Actions */}
-                                    {!msg.isDeleted && (
-                                        <button onClick={(e) => {
-                                            e.stopPropagation();
-                                            const rect = (e.target as HTMLElement).getBoundingClientRect();
-                                            setMenuForMessage({ id: msg.id, x: Math.round(rect.right), y: Math.round(rect.bottom) });
-                                        }} className={`absolute top-1 right-1 text-slate-400 hover:text-slate-800 p-1`}><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M3 9.5A1.5 1.5 0 1 1 3 6.5a1.5 1.5 0 0 1 0 3zm5 0A1.5 1.5 0 1 1 8 6.5a1.5 1.5 0 0 1 0 3zm5 0A1.5 1.5 0 1 1 13 6.5a1.5 1.5 0 0 1 0 3z"/></svg></button>
-                                    )}
-
-                                    {menuForMessage && menuForMessage.id === msg.id && (
-                                        <div style={{ position: 'fixed', left: menuForMessage.x - 180, top: menuForMessage.y + 6 }} className="w-44 bg-white rounded shadow z-50 text-sm text-slate-700">
-                                            <button className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={() => { setShowInfoMessageId(msg.id); setMenuForMessage(null); }}>Info</button>
-                                            <button className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={() => { setMenuForMessage(null); setReplyToMessageId(msg.id); }}>Reply</button>
-                                            <button className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={async () => { setMenuForMessage(null); try { await navigator.clipboard.writeText(msg.content || ''); } catch (e) { console.warn('Copy failed', e); } }}>Copy</button>
-                                            {(msg.senderId === myId || isAdmin) && <button className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={() => { setMenuForMessage(null); setEditingMessageId(msg.id); setEditText(msg.content || ''); }}>Edit</button>}
-                                            {(msg.senderId === myId || isAdmin) && <button className="w-full text-left px-3 py-2 hover:bg-slate-50 text-red-600" onClick={async () => { setMenuForMessage(null); try { await api.delete(`/chat/${encodeURIComponent(msg.id)}`); const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId!)}`); const p = extractPayload(r); setMessages(ensureArray(p)); } catch (e) { console.warn('Delete failed', e && (e.message || e)); } }}>Delete</button>}
-                                            <button className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={async () => { setMenuForMessage(null); try { await api.put(`/chat/${encodeURIComponent(msg.id)}`, { isPinned: !msg.isPinned }); const r = await safeGet(`/chat/${encodeURIComponent(selectedChatId!)}`); const p = extractPayload(r); setMessages(ensureArray(p)); } catch (e) { console.warn('Pin failed', e && (e.message || e)); } }}>{msg.isPinned ? 'Unpin' : 'Pin'}</button>
-                                        </div>
-                                    )}
-
-                                    <div className="flex items-center gap-2 justify-end mt-1">
-                                        <p className={`text-[10px] ${isMe ? 'text-indigo-200' : 'text-slate-400'}`}>{timeStr}</p>
-                                        {isMe && (() => {
-                                            const seenFlag = (msg as any).isSeen;
-                                            const seenAt = (msg as any).seenAt;
-                                            return (
-                                                <div className="text-[12px] opacity-80" title={seenFlag ? `Seen ${seenAt ? new Date(seenAt).toLocaleString() : ''}` : (seenFlag === false ? 'Delivered' : 'Sending...')}> 
-                                                    {seenFlag ? (
-                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="#34B7F1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                                    ) : (
-                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                                                    )}
-                                                </div>
-                                            );
-                                        })()}
-                                    </div>
-                                </div>
-                            </div>
-                        );
-                    })
-                  )}
-              </div>
-
-              {/* Input */}
-              <div className="p-4 bg-white border-t border-slate-200">
-                  <div className="flex flex-col gap-2">
-                      <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl p-2">
-                          <button className="p-2 text-slate-400 hover:text-indigo-600 transition-colors relative shrink-0">
-                            <Paperclip size={20} />
-                            <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => setAttachment(e.target.files?.[0] || null)} />
-                          </button>
-                          
-                          {/* Input Area with embedded AI */}
-                          <div className="flex-1 relative">
-                              {replyToMessageId && (
-                                  <div className="mb-2 p-2 bg-slate-100 rounded text-xs text-slate-600 flex items-center justify-between">
-                                      <div className="truncate">Replying to: {chatHistory.find(m => m.id === replyToMessageId)?.content || '...'} </div>
-                                      <button onClick={() => setReplyToMessageId(null)} className="text-slate-400 px-2">✕</button>
-                                  </div>
+                            <div className="flex items-center justify-end gap-1 mt-0.5">
+                              <span className="text-xs" style={{ color: '#667781', fontSize: '10px' }}>{formatTime(msg.timestamp)}</span>
+                              {isMe && (
+                                (msg as any).isSeen
+                                  ? <CheckCheck size={14} style={{ color: '#53bdeb' }} />
+                                  : <Check size={14} style={{ color: '#667781' }} />
                               )}
-                              <input 
-                                type="text" 
-                                value={inputText}
-                                onChange={(e) => setInputText(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                                placeholder={attachment ? `Attached: ${attachment.name}` : "Type a message..."}
-                                className="w-full bg-transparent outline-none text-slate-700 placeholder-slate-400 pr-10 py-1"
-                              />
-                              <AITextEnhancer 
-                                    text={inputText} 
-                                    onUpdate={setInputText} 
-                                    context="friendly but professional"
-                                    mini={true}
-                              />
+                            </div>
                           </div>
 
-                          <button 
-                            onClick={handleSendMessage}
-                            className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-600/20 shrink-0"
-                          >
-                            <Send size={20} />
-                          </button>
-                      </div>
-                  </div>
-              </div>
-
-              {/* Info modal */}
-              {showInfoMessageId && (() => {
-                  const msg = chatHistory.find(m => m.id === showInfoMessageId);
-                  if (!msg) return null;
-                  return (
-                      <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-50">
-                          <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
-                              <div className="flex justify-between items-center mb-4">
-                                  <h3 className="font-bold">Message info</h3>
-                                  <button onClick={() => setShowInfoMessageId(null)} className="text-slate-500">Close</button>
-                              </div>
-                              <div className="text-sm text-slate-700">
-                                  <p><strong>From:</strong> {employees.find(e => e.id === msg.senderId)?.name || msg.senderId}</p>
-                                  <p className="mt-2"><strong>Sent:</strong> {msg.timestamp ? new Date(msg.timestamp).toLocaleString() : 'Unknown'}</p>
-                                  {msg.updatedAt && <p className="mt-2"><strong>Edited:</strong> {new Date(msg.updatedAt).toLocaleString()}</p>}
-                                  {msg.isPinned && <p className="mt-2">📌 Pinned</p>}
-                                  {msg.replyTo && <p className="mt-2">↩️ Reply to: {chatHistory.find(m => m.id === msg.replyTo)?.content || msg.replyTo}</p>}
-                                  <p className="mt-2"><strong>Status:</strong> {msg.isDeleted ? 'Deleted' : ((msg as any).isSeen ? `Seen ${(msg as any).seenAt ? new Date((msg as any).seenAt).toLocaleString() : ''}` : 'Delivered')}</p>
-                              </div>
+                          {/* Tail */}
+                          <div className={`absolute top-0 w-3 h-3 overflow-hidden ${isMe ? '-right-1.5' : '-left-1.5'}`} style={{ top: '0' }}>
+                            <div className={`w-4 h-4 rotate-45 ${isMe ? 'translate-x-1 -translate-y-1' : '-translate-x-1 -translate-y-1'}`} style={{ background: isMe ? '#d9fdd3' : '#fff' }} />
                           </div>
-                      </div>
-                  );
-              })()}
 
+                          {/* Context menu trigger */}
+                          {!msg.isDeleted && (
+                            <button onClick={e => { e.stopPropagation(); setMenuMsgId(menuMsgId === msg.id ? null : msg.id); }}
+                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-700">
+                              <ChevronDown size={14} />
+                            </button>
+                          )}
+
+                          {menuMsgId === msg.id && (
+                            <div className={`absolute ${isMe ? 'right-0' : 'left-0'} top-8 z-50 bg-white rounded-xl shadow-xl border py-1 w-40 text-sm`} style={{ borderColor: '#e9edef' }} onClick={e => e.stopPropagation()}>
+                              {(isMe || isAdmin) && <button onClick={() => { setEditingId(msg.id); setEditText(msg.content || ''); setMenuMsgId(null); }} className="w-full text-left px-4 py-2 hover:bg-gray-50">Edit</button>}
+                              {(isMe || isAdmin) && <button onClick={async () => { setMenuMsgId(null); try { await api.delete(`/chat/${msg.id}`); await loadMessages(selectedChatId); } catch {} }} className="w-full text-left px-4 py-2 hover:bg-gray-50 text-red-500">Delete</button>}
+                              <button onClick={() => { navigator.clipboard.writeText(msg.content || '').catch(() => {}); setMenuMsgId(null); }} className="w-full text-left px-4 py-2 hover:bg-gray-50">Copy</button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))
+            )}
           </div>
+
+          {/* Input */}
+          <div className="px-3 py-2 flex items-center gap-2" style={{ background: '#f0f2f5' }}>
+            <div className="flex-1 flex items-center gap-2 px-4 py-2 rounded-full" style={{ background: '#fff' }}>
+              <input ref={inputRef} value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()} placeholder="Type a message" className="flex-1 outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparent" />
+            </div>
+            <button onClick={handleSend} disabled={!inputText.trim() || isSending} className="w-11 h-11 rounded-full flex items-center justify-center text-white transition-all active:scale-95 disabled:opacity-50" style={{ background: '#00a884' }}>
+              <Send size={20} className={isSending ? 'animate-pulse' : ''} />
+            </button>
+          </div>
+        </div>
       ) : (
-          <div className="hidden md:flex flex-1 items-center justify-center bg-slate-50 text-slate-400 flex-col">
-              <MessageCircle size={64} className="mb-4 opacity-20" />
-              <p>Select a conversation to start chatting.</p>
+        <div className="hidden md:flex flex-1 flex-col items-center justify-center" style={{ background: '#f0f2f5' }}>
+          <div className="w-24 h-24 rounded-full flex items-center justify-center mb-6 shadow-xl" style={{ background: '#00a884' }}>
+            <MessageCircle size={44} className="text-white" />
           </div>
+          <h2 className="text-2xl font-light text-gray-600 mb-2">KalraBuildtech Chat</h2>
+          <p className="text-gray-400 text-sm">Select a conversation to start messaging</p>
+        </div>
+      )}
+
+      {/* ── Create Group Modal ── */}
+      {showGroupModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b">
+              <h3 className="font-bold text-gray-800">New Group</h3>
+              <button onClick={() => setShowGroupModal(false)}><X size={20} className="text-gray-500" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Group Name</label>
+                <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="e.g. Sales Team" className="w-full border rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2" style={{ borderColor: '#e9edef' }} />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Add Participants</label>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {employees.filter(e => e.id !== myId).map(emp => (
+                    <div key={emp.id} onClick={() => setNewGroupMembers(prev => prev.includes(emp.id) ? prev.filter(i => i !== emp.id) : [...prev, emp.id])}
+                      className="flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-xs shrink-0" style={{ background: getColor(emp.id) }}>{getInitials(emp.name)}</div>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-gray-800">{emp.name}</p>
+                        <p className="text-xs text-gray-400">{emp.department}</p>
+                      </div>
+                      <div className="w-5 h-5 rounded-full border-2 flex items-center justify-center" style={{ borderColor: newGroupMembers.includes(emp.id) ? '#00a884' : '#d1d5db', background: newGroupMembers.includes(emp.id) ? '#00a884' : 'transparent' }}>
+                        {newGroupMembers.includes(emp.id) && <Check size={11} className="text-white" />}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-4 border-t flex justify-end gap-3">
+              <button onClick={() => setShowGroupModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-xl font-medium">Cancel</button>
+              <button onClick={handleCreateGroup} disabled={!newGroupName || newGroupMembers.length === 0} className="px-5 py-2 text-sm text-white rounded-xl font-bold disabled:opacity-50" style={{ background: '#00a884' }}>Create Group</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

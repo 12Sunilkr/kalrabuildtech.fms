@@ -38,6 +38,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const [searchTerm, setSearchTerm] = useState(''); // Text Search
   const [searchDateFrom, setSearchDateFrom] = useState(''); // Date Search From
   const [searchDateTo, setSearchDateTo] = useState(''); // Date Search To
+  const [selectedMemberId, setSelectedMemberId] = useState<string>('ALL'); // Member filter (admin only)
 
   // Form States for New Task
   const [newTask, setNewTask] = useState<Partial<Task>>({ priority: 'MEDIUM' });
@@ -50,6 +51,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const [processNote, setProcessNote] = useState('');
   const [extensionDate, setExtensionDate] = useState('');
   const [extensionReason, setExtensionReason] = useState('');
+
+  // Form States for Edit Task
+  const [showEditModal, setShowEditModal] = useState<string | null>(null); // Task ID
+  const [editTaskForm, setEditTaskForm] = useState<Partial<Task>>({});
 
   const isAdmin = currentUser.role === 'ADMIN';
 
@@ -361,6 +366,65 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     }
   };
 
+  const handleOpenEditModal = (task: Task) => {
+    setShowEditModal(task.id);
+    setEditTaskForm({
+      ...task,
+      assignedTo: task.assignedTo || (task as any).assignedToEmployeeId || ''
+    });
+    setAttachment(task.attachment || null);
+  };
+
+  const handleUpdateTask = async () => {
+    if (!showEditModal) return;
+    if (!(editTaskForm.title && editTaskForm.assignedTo && editTaskForm.dueDate)) {
+      setError('Please provide title, assignee and due date');
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      const selectedEmployeeId = String(editTaskForm.assignedTo || '');
+      const matchedUser = usersList.find(u => String(u.employeeId) === selectedEmployeeId);
+      const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
+
+      const payload: any = {
+        title: editTaskForm.title,
+        description: editTaskForm.description || '',
+        assignedTo: selectedEmployeeId,
+        assigned_to: assigned_to_numeric || null,
+        dueDate: editTaskForm.dueDate,
+        priority: editTaskForm.priority || 'MEDIUM',
+        attachment: attachment || null,
+        externalLink: editTaskForm.externalLink || null
+      };
+
+      await api.put(`/tasks/${showEditModal}`, payload);
+
+      // Optimistic update
+      setTasks(prev => prev.map(t => t.id === showEditModal ? { ...t, ...payload } : t));
+
+      await fetchTasks();
+      setShowEditModal(null);
+      setEditTaskForm({});
+      setAttachment(null);
+
+      // Notification
+      const oldTask = tasks.find(t => t.id === showEditModal);
+      if (oldTask && oldTask.assignedTo !== selectedEmployeeId) {
+        addNotification('Task Transferred', `Task ${showEditModal} has been transferred.`, 'TASK', selectedEmployeeId);
+      } else {
+        addNotification('Task Updated', `Task ${showEditModal} has been updated.`, 'TASK', selectedEmployeeId);
+      }
+    } catch (err: any) {
+      console.error('Update task failed', err);
+      const message = err && err.response && (err.response.data?.message || err.response.data?.error) ? (err.response.data.message || err.response.data.error) : (err && err.message) || 'Failed to update task';
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const initiateAdminAction = (taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE') => {
     setActionPrompt({ taskId, type });
     setActionReason('');
@@ -542,8 +606,10 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   // --- Filtering ---
 
   // Employees see tasks assigned TO them OR tasks assigned BY them
-  const safeTasks = ensureArray(tasks);
-  const relevantTasks = safeTasks.filter(t => {
+  const safeTasks = React.useMemo(() => ensureArray(tasks), [tasks]);
+  
+  const { relevantTasks, filteredTasks, counts } = React.useMemo(() => {
+    const relevant = safeTasks.filter(t => {
     const assignedToId = (t.assignedTo || t.assignedToEmployeeId || '').toString();
     const assignedByName = (t.assignedBy || t.assignedByName || '').toString();
 
@@ -559,7 +625,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     return Boolean(matchesAssignedTo || matchesAssignedBy);
   });
 
-  const filteredTasks = relevantTasks.filter(t => {
+  const filtered = relevant.filter(t => {
     const displayStatus = getDisplayStatus(t);
 
     // 1. Tab Filter
@@ -628,30 +694,50 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
               return '';
           }
       };
-      
+
+      const displayStatus = getDisplayStatus(t);
+      const isCompletedOrOverdue = displayStatus === 'COMPLETED' || displayStatus === 'OVERDUE' || displayStatus === 'TERMINATED';
+
       const due = normalizeTaskDate(t.dueDate);
       const created = normalizeTaskDate(t.createdDate);
-      
+      // For completed/overdue tasks, also match against completionDate
+      const completed = isCompletedOrOverdue ? normalizeTaskDate(t.completionDate) : '';
+
       if (searchDateFrom && searchDateTo) {
-        matchesDate = (due && due >= searchDateFrom && due <= searchDateTo) || (created && created >= searchDateFrom && created <= searchDateTo);
+        matchesDate =
+          (due && due >= searchDateFrom && due <= searchDateTo) ||
+          (created && created >= searchDateFrom && created <= searchDateTo) ||
+          (completed && completed >= searchDateFrom && completed <= searchDateTo);
       } else {
         const singleDate = searchDateFrom || searchDateTo;
-        matchesDate = (due === singleDate) || (created === singleDate);
+        matchesDate = (due === singleDate) || (created === singleDate) || (!!completed && completed === singleDate);
       }
     }
 
-    return matchesTab && matchesSearch && matchesDate;
+    // 4. Member filter (admin only)
+    let matchesMember = true;
+    if (isAdmin && selectedMemberId !== 'ALL') {
+      const assignedToId = (t.assignedTo || (t as any).assignedToEmployeeId || '').toString();
+      matchesMember = assignedToId === selectedMemberId;
+    }
+
+    return matchesTab && matchesSearch && matchesDate && matchesMember;
   });
 
-  const totalCount = relevantTasks.length;
-  const pendingCount = relevantTasks.filter(t => getDisplayStatus(t) === 'PENDING').length;
-  const holdCount = relevantTasks.filter(t => getDisplayStatus(t) === 'HOLD' || t.status === 'HOLD').length;
-  const completedCount = relevantTasks.filter(t => {
+  // Apply member filter for tab counts so numbers match the filtered view
+  const memberFilteredTasks = (isAdmin && selectedMemberId !== 'ALL')
+    ? relevant.filter(t => (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === selectedMemberId)
+    : relevant;
+
+  const totalCount = memberFilteredTasks.length;
+  const pendingCount = memberFilteredTasks.filter(t => getDisplayStatus(t) === 'PENDING').length;
+  const holdCount = memberFilteredTasks.filter(t => getDisplayStatus(t) === 'HOLD' || t.status === 'HOLD').length;
+  const completedCount = memberFilteredTasks.filter(t => {
     const ds = getDisplayStatus(t);
     return ds === 'COMPLETED' || ds === 'TERMINATED';
   }).length;
-  const overdueCount = relevantTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
-  const objectionCount = relevantTasks.filter(t => {
+  const overdueCount = memberFilteredTasks.filter(t => getDisplayStatus(t) === 'OVERDUE').length;
+  const objectionCount = memberFilteredTasks.filter(t => {
     const ds = getDisplayStatus(t);
     return Boolean(
       t.extensionRequest &&
@@ -660,8 +746,8 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       ds !== 'TERMINATED' && ds !== 'COMPLETED' && ds !== 'OVERDUE' && ds !== 'PENDING'
     );
   }).length;
-  const terminateCount = relevantTasks.filter(t => getDisplayStatus(t) === 'TERMINATED' || t.status === 'TERMINATED').length;
-  const rejectCount = relevantTasks.filter(t => {
+  const terminateCount = memberFilteredTasks.filter(t => getDisplayStatus(t) === 'TERMINATED' || t.status === 'TERMINATED').length;
+  const rejectCount = memberFilteredTasks.filter(t => {
     const ds = getDisplayStatus(t);
     return Boolean(
       t.extensionRequest &&
@@ -669,6 +755,15 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       ds !== 'COMPLETED' && ds !== 'TERMINATED' && ds !== 'OVERDUE' && ds !== 'PENDING'
     );
   }).length;
+
+  return { 
+    relevantTasks: relevant, 
+    filteredTasks: filtered, 
+    counts: { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } 
+  };
+}, [safeTasks, activeTab, searchTerm, searchDateFrom, searchDateTo, selectedMemberId, isAdmin, currentUser.employeeId, currentUser.id, currentUser.name, employees]);
+
+const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } = counts;
 
   const getPriorityColor = (p: string) => {
     switch (p) {
@@ -734,6 +829,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         {/* Management Actions (For Admin or Creator) */}
         {(isAdmin || isCreator) && displayStatus !== 'COMPLETED' && displayStatus !== 'TERMINATED' && (
           <>
+            <button
+              onClick={() => handleOpenEditModal(task)}
+              className={isMobile ? `${btnBaseClass} text-blue-600 hover:bg-blue-50` : `${btnBaseClass} bg-white border border-blue-200 text-blue-600 hover:bg-blue-50`}
+            >
+              <FileText size={isMobile ? 18 : 14} /> Edit Task
+            </button>
             {displayStatus !== 'HOLD' ? (
               <button
                 onClick={() => initiateAdminAction(task.id, 'HOLD')}
@@ -773,37 +874,40 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
   return (
-    <div className="p-4 md:p-8 bg-gradient-to-br from-slate-50 via-white to-slate-50 h-full overflow-y-auto custom-scrollbar">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-10 animate-fade-in-up">
-        <div className="flex items-center gap-5">
-          <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-violet-700 text-white rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-100 rotate-3 hover:rotate-0 transition-transform duration-300 shrink-0">
-            <ClipboardList size={32} />
+    <div className="p-3 md:p-8 bg-gradient-to-br from-slate-50 via-white to-slate-50 h-full overflow-y-auto custom-scrollbar">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3 md:gap-6 mb-6 md:mb-10 animate-fade-in-up">
+        <div className="flex items-center gap-3 md:gap-5">
+          <div className="w-10 h-10 md:w-16 md:h-16 bg-gradient-to-tr from-indigo-600 to-violet-700 text-white rounded-xl md:rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-100 shrink-0">
+            <ClipboardList size={20} className="md:hidden" />
+            <ClipboardList size={32} className="hidden md:block" />
           </div>
           <div>
-            <h2 className="text-3xl md:text-4xl font-black text-slate-800 tracking-tight">Task Manager</h2>
-            <p className="text-slate-500 font-semibold tracking-wide flex items-center gap-2">
-              <Clock size={16} className="text-indigo-500" />
+            <h2 className="text-xl md:text-4xl font-black text-slate-800 tracking-tight">Task Manager</h2>
+            <p className="text-slate-500 font-semibold tracking-wide flex items-center gap-1 text-xs md:text-base">
+              <Clock size={13} className="text-indigo-500" />
               Assign tasks and track progress
             </p>
           </div>
         </div>
 
-        <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+        <div className="flex flex-row md:flex-col lg:flex-row gap-2 md:gap-4 w-full md:w-auto">
           {isAdmin && (
             <>
               <button
                 onClick={handleExportTasks}
-                className="w-full md:w-auto bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-700 px-6 py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all hover:bg-white hover:shadow-lg active:scale-95 font-bold"
+                className="flex-1 md:flex-none bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-700 px-3 md:px-6 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 transition-all hover:bg-white hover:shadow-lg active:scale-95 font-bold text-sm"
               >
-                <Download size={20} />
-                Export Data
+                <Download size={16} />
+                <span className="hidden sm:inline">Export Data</span>
+                <span className="sm:hidden">Export</span>
               </button>
               <button
                 onClick={() => setShowAssignModal(true)}
-                className="w-full md:w-auto bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-8 py-3.5 rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold"
+                className="flex-1 md:flex-none bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-3 md:px-8 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold text-sm"
               >
-                <Plus size={24} className="animate-pulse" />
-                Assign New Task
+                <Plus size={18} />
+                <span className="hidden sm:inline">Assign New Task</span>
+                <span className="sm:hidden">New Task</span>
               </button>
             </>
           )}
@@ -811,62 +915,98 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       </div>
 
       {/* Search and Filter Row */}
-      <div className="flex flex-col gap-6 mb-8 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
+      <div className="flex flex-col gap-3 md:gap-6 mb-6 md:mb-8 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
 
-        {/* Top Row: Tabs */}
-        <div className="flex gap-2 overflow-x-auto pb-4 scrollbar-hide w-full bg-white/50 p-2 rounded-2xl border border-slate-100 backdrop-blur-sm">
+        {/* Tab bar: horizontally scrollable on mobile */}
+        <div className="flex gap-1.5 md:gap-2 overflow-x-auto pb-1 md:pb-4 w-full bg-white/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl border border-slate-100 backdrop-blur-sm" style={{ scrollbarWidth: 'none' }}>
           {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS', 'TERMINATE', 'REJECT'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab as any)}
-              className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab
+              className={`px-3 md:px-5 py-1.5 md:py-2.5 rounded-lg md:rounded-xl text-xs md:text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
                   : 'text-slate-500 hover:bg-white hover:text-indigo-600'
                 }`}
             >
-              {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Completed (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : tab === 'OBJECTIONS' ? `Objections (${objectionCount})` : tab === 'TERMINATE' ? `Terminate (${terminateCount})` : `Reject (${rejectCount})`}
+              {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Done (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : tab === 'OBJECTIONS' ? `Obj (${objectionCount})` : tab === 'TERMINATE' ? `Term (${terminateCount})` : `Rej (${rejectCount})`}
             </button>
           ))}
         </div>
 
-        {/* Bottom Row: Search Inputs */}
-        <div className="flex flex-col md:flex-row gap-4">
-          {/* Text Search Input */}
-          <div className="relative w-full md:flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+        {/* Bottom Row: Search + Filters — stacks vertically on mobile */}
+        <div className="flex flex-col gap-2 md:flex-row md:gap-4">
+          {/* Text Search */}
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
             <input
               type="text"
-              placeholder="Search tasks ID, title..."
+              placeholder="Search ID, title, name..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all"
+              className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm"
             />
           </div>
 
-          {/* Date Search Input */}
+          {/* Member Filter — Admin only */}
+          {isAdmin && (
+            <div className="relative w-full md:w-56">
+              <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+              <select
+                value={selectedMemberId}
+                onChange={e => { setSelectedMemberId(e.target.value); setActiveTab('ALL'); }}
+                className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm font-semibold text-slate-700 appearance-none"
+              >
+                <option value="ALL">All Members ({relevantTasks.length})</option>
+                {employees
+                  .filter(e => e.status === 'Active')
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map(e => {
+                    const count = relevantTasks.filter(t =>
+                      (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === e.id
+                    ).length;
+                    return (
+                      <option key={e.id} value={e.id}>
+                        {e.name} ({count})
+                      </option>
+                    );
+                  })}
+              </select>
+              {selectedMemberId !== 'ALL' && (
+                <button
+                  onClick={() => setSelectedMemberId('ALL')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 transition-colors"
+                  title="Clear member filter"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Date Range */}
           <div className="flex w-full md:w-auto gap-2">
-            <div className="relative flex-1 md:w-40 items-center justify-center">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 uppercase tracking-wider pointer-events-none">From</span>
+            <div className="relative flex-1 md:w-40">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 uppercase tracking-wider pointer-events-none">From</span>
               <input
                 type="date"
                 value={searchDateFrom}
                 onChange={(e) => setSearchDateFrom(e.target.value)}
-                className="w-full pl-12 pr-2 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-xs font-medium text-slate-700 h-full"
+                className="w-full pl-10 pr-2 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-xs font-medium text-slate-700"
               />
             </div>
-            <div className="relative flex-1 md:w-40 items-center justify-center">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 uppercase tracking-wider pointer-events-none">To</span>
+            <div className="relative flex-1 md:w-40">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] font-bold text-slate-400 uppercase tracking-wider pointer-events-none">To</span>
               <input
                 type="date"
                 value={searchDateTo}
                 onChange={(e) => setSearchDateTo(e.target.value)}
-                className="w-full pl-8 pr-2 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-xs font-medium text-slate-700 h-full"
+                className="w-full pl-7 pr-2 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-xs font-medium text-slate-700"
               />
             </div>
             {(searchDateFrom || searchDateTo) && (
-              <button 
-                onClick={() => { setSearchDateFrom(''); setSearchDateTo(''); }} 
-                className="flex items-center justify-center px-3 text-slate-400 hover:text-red-500 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors h-[42px]"
+              <button
+                onClick={() => { setSearchDateFrom(''); setSearchDateTo(''); }}
+                className="flex items-center justify-center px-3 text-slate-400 hover:text-red-500 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
                 title="Clear Dates"
               >
                 <X size={16} />
@@ -874,6 +1014,22 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
             )}
           </div>
         </div>
+
+        {/* Active member filter badge */}
+        {isAdmin && selectedMemberId !== 'ALL' && (() => {
+          const emp = employees.find(e => e.id === selectedMemberId);
+          const memberTaskCount = filteredTasks.length;
+          return emp ? (
+            <div className="flex items-center gap-2">
+              <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-xl text-xs font-bold">
+                <UserIcon size={12} />
+                Showing tasks for <span className="font-black">{emp.name}</span>
+                <span className="bg-indigo-600 text-white px-1.5 py-0.5 rounded-md text-[10px] font-black">{memberTaskCount}</span>
+                <button onClick={() => setSelectedMemberId('ALL')} className="ml-1 text-indigo-400 hover:text-indigo-700 transition-colors"><X size={12} /></button>
+              </div>
+            </div>
+          ) : null;
+        })()}
       </div>
 
       {/* Task Grid */}
@@ -1380,6 +1536,140 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
                   }`}
               >
                 Confirm {actionPrompt.type === 'DELETE' ? 'Delete' : (actionPrompt.type === 'HOLD' ? 'Hold' : 'Terminate')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Edit Task Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+              <h3 className="text-xl font-extrabold text-slate-800">Edit Task</h3>
+              <button onClick={() => setShowEditModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto">
+              {error && (
+                <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+                  <strong className="font-bold">Error: </strong>
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="relative">
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    value={editTaskForm.title || ''}
+                    onChange={e => { setEditTaskForm({ ...editTaskForm, title: e.target.value }); setError(null); }}
+                  />
+                  <AITextEnhancer
+                    text={editTaskForm.title || ''}
+                    onUpdate={(text) => { setEditTaskForm({ ...editTaskForm, title: text }); setError(null); }}
+                    context="concise"
+                    mini={true}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To / Transfer</label>
+                  <select
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    value={editTaskForm.assignedTo || ''}
+                    onChange={e => { setEditTaskForm({ ...editTaskForm, assignedTo: e.target.value }); setError(null); }}
+                  >
+                    <option value="">Select Team Member</option>
+                    {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                      <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
+                  <select
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    value={editTaskForm.priority || 'MEDIUM'}
+                    onChange={e => setEditTaskForm({ ...editTaskForm, priority: e.target.value as any })}
+                  >
+                    <option value="LOW">Low</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="HIGH">High</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
+                  <input
+                    type="date"
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    value={editTaskForm.dueDate || ''}
+                    onChange={e => setEditTaskForm({ ...editTaskForm, dueDate: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
+                </div>
+                <textarea
+                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
+                  value={editTaskForm.description || ''}
+                  onChange={e => setEditTaskForm({ ...editTaskForm, description: e.target.value })}
+                />
+                <AITextEnhancer
+                  text={editTaskForm.description || ''}
+                  onUpdate={(text) => setEditTaskForm({ ...editTaskForm, description: text })}
+                />
+              </div>
+
+              {/* External Link Input */}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
+                <div className="relative">
+                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                  <input
+                    type="url"
+                    className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    value={editTaskForm.externalLink || ''}
+                    onChange={e => setEditTaskForm({ ...editTaskForm, externalLink: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
+                <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
+                  <input type="file" className="hidden" onChange={handleFileChange} />
+                  {attachment ? (
+                    <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
+                      <FileText size={20} />
+                      File Attached ({(attachment.length / 1024).toFixed(0)} KB)
+                      <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                    </div>
+                  ) : (
+                    <div className="text-slate-400 text-sm">
+                      <Upload size={20} className="mx-auto mb-2" />
+                      Click to upload new file (PDF, JPG, PNG)
+                    </div>
+                  )}
+                </label>
+              </div>
+            </div>
+            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+              <button onClick={() => setShowEditModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+              <button
+                type="button"
+                onClick={handleUpdateTask}
+                className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
+                {isLoading ? 'Updating...' : 'Save Changes'}
               </button>
             </div>
           </div>

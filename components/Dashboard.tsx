@@ -1,11 +1,11 @@
 
 import React from 'react';
 import { Employee, AttendanceRecord, ViewMode } from '../types';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, AreaChart, Area } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, AreaChart, Area, Legend } from 'recharts';
 import { Users, AlertTriangle, CheckCircle2, Clock, ChevronRight, Download, RefreshCw, UserCog, Cake, TrendingUp, Activity, Target, Zap } from 'lucide-react';
 import { formatDateKey, isDateSunday } from '../utils/dateUtils';
 import { format, getDate, getMonth } from 'date-fns';
-import { LEAVE_QUOTA_YEARLY } from '../constants';
+
 
 interface DashboardProps {
   employees: Employee[];
@@ -48,25 +48,32 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
   // Productivity Score (Mock logic based on attendance)
   const attendanceRate = employees.length > 0 ? Math.round((presentToday / employees.length) * 100) : 0;
 
-  // Calculate Yearly Leaves for Chart
+  // Calculate Yearly Leaves and Absents for Chart
   const chartData = employees.map(emp => {
     const record = attendanceData[emp.id] || {};
     let leaves = 0;
+    let absents = 0;
     
     Object.entries(record).forEach(([key, val]) => {
         if (key.startsWith(currentYear)) {
-             if (val !== 'OFF' && val !== 'HOLIDAY' && typeof val === 'number') {
-                 leaves += (1 - val);
+             if (val === 'LEAVE') {
+                 leaves += 1;
+             } else if (val === 0) {
+                 absents += 1;
+             } else if (val !== 'OFF' && val !== 'HOLIDAY' && val !== 'CO' && typeof val === 'number') {
+                 if (val > 0 && val < 1) {
+                     leaves += (1 - val);
+                 }
              }
         }
     });
 
-    return { name: emp.name.split(' ')[0], leaves, limit: LEAVE_QUOTA_YEARLY };
+    return { name: emp.name.split(' ')[0], leaves, absents };
   });
 
   const handleGenerateReport = () => {
      // Generate CSV content
-     const headers = ['Employee ID', 'Name', 'Department', 'Present Days', 'Absent Days', 'Leaves Taken', 'Leaves Remaining'];
+     const headers = ['Employee ID', 'Name', 'Department', 'Present Days', 'Absent Days', 'Leaves Taken'];
      
      const rows = employees.map(emp => {
          const record = attendanceData[emp.id] || {};
@@ -74,12 +81,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
          
          Object.entries(record).forEach(([key, val]) => {
              if (key.startsWith(currentYear)) {
-                 if (val === 1) present++;
-                 else if (val === 0) absent++;
-                 else if (typeof val === 'number') {
+             if (val === 'LEAVE') {
+                 leaves += 1;
+             } else if (val === 0) {
+                 absents += 1;
+             } else if (val === 1) {
+                 present += 1;
+             } else if (val !== 'OFF' && val !== 'HOLIDAY' && val !== 'CO' && typeof val === 'number') {
+                 if (val > 0 && val < 1) {
                      leaves += (1 - val);
                      present += val;
                  }
+             }
              }
          });
          
@@ -89,8 +102,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
              emp.department,
              present.toFixed(1),
              absent,
-             leaves.toFixed(1),
-             (LEAVE_QUOTA_YEARLY - leaves).toFixed(1)
+             leaves.toFixed(1)
          ].join(',');
      });
 
@@ -231,19 +243,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
             <div>
                 <h3 className="text-xl font-black text-slate-800 tracking-tight flex items-center gap-3">
                     <Target className="text-blue-500" size={24} />
-                    Leave Analysis Report
+                    Attendance & Leave Analysis
                 </h3>
-                <p className="text-slate-400 text-xs font-bold mt-1">Personnel leave consumption for {currentYear}</p>
-            </div>
-            <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5">
-                    <span className="w-3 h-3 bg-blue-500 rounded-sm"></span>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">Within Quota</span>
-                </div>
-                <div className="flex items-center gap-1.5 ml-4">
-                    <span className="w-3 h-3 bg-red-500 rounded-sm"></span>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">Exceeded</span>
-                </div>
+                <p className="text-slate-400 text-xs font-bold mt-1">Personnel leaves and absents for {currentYear}</p>
             </div>
           </div>
           
@@ -279,14 +281,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
                   itemStyle={{fontSize: '11px', fontWeight: '900', textTransform: 'uppercase'}}
                   labelStyle={{fontSize: '12px', fontWeight: '900', color: '#1e293b', marginBottom: '5px'}}
                 />
-                <Bar dataKey="leaves" radius={[10, 10, 0, 0]} barSize={36}>
-                  {chartData.map((entry, index) => (
-                    <Cell 
-                        key={`cell-${index}`} 
-                        fill={entry.leaves > LEAVE_QUOTA_YEARLY ? 'url(#warningGradient)' : 'url(#barGradient)'} 
-                    />
-                  ))}
-                </Bar>
+                <Legend iconType="circle" wrapperStyle={{fontSize: '11px', fontWeight: '800', textTransform: 'uppercase'}} />
+                <Bar dataKey="leaves" name="Leaves Taken" fill="url(#barGradient)" radius={[10, 10, 0, 0]} barSize={20} />
+                <Bar dataKey="absents" name="Absent Days" fill="url(#warningGradient)" radius={[10, 10, 0, 0]} barSize={20} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -327,7 +324,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
                     </div>
                     <div className="text-left">
                       <span className="block text-sm font-black tracking-tight leading-none mb-1">Leaves Portal</span>
-                      <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Quota Management</span>
+                      <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Leave Management</span>
                     </div>
                   </div>
                   <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />

@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Employee, AttendanceRecord, LeaveRequest, User, Notification, LeaveType, LeaveDurationType, AttendanceValue } from '../types';
-import { LEAVE_QUOTA_YEARLY, LEAVE_SUBJECT_TEMPLATES, LEAVE_TYPES_LIST } from '../constants';
+import { LEAVE_SUBJECT_TEMPLATES, LEAVE_TYPES_LIST } from '../constants';
 import { AlertCircle, CheckCircle, FileBarChart, Plus, X, Send, Clock, CalendarDays, CheckCircle2, XCircle, ArrowRight, User as UserIcon } from 'lucide-react';
 import { isSunday, eachDayOfInterval } from 'date-fns';
 import { AITextEnhancer } from './AITextEnhancer';
@@ -89,8 +89,12 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
         Object.entries(record).forEach(([dateKey, val]) => {
             if (dateKey.startsWith(currentYear)) {
                 // Count partial leaves
-                if (val !== 'OFF' && val !== 'HOLIDAY' && val !== 'CO' && typeof val === 'number') {
-                    totalLeaves += (1 - val);
+                if (val !== 'OFF' && val !== 'HOLIDAY' && val !== 'CO') {
+                    if (typeof val === 'number') {
+                        totalLeaves += (1 - val);
+                    } else if (val === 'LEAVE') {
+                        totalLeaves += 1;
+                    }
                 }
             }
         });
@@ -392,61 +396,38 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
 
                         {isAdmin ? (
                             // ADMIN VIEW: See All Employees
-                            <div className="bg-white rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
-                                <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                                    <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">Team Leave Balances - {currentYear}</h3>
-                                    <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
-                                        <span className="w-3 h-3 bg-indigo-500 rounded-full"></span> Regular Quota: {LEAVE_QUOTA_YEARLY} Days
-                                    </div>
+                            <div className="bg-white rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+                                <div className="p-8 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                                    <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg">Team Leave Analysis - {currentYear}</h3>
                                 </div>
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-left text-sm">
-                                        <thead className="bg-slate-50/30 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                        <thead className="bg-slate-50/30 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
                                             <tr>
-                                                <th className="p-5">Team Member</th>
-                                                <th className="p-5 text-center">Quota</th>
-                                                <th className="p-5 text-center">Utilized</th>
-                                                <th className="p-5 text-center">Remaining</th>
-                                                <th className="p-5 text-center">Health</th>
+                                                <th className="p-6">Team Member</th>
+                                                <th className="p-6 text-center">Total Leaves Taken</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-50">
                                             {employees.map(emp => {
                                                 const taken = calculateYearlyLeaves(emp.id);
-                                                const balance = LEAVE_QUOTA_YEARLY - taken;
-                                                const percentage = Math.min(100, (taken / LEAVE_QUOTA_YEARLY) * 100);
                                                 return (
                                                     <tr key={emp.id} className="group hover:bg-slate-50/80 transition-colors">
-                                                        <td className="p-5">
-                                                            <div className="flex items-center gap-3">
-                                                                <div className="w-9 h-9 bg-slate-100 rounded-xl flex items-center justify-center font-bold text-slate-500 border border-slate-200 group-hover:bg-indigo-50 group-hover:text-indigo-600 group-hover:border-indigo-100 transition-all">
+                                                        <td className="p-6">
+                                                            <div className="flex items-center gap-4">
+                                                                <div className="w-12 h-12 bg-indigo-50 rounded-[1rem] flex items-center justify-center font-black text-indigo-600 border border-indigo-100 shadow-sm group-hover:bg-indigo-600 group-hover:text-white transition-all">
                                                                     {emp.name.charAt(0)}
                                                                 </div>
                                                                 <div>
-                                                                    <div className="font-bold text-slate-700">{emp.name}</div>
-                                                                    <div className="text-[10px] text-slate-400 uppercase font-black">{emp.designation}</div>
+                                                                    <div className="font-black text-slate-800 text-base">{emp.name}</div>
+                                                                    <div className="text-[10px] text-slate-400 uppercase font-black tracking-widest mt-0.5">{emp.designation}</div>
                                                                 </div>
                                                             </div>
                                                         </td>
-                                                        <td className="p-5 text-center font-mono text-slate-500 font-bold">{LEAVE_QUOTA_YEARLY}</td>
-                                                        <td className="p-5 text-center">
-                                                            <div className="flex flex-col items-center gap-1">
-                                                                <span className="font-black text-slate-700">{taken.toFixed(1)}</span>
-                                                                <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                                                    <div className={`h-full ${percentage > 90 ? 'bg-rose-500' : percentage > 70 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${percentage}%` }}></div>
-                                                                </div>
+                                                        <td className="p-6 text-center">
+                                                            <div className="inline-flex items-center justify-center px-4 py-2 bg-rose-50 text-rose-600 rounded-xl font-black text-lg border border-rose-100 shadow-sm">
+                                                                {taken.toFixed(1)} <span className="text-xs ml-1 text-rose-400">Days</span>
                                                             </div>
-                                                        </td>
-                                                        <td className="p-5 text-center">
-                                                            <span className={`font-black text-lg ${balance < 0 ? 'text-rose-500' : 'text-indigo-600'}`}>
-                                                                {balance.toFixed(1)}
-                                                            </span>
-                                                        </td>
-                                                        <td className="p-5 text-center">
-                                                            {balance < 0 ?
-                                                                <span className="text-[10px] bg-rose-100 text-rose-600 px-3 py-1 rounded-full font-black uppercase tracking-tighter">Over Quota</span> :
-                                                                <span className="text-[10px] bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full font-black uppercase tracking-tighter">Healthy</span>
-                                                            }
                                                         </td>
                                                     </tr>
                                                 );
@@ -456,42 +437,25 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                 </div>
                             </div>
                         ) : (
-                            // EMPLOYEE VIEW: See Only My Quota
+                            // EMPLOYEE VIEW: See Only My Leaves
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                                {/* My Balance Card */}
+                                {/* My Leave Analysis Card */}
                                 <div className="bg-white rounded-[2.5rem] p-10 shadow-2xl shadow-slate-200 border border-slate-100 relative overflow-hidden group">
                                     <div className="absolute -right-10 -top-10 w-40 h-40 bg-indigo-500/5 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700"></div>
                                     <h3 className="font-black text-slate-800 mb-8 flex items-center gap-3 text-xl tracking-tight">
                                         <div className="p-2 bg-indigo-600 text-white rounded-xl"><UserIcon size={20} /></div>
-                                        My Leave Wallet
+                                        My Leaves Analysis
                                     </h3>
 
-                                    <div className="space-y-6">
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex flex-col">
-                                                <span className="text-slate-400 text-xs font-black uppercase tracking-widest">Annual Credit</span>
-                                                <span className="text-xl font-black text-slate-800">{LEAVE_QUOTA_YEARLY} <span className="text-sm font-bold text-slate-400">Days</span></span>
+                                    <div className="space-y-6 flex flex-col justify-center items-center py-4">
+                                        <div className="flex flex-col items-center justify-center bg-rose-50/50 p-8 rounded-3xl border border-dashed border-rose-200 w-full">
+                                            <span className="text-rose-400 text-[10px] font-black uppercase tracking-widest mb-2">Total Leaves Taken</span>
+                                            <div className="flex items-baseline gap-2">
+                                                <span className="text-6xl font-black text-rose-600 tracking-tighter">{calculateYearlyLeaves(myEmpId).toFixed(1)}</span>
+                                                <span className="text-xl font-bold text-rose-400">Days</span>
                                             </div>
-                                        </div>
-
-                                        <div className="w-full h-3 bg-slate-50 rounded-full overflow-hidden border border-slate-100">
-                                            <div
-                                                className="h-full bg-gradient-to-r from-indigo-500 to-violet-600 shadow-lg shadow-indigo-200"
-                                                style={{ width: `${Math.min(100, (calculateYearlyLeaves(myEmpId) / LEAVE_QUOTA_YEARLY) * 100)}%` }}
-                                            ></div>
-                                        </div>
-
-                                        <div className="flex justify-between items-center bg-slate-50/50 p-6 rounded-3xl border border-dashed border-slate-200">
-                                            <div className="flex flex-col">
-                                                <span className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Utilized</span>
-                                                <span className="text-2xl font-black text-rose-500">{calculateYearlyLeaves(myEmpId).toFixed(1)}</span>
-                                            </div>
-                                            <div className="h-10 w-px bg-slate-200"></div>
-                                            <div className="flex flex-col text-right">
-                                                <span className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Remaining</span>
-                                                <span className={`text-2xl font-black ${(LEAVE_QUOTA_YEARLY - calculateYearlyLeaves(myEmpId)) < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                                                    {(LEAVE_QUOTA_YEARLY - calculateYearlyLeaves(myEmpId)).toFixed(1)}
-                                                </span>
+                                            <div className="mt-4 px-4 py-1.5 bg-rose-100 text-rose-600 rounded-full text-[10px] font-black uppercase tracking-widest">
+                                                Year {currentYear}
                                             </div>
                                         </div>
                                     </div>

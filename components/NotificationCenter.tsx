@@ -82,13 +82,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   }, [currentUser]);
 
   const markAllRead = async () => {
-    // Persist mark-all-read to server by marking each notification read, then re-fetch
     try {
-      const arr = ensureArray(notifications);
-      if (arr.length === 0) return;
-      await Promise.all(arr.map(n => safePut(`/notifications/${encodeURIComponent(n.id)}/read`, {}, { withCredentials: true })));
+      const qUser = currentUser.employeeId || currentUser.id;
+      await safePut(`/notifications/read-all/${encodeURIComponent(qUser)}`, {}, { withCredentials: true });
       await fetchNotifications();
-    } catch (e) { console.error('Failed to mark notifications read', e && (e.message || e)); }
+    } catch (e) { console.error('Failed to mark all notifications read', e && (e.message || e)); }
   };
 
   const deleteNotification = async (id: string) => {
@@ -96,6 +94,22 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       await safeDelete(`/notifications/${encodeURIComponent(id)}`, { withCredentials: true });
       await fetchNotifications();
     } catch (e) { console.error('Failed to delete notification', e && (e.message || e)); }
+  };
+
+  const formatTime = (timeString: string) => {
+    if (!timeString) return '';
+    try {
+      // If it already looks like a formatted short time (e.g., "10:30 AM")
+      if (!timeString.includes('T') && timeString.includes(':')) {
+        const testDate = new Date(timeString);
+        if (isNaN(testDate.getTime())) return timeString;
+      }
+      const d = new Date(timeString);
+      if (isNaN(d.getTime())) return timeString;
+      return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(d);
+    } catch (e) {
+      return timeString;
+    }
   };
 
   const getIcon = (type: Notification['type']) => {
@@ -236,7 +250,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                        {note?.title || 'Notification'}
                        {!note?.read && <span className="ml-2 px-1.5 py-0.5 bg-blue-100 text-[10px] text-blue-600 rounded-md uppercase tracking-wider font-black">New</span>}
                      </h4>
-                     <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded-full shrink-0">{note?.time || ''}</span>
+                     {note?.time ? <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded-full shrink-0">{formatTime(note.time)}</span> : null}
                    </div>
                    <p className={`text-sm leading-relaxed ${!note?.read ? 'text-slate-700 font-medium' : 'text-slate-500 font-normal'}`}>
                      {formatShortMessage(note?.message || '')}

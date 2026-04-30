@@ -24,8 +24,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.DATABASE, label: 'Data Hub & Backups', icon: Database },
     { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
     { id: ViewMode.ORGANIZATION_TREE, label: 'Organization Tree', icon: GitGraph }, 
-    { id: ViewMode.PROJECTS, label: 'Project Sites', icon: HardHat },
       { id: ViewMode.PMS_ADMIN, label: 'PMS Dashboard', icon: BarChart3 },
+    { id: ViewMode.CRM, label: 'CRM', icon: Users },
     { id: ViewMode.TIME_LOGS, label: 'Shift Logs', icon: Clock },
     { id: ViewMode.FMS_TASKS, label: 'Task Management', icon: ClipboardList },
     { id: ViewMode.CHECKLIST, label: 'Checklist Monitor', icon: ListChecks },
@@ -48,23 +48,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
     { id: ViewMode.CHECKLIST, label: 'My Checklist', icon: ListChecks },
     { id: ViewMode.EMPLOYEE_TASKS, label: 'My Tasks', icon: ClipboardList },
+    { id: ViewMode.PMS_EMPLOYEE, label: 'PMS', icon: BarChart3 },
     { id: ViewMode.EMPLOYEE_ORDERS, label: 'O2D', icon: Package },
     { id: ViewMode.LEAVES, label: 'Leave Application', icon: FileBarChart },
     { id: ViewMode.EMPLOYEE_CHAT, label: 'Team Chat', icon: MessageCircle }, 
     { id: ViewMode.EMPLOYEE_QUERIES, label: 'Raise Query', icon: HelpCircle }, 
     { id: ViewMode.NOTEPAD, label: 'My Notepad', icon: StickyNote }, 
     { id: ViewMode.README, label: 'Help & Docs', icon: Info },
-      { id: ViewMode.PMS_EMPLOYEE, label: 'PMS', icon: BarChart3 },
   ];
 
-  const isProjectTeam = userDepartment === 'Project Development & Execution';
-    if (isProjectTeam && role === 'EMPLOYEE') {
-      employeeItems.splice(3, 0, { id: ViewMode.EMPLOYEE_PROJECTS, label: 'Project Sites', icon: HardHat });
-    }
+
 
   const isFinanceOrSales = userDepartment === 'Finance & Accounts' || userDepartment === 'Sales & Marketing';
   if (isFinanceOrSales && role === 'EMPLOYEE') {
       employeeItems.splice(3, 0, { id: ViewMode.FINANCE, label: 'Finance & Payments', icon: DollarSign });
+      employeeItems.splice(4, 0, { id: ViewMode.EMPLOYEE_CRM, label: 'CRM Leads', icon: Users });
   }
 
   const menuItems = role === 'ADMIN' ? adminItems : employeeItems;
@@ -80,16 +78,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
           <button onClick={onClose} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white md:hidden">
             <X size={24} />
           </button>
-          <div className="flex items-center gap-3 mb-1">
+          <button 
+            onClick={() => {
+              onNavigate(role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+              onClose();
+            }}
+            className="flex items-center gap-3 mb-1 text-left w-full hover:opacity-80 transition-opacity focus:outline-none"
+          >
             <div className="relative group">
-               <div className="absolute inset-0 bg-blue-500 rounded-lg blur opacity-50"></div>
+               <div className="absolute inset-0 bg-blue-500 rounded-lg blur opacity-50 transition-opacity group-hover:opacity-75"></div>
                <img src={COMPANY_LOGO} alt="Logo" className="relative w-10 h-10 object-contain bg-white rounded-lg shadow-lg p-0.5" />
             </div>
             <div>
               <h1 className="text-xl font-black tracking-tight leading-none text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400">KALRA</h1>
               <h1 className="text-xl font-black tracking-tight leading-none text-slate-500">BUILDTECH</h1>
             </div>
-          </div>
+          </button>
           <div className="mt-4 px-3 py-1 bg-slate-800/50 rounded-full border border-white/5 inline-flex items-center backdrop-blur-sm">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse mr-2"></span>
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-300">{role} PANEL</span>

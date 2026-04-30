@@ -89,14 +89,19 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
     const dateKey = formatDateKey(date);
     const currentVal = attendanceData[empId]?.[dateKey];
 
+    const SEQUENCE: AttendanceValue[] = [1, 0, 0.5, 0.25, 0.75, 'LEAVE', 'CO', 'OFF', 'HOLIDAY'];
+    
     let nextVal: AttendanceValue = 1;
 
-    if (currentVal === undefined) {
+    if (currentVal === undefined || currentVal === null) {
       nextVal = 1;
     } else {
-      if (currentVal === 1) nextVal = 0;
-      else if (currentVal === 0) nextVal = 1;
-      else nextVal = 1;
+      const idx = SEQUENCE.indexOf(currentVal);
+      if (idx !== -1) {
+        nextVal = SEQUENCE[(idx + 1) % SEQUENCE.length];
+      } else {
+        nextVal = 1;
+      }
     }
 
     updateAttendance(empId, date, nextVal);
@@ -104,7 +109,28 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
 
   const handleContextMenu = (e: React.MouseEvent, empId: string, date: Date) => {
     e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, empId, date });
+    
+    const menuWidth = 200;
+    const menuHeight = 350; // Approximate height
+    
+    let x = e.clientX;
+    let y = e.clientY;
+
+    // Slide left if too close to right edge
+    if (x + menuWidth > window.innerWidth) {
+      x = window.innerWidth - menuWidth - 10;
+    }
+    
+    // Slide up if too close to bottom edge
+    if (y + menuHeight > window.innerHeight) {
+      y = window.innerHeight - menuHeight - 10;
+    }
+
+    // Ensure it doesn't go off the top or left edge
+    x = Math.max(10, x);
+    y = Math.max(10, y);
+
+    setContextMenu({ x, y, empId, date });
   };
 
   const handleMenuSelect = (val: AttendanceValue) => {
@@ -172,7 +198,13 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
         else effectiveVal = 0; // It is strictly past and undefined, so Absent
       }
 
-      if (effectiveVal === 'OFF' || effectiveVal === 'HOLIDAY') return;
+      if (effectiveVal === 'OFF' || effectiveVal === 'HOLIDAY' || effectiveVal === 'CO') return;
+
+      if (effectiveVal === 'LEAVE') {
+        totalLeaves += 1;
+        fullLeaves++;
+        return;
+      }
 
       const numVal = effectiveVal as number;
       worked += numVal;
@@ -237,11 +269,11 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
         <table className="border-collapse w-full">
           <thead className="bg-slate-50 sticky top-0 z-20 shadow-sm">
             <tr>
-              <th className="sticky left-0 bg-slate-50 z-30 p-4 min-w-[80px] text-left text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r">ID</th>
-              <th className="sticky left-[80px] bg-slate-50 z-30 p-4 min-w-[160px] text-left text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r shadow-[4px_0_8px_-4px_rgba(0,0,0,0.05)]">Name</th>
-              <th className="p-2 w-14 text-center text-[10px] uppercase font-bold text-blue-600 bg-blue-50/50 border-b border-blue-100 border-r border-slate-200">Work</th>
-              <th className="p-2 w-14 text-center text-[10px] uppercase font-bold text-red-600 bg-red-50/50 border-b border-red-100 border-r border-slate-200">Full</th>
-              <th className="p-2 w-14 text-center text-[10px] uppercase font-bold text-orange-600 bg-orange-50/50 border-b border-orange-100 border-r border-slate-200">Total</th>
+              <th className="sticky left-0 bg-slate-50 z-30 p-4 min-w-[80px] text-left text-xs font-black uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r">ID</th>
+              <th className="sticky left-[80px] bg-slate-50 z-30 p-4 min-w-[160px] text-left text-xs font-black uppercase tracking-wider text-slate-500 border-b border-slate-200 border-r shadow-[4px_0_8px_-4px_rgba(0,0,0,0.05)]">Name</th>
+              <th className="p-2 w-14 text-center text-[10px] uppercase font-black text-blue-600 bg-blue-50/50 border-b border-blue-100 border-r border-slate-200">Work</th>
+              <th className="p-2 w-14 text-center text-[10px] uppercase font-black text-rose-600 bg-rose-50/50 border-b border-rose-100 border-r border-slate-200">Full</th>
+              <th className="p-2 w-14 text-center text-[10px] uppercase font-black text-amber-600 bg-amber-50/50 border-b border-amber-100 border-r border-slate-200">Total</th>
 
               {days.map(d => {
                 const isSun = isDateSunday(d);
@@ -249,11 +281,11 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
                 return (
                   <th
                     key={d.toString()}
-                    className={`p-2 min-w-[44px] text-center border-b border-slate-200 border-r border-slate-100 group transition-colors ${isSun || holiday ? 'bg-green-50' : 'bg-slate-50'}`}
+                    className={`p-2 min-w-[44px] text-center border-b border-slate-200 border-r border-slate-100 group transition-colors ${isSun || holiday ? 'bg-emerald-50' : 'bg-slate-50'}`}
                     title={holiday?.name}
                   >
-                    <div className={`text-sm font-bold ${isSun || holiday ? 'text-green-700' : 'text-slate-700'}`}>{format(d, 'd')}</div>
-                    <div className={`text-[9px] font-bold uppercase tracking-wider ${isSun || holiday ? 'text-green-600/70' : 'text-slate-400'}`}>{format(d, 'EEE')}</div>
+                    <div className={`text-sm font-black ${isSun || holiday ? 'text-emerald-700' : 'text-slate-700'}`}>{format(d, 'd')}</div>
+                    <div className={`text-[9px] font-bold uppercase tracking-wider ${isSun || holiday ? 'text-emerald-600/70' : 'text-slate-400'}`}>{format(d, 'EEE')}</div>
                   </th>
                 );
               })}
@@ -288,9 +320,9 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
                       </div>
                     </td>
 
-                    <td className="p-2 text-center text-sm font-bold text-slate-800 bg-blue-50/20 border-r border-slate-100">{stats?.worked.toFixed(2) || 0}</td>
-                    <td className="p-2 text-center text-sm font-bold text-slate-500 bg-red-50/20 border-r border-slate-100">{stats?.fullLeaves || 0}</td>
-                    <td className="p-2 text-center text-sm font-bold text-slate-800 bg-orange-50/20 border-r border-slate-100">{stats?.totalLeaves.toFixed(2) || 0}</td>
+                    <td className="p-2 text-center text-sm font-black text-slate-800 bg-blue-50/20 border-r border-slate-100">{stats?.worked.toFixed(2) || 0}</td>
+                    <td className="p-2 text-center text-sm font-black text-slate-500 bg-rose-50/20 border-r border-slate-100">{stats?.fullLeaves || 0}</td>
+                    <td className="p-2 text-center text-sm font-black text-slate-800 bg-amber-50/20 border-r border-slate-100">{stats?.totalLeaves.toFixed(2) || 0}</td>
 
                     {days.map(d => {
                       const currentDay = startOfDay(d);
@@ -327,7 +359,7 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
                       }
 
                       const colorClass = val === null ? 'bg-white' : (STATUS_COLORS[val.toString()] || 'bg-white');
-                      const displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : val));
+                      const displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : (val === 'LEAVE' ? 'L' : (val === 'CO' ? 'C' : val))));
 
                       // Style hint for pre-tracking empty cells (optional, kept subtle)
                       const cellStyle = (isBeforeTracking && val === null) ? '' : '';
@@ -340,7 +372,7 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
                           className={`p-1 border-r border-slate-100 cursor-pointer text-center relative ${cellStyle}`}
                           title={holiday ? `${holiday.name}` : undefined}
                         >
-                          <div className={`w-8 h-8 mx-auto rounded-lg flex items-center justify-center text-[10px] font-bold shadow-sm transition-all hover:scale-110 hover:shadow-md ${colorClass} ${val === 1 ? 'border border-slate-100' : ''}`}>
+                          <div className={`w-8 h-8 mx-auto rounded-xl flex items-center justify-center text-[10px] font-black shadow-sm transition-all hover:scale-110 hover:shadow-md ${colorClass} ${val === 1 ? 'border border-slate-200 bg-white hover:bg-slate-50' : ''}`}>
                             {displayText}
                           </div>
                         </td>
@@ -352,14 +384,16 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
           </tbody>
         </table>
       </div>
-      <div className="p-4 bg-white border-t border-slate-200 text-xs flex flex-wrap gap-4 md:gap-6 text-slate-600 font-medium shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-30">
-        <span className="flex items-center gap-2"><div className="w-4 h-4 rounded-md bg-white border border-slate-300 shadow-sm flex items-center justify-center text-[8px] font-bold">1</div> Present (1)</span>
-        <span className="flex items-center gap-2"><div className="w-4 h-4 rounded-md bg-red-500 shadow-sm shadow-red-500/30"></div> Absent (0)</span>
-        <span className="flex items-center gap-2"><div className="w-4 h-4 rounded-md bg-yellow-300 shadow-sm shadow-yellow-300/30"></div> Half Day (0.5)</span>
-        <span className="flex items-center gap-2"><div className="w-4 h-4 rounded-md bg-blue-200 shadow-sm shadow-blue-200/30"></div> Quarter Day (0.25)</span>
-        <span className="flex items-center gap-2"><div className="w-4 h-4 rounded-md bg-orange-300 shadow-sm shadow-orange-300/30"></div> Short Leave (0.75)</span>
-        <span className="flex items-center gap-2"><div className="w-4 h-4 rounded-md bg-[#00b050] shadow-sm shadow-green-500/30"></div> Off/Holiday</span>
-        <span className="ml-auto text-slate-400 italic">Right-click any cell to manually set specific status</span>
+      <div className="p-4 bg-white border-t border-slate-200 text-xs flex flex-wrap gap-4 md:gap-6 text-slate-600 font-bold shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-30">
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-white border border-slate-300 shadow-sm flex items-center justify-center text-[10px] font-black">1</div> Present (1)</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-red-500 shadow-sm shadow-red-500/30 flex items-center justify-center text-[10px] font-black text-white">0</div> Absent (0)</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-pink-500 shadow-sm shadow-pink-500/30 flex items-center justify-center text-[10px] font-black text-white">L</div> Leave</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-yellow-300 shadow-sm shadow-yellow-300/30"></div> Half Day (0.5)</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-blue-200 shadow-sm shadow-blue-200/30"></div> Quarter Day (0.25)</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-orange-300 shadow-sm shadow-orange-300/30"></div> Short Leave (0.75)</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-purple-200 shadow-sm shadow-purple-200/30 flex items-center justify-center text-[10px] font-black text-purple-900">C</div> Comp Off</span>
+        <span className="flex items-center gap-2"><div className="w-5 h-5 rounded-lg bg-[#00b050] shadow-sm shadow-green-500/30"></div> Off/Holiday</span>
+        <span className="ml-auto text-slate-400 italic font-medium">Click repeatedly or right-click cell to set status</span>
       </div>
 
       {/* Context Menu */}
@@ -369,28 +403,34 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
           className="fixed z-50 bg-white rounded-xl shadow-xl border border-slate-100 w-48 py-1.5 animate-in fade-in zoom-in-95 duration-100 overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase border-b border-slate-50 mb-1">Set Status</div>
-          <button onClick={() => handleMenuSelect(1)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-white border border-slate-300"></div> Present (1.0)
+          <div className="px-4 py-2 text-[10px] font-black text-slate-400 uppercase border-b border-slate-50 mb-1">Set Status</div>
+          <button onClick={() => handleMenuSelect(1)} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-white border border-slate-300 flex items-center justify-center text-[8px] font-black">1</div> Present (1.0)
           </button>
-          <button onClick={() => handleMenuSelect(0)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-red-500"></div> Absent (0)
+          <button onClick={() => handleMenuSelect(0)} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-red-500 shadow-sm shadow-red-500/30"></div> Absent (0)
           </button>
-          <button onClick={() => handleMenuSelect(0.5)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-yellow-300"></div> Half Day (0.5)
+          <button onClick={() => handleMenuSelect('LEAVE')} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-pink-500 shadow-sm shadow-pink-500/30 flex items-center justify-center text-[8px] font-black text-white">L</div> Leave
           </button>
-          <button onClick={() => handleMenuSelect(0.25)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-blue-200"></div> Quarter Day (0.25)
+          <button onClick={() => handleMenuSelect(0.5)} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-yellow-300 shadow-sm shadow-yellow-300/30"></div> Half Day (0.5)
           </button>
-          <button onClick={() => handleMenuSelect(0.75)} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-orange-300"></div> Short Leave (0.75)
+          <button onClick={() => handleMenuSelect(0.25)} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-blue-200 shadow-sm shadow-blue-200/30"></div> Quarter Day (0.25)
+          </button>
+          <button onClick={() => handleMenuSelect(0.75)} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-orange-300 shadow-sm shadow-orange-300/30"></div> Short Leave (0.75)
+          </button>
+          <button onClick={() => handleMenuSelect('CO')} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-purple-200 shadow-sm shadow-purple-200/30 flex items-center justify-center text-[8px] font-black text-purple-900">C</div> Comp Off
           </button>
           <div className="my-1 border-t border-slate-50"></div>
-          <button onClick={() => handleMenuSelect('OFF')} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-[#00b050]"></div> Off Day
+          <button onClick={() => handleMenuSelect('OFF')} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-[#00b050] shadow-sm shadow-[#00b050]/30"></div> Off Day
           </button>
-          <button onClick={() => handleMenuSelect('HOLIDAY')} className="w-full text-left px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-[#00b050]"></div> Holiday
+          <button onClick={() => handleMenuSelect('HOLIDAY')} className="w-full text-left px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-3">
+            <div className="w-4 h-4 rounded-md bg-[#00b050] shadow-sm shadow-[#00b050]/30"></div> Holiday
           </button>
         </div>
       )}

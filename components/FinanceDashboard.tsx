@@ -10,8 +10,6 @@ interface FinanceDashboardProps {
     setClientFinancials: React.Dispatch<React.SetStateAction<ClientFinancial[]>>;
     vendorFinancials: VendorFinancial[];
     setVendorFinancials: React.Dispatch<React.SetStateAction<VendorFinancial[]>>;
-    projects: Project[];
-    setProjects: React.Dispatch<React.SetStateAction<Project[]>>;
     currentUser: User;
 }
 
@@ -34,7 +32,6 @@ const StatCard = ({ title, value, subtext, icon: Icon, gradient, delay }: any) =
 export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
     clientFinancials, setClientFinancials,
     vendorFinancials, setVendorFinancials,
-    projects, setProjects,
     currentUser
 }) => {
     const [activeTab, setActiveTab] = useState<'CLIENT' | 'VENDOR'>('CLIENT');
@@ -123,14 +120,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
         const today = new Date().toISOString().split('T')[0];
         try {
             if (activeTab === 'CLIENT') {
-                let finalProjectId = newClientFin.projectId;
-                if (isNewProjectMode && newProjectName) {
-                    const newProjId = `P-${Date.now()}`;
-                    const newProject: Project = { id: newProjId, name: newProjectName, location: newProjectLocation || 'Main Site', status: 'ACTIVE', assignedEmployees: [], description: 'Created from Finance Dashboard' };
-                    setProjects(prev => [...prev, newProject]);
-                    finalProjectId = newProjId;
-                }
-                if (!finalProjectId || !newClientFin.clientName || !newClientFin.totalDealValue) { alert('Please select a project and enter client details.'); return; }
+                const finalProjectId = newProjectName.trim() || newClientFin.projectId || 'General';
+                if (!newProjectName.trim() || !newClientFin.clientName || !newClientFin.totalDealValue) { alert('Please enter project name and client details.'); return; }
                 const desc = JSON.stringify({ clientName: newClientFin.clientName, projectId: finalProjectId });
                 await safePost('/finance', { amount: Number(newClientFin.totalDealValue), currency: 'INR', type: 'CLIENT', description: desc, date: newClientFin.registrationDate || today }, { withCredentials: true });
             } else {
@@ -552,51 +543,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                             {activeTab === 'CLIENT' ? (
                                 <>
                                     <div>
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Project</label>
-                                        {isNewProjectMode ? (
-                                            <div className="space-y-2 bg-indigo-50 p-3 rounded-xl border border-indigo-100">
-                                                <div className="flex justify-between items-center mb-1">
-                                                    <span className="text-xs font-bold text-indigo-800 uppercase">New Project Details</span>
-                                                    <button onClick={() => setIsNewProjectMode(false)} className="text-xs text-indigo-500 underline hover:text-indigo-700">Cancel</button>
-                                                </div>
-                                                <input
-                                                    type="text"
-                                                    className="w-full border border-indigo-200 rounded-lg p-2 text-sm focus:outline-none focus:border-indigo-500"
-                                                    placeholder="Enter New Project Name"
-                                                    value={newProjectName}
-                                                    onChange={(e) => setNewProjectName(e.target.value)}
-                                                    autoFocus
-                                                />
-                                                <div className="relative">
-                                                    <MapPin size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-indigo-400" />
-                                                    <input
-                                                        type="text"
-                                                        className="w-full border border-indigo-200 rounded-lg pl-8 p-2 text-sm focus:outline-none focus:border-indigo-500"
-                                                        placeholder="Location (Optional)"
-                                                        value={newProjectLocation}
-                                                        onChange={(e) => setNewProjectLocation(e.target.value)}
-                                                    />
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div className="flex gap-2">
-                                                <select
-                                                    className="flex-1 border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
-                                                    value={newClientFin.projectId || ''}
-                                                    onChange={e => setNewClientFin({ ...newClientFin, projectId: e.target.value })}
-                                                >
-                                                    <option value="">Select Project</option>
-                                                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                                                </select>
-                                                <button
-                                                    onClick={() => setIsNewProjectMode(true)}
-                                                    className="p-3 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 border border-indigo-200 transition-colors"
-                                                    title="Add New Project"
-                                                >
-                                                    <Plus size={20} />
-                                                </button>
-                                            </div>
-                                        )}
+                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Project Name</label>
+                                        <input
+                                            type="text"
+                                            className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            placeholder="Enter project name (e.g. Aero District)"
+                                            value={newProjectName}
+                                            onChange={(e) => setNewProjectName(e.target.value)}
+                                        />
                                     </div>
                                     <div>
                                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Client Name</label>

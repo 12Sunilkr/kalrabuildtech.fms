@@ -266,7 +266,7 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
             attendanceVal = 0; // Absent
         }
 
-        const tId = `T-${log.empId}-${log.date}`;
+        const tId = log.id;
         const aId = `A-${log.empId}-${log.date}`;
         try {
             await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: clockOutIso }, { withCredentials: true });
@@ -313,18 +313,19 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
 
         } catch (err) {
             console.warn('Manual out update failed, falling back to local update', err);
-            // Fallback behavior: update local state so UI reflects change until next refresh
-            setTimeLogs(prev => ({
-                ...prev,
-                [log.empId]: {
-                    ...(prev[log.empId] || {}),
-                    [log.date]: {
-                        ...log,
-                        clockOut: clockOutIso,
-                        durationHours: durationHours
+            // Fallback behavior: map over the array rather than overwriting it with an object
+            setTimeLogs(prev => {
+                const userLogs = prev[log.empId] || {};
+                const dLogs = userLogs[log.date] || [];
+                const updatedLogs = dLogs.map(l => l.id === log.id ? { ...l, clockOut: clockOutIso, durationHours: durationHours } : l);
+                return {
+                    ...prev,
+                    [log.empId]: {
+                        ...userLogs,
+                        [log.date]: updatedLogs
                     }
-                }
-            }));
+                };
+            });
             setAttendanceData(prev => ({
                 ...prev,
                 [log.empId]: {

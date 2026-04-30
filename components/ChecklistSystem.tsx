@@ -5,7 +5,7 @@ import {
     ListChecks, Plus, Calendar, CheckCircle2, Clock, Trash2, X, RefreshCw,
     AlertCircle, Loader2, Info, ShieldCheck, Sun, ArrowRight, Target,
     Filter, Search, ChevronLeft, ChevronRight, CheckCheck, Circle,
-    BarChart3, TrendingUp, Users, AlertTriangle, Zap
+    BarChart3, TrendingUp, Users, AlertTriangle, Zap, Pencil, Save
 } from 'lucide-react';
 import { format, addDays, addMonths, addYears, addWeeks, isSunday, isBefore, getDay } from 'date-fns';
 
@@ -30,6 +30,7 @@ const FrequencyBadge: React.FC<{ freq: string }> = ({ freq }) => {
         'ALTERNATE': { label: 'Alt Day', color: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
         'WEEKLY': { label: 'Weekly', color: 'bg-violet-50 text-violet-700 border-violet-200' },
         'FORTNIGHTLY': { label: 'Fortnightly', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+        'ALTERNATE-WEEK': { label: 'Alt Week', color: 'bg-purple-50 text-purple-700 border-purple-200' },
         'MONTHLY': { label: 'Monthly', color: 'bg-amber-50 text-amber-700 border-amber-200' },
         'QUARTERLY': { label: 'Quarterly', color: 'bg-orange-50 text-orange-700 border-orange-200' },
         'HALF-YEARLY': { label: 'Half-Yearly', color: 'bg-rose-50 text-rose-700 border-rose-200' },
@@ -51,6 +52,14 @@ const StatusPill: React.FC<{ status: string }> = ({ status }) => (
         ? <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
             <CheckCheck size={10} /> Done
         </span>
+        : status === 'STOPPED'
+        ? <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-200">
+            <AlertCircle size={10} /> Stopped
+        </span>
+        : status === 'MISSED'
+        ? <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-orange-50 text-orange-700 border border-orange-200">
+            <X size={10} /> Missed
+        </span>
         : <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
             <Circle size={10} /> Pending
         </span>
@@ -61,18 +70,23 @@ const StatusPill: React.FC<{ status: string }> = ({ status }) => (
 export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
     templates, setTemplates, instances, setInstances, currentUser, employees, holidays, addNotification
 }) => {
-    const [activeTab, setActiveTab] = useState<'AGENDA' | 'MONITOR' | 'MASTER'>('AGENDA');
+    const [activeTab, setActiveTab] = useState<'AGENDA' | 'MONITOR' | 'MISSED' | 'MASTER'>('AGENDA');
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [markingIds, setMarkingIds] = useState<Set<string>>(new Set());
     const [refreshTrigger, setRefreshTrigger] = useState(0);
 
+    // Edit Frequency state
+    const [editingTemplate, setEditingTemplate] = useState<ChecklistTemplate | null>(null);
+    const [editConfig, setEditConfig] = useState<{ frequency: FrequencyType; particularDateType?: 'EVERY-MONTH' | 'EVERY-YEAR'; startDate: string }>({ frequency: 'DAILY', startDate: '' });
+    const [isSavingFreq, setIsSavingFreq] = useState(false);
+
     // Monitor filters
     const [monitorLeadId, setMonitorLeadId] = useState<string>(
         currentUser.role === 'ADMIN' ? 'ALL' : (currentUser.employeeId || String(currentUser.id) || 'ALL')
     );
-    const [monitorStatus, setMonitorStatus] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('ALL');
+    const [monitorStatus, setMonitorStatus] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED'>('ALL');
     const [monitorSearch, setMonitorSearch] = useState('');
     const [agendaSearch, setAgendaSearch] = useState('');
     const [agendaDateFilter, setAgendaDateFilter] = useState<'TODAY' | 'UPCOMING_WEEK' | 'ALL'>('TODAY');
@@ -146,6 +160,9 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                             rows.forEach((it: any) => {
                                 try {
                                     const p = JSON.parse(it.item);
+                                    const status = it.done ? 'COMPLETED' : (p.status ?? 'PENDING');
+                                    if (tpl.active === false && status === 'PENDING') return;
+
                                     insts.push({
                                         ...p,
                                         dbId: it.id,
@@ -154,13 +171,16 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                         department: p.department ?? tpl.department,
                                         taskName: p.taskName ?? tpl.taskName,
                                         templateId: String(tpl.id),
-                                        status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'),
+                                        status: status,
                                         completedDate: p.completedDate,
                                     });
                                 } catch {
+                                    const status = it.done ? 'COMPLETED' : 'PENDING';
+                                    if (tpl.active === false && status === 'PENDING') return;
+
                                     insts.push({
                                         id: it.id, templateId: String(tpl.id), date: it.item,
-                                        status: it.done ? 'COMPLETED' : 'PENDING',
+                                        status: status,
                                         dbId: it.id, doerId: tpl.doerId,
                                         department: tpl.department, taskName: tpl.taskName,
                                     });
@@ -211,8 +231,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                 } else if (cfg.frequency === 'DAILY' || cfg.frequency === 'ALTERNATE') {
                                     const step = cfg.frequency === 'ALTERNATE' ? 2 : 1;
                                     while (iB(cursor, horizon) && idx < MAX) { pushInst(cursor); cursor = aD(cursor, step); }
-                                } else if (cfg.frequency === 'WEEKLY' || cfg.frequency === 'FORTNIGHTLY') {
-                                    const step = cfg.frequency === 'FORTNIGHTLY' ? 2 : 1;
+                                } else if (cfg.frequency === 'WEEKLY' || cfg.frequency === 'FORTNIGHTLY' || cfg.frequency === 'ALTERNATE-WEEK') {
+                                    const step = (cfg.frequency === 'FORTNIGHTLY' || cfg.frequency === 'ALTERNATE-WEEK') ? 2 : 1;
                                     while (iB(cursor, horizon) && idx < MAX) { pushInst(cursor); cursor = aW(cursor, step); }
                                 } else {
                                     let ms = 1;
@@ -272,6 +292,7 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
     }, [holidays]);
 
     const generateInstances = (template: ChecklistTemplate): ChecklistInstance[] => {
+        if (template.active === false) return [];
         const items: ChecklistInstance[] = [];
         const config = template.config;
         const [sy, sm, sd] = template.startDate.split('-');
@@ -290,8 +311,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
         else if (config.frequency === 'DAILY' || config.frequency === 'ALTERNATE') {
             const step = config.frequency === 'ALTERNATE' ? 2 : 1;
             while (isBefore(cursor, horizon) && count < MAX) { push(cursor, count++); cursor = addDays(cursor, step); }
-        } else if (config.frequency === 'WEEKLY' || config.frequency === 'FORTNIGHTLY') {
-            const step = config.frequency === 'FORTNIGHTLY' ? 2 : 1;
+        } else if (config.frequency === 'WEEKLY' || config.frequency === 'FORTNIGHTLY' || config.frequency === 'ALTERNATE-WEEK') {
+            const step = (config.frequency === 'FORTNIGHTLY' || config.frequency === 'ALTERNATE-WEEK') ? 2 : 1;
             while (isBefore(cursor, horizon) && count < MAX) { push(cursor, count++); cursor = addWeeks(cursor, step); }
         } else {
             let ms = 1;
@@ -374,8 +395,58 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
             await api.put(`/checklists/${dbId}`, { done: true, item: JSON.stringify(updated) }, { withCredentials: true });
         } catch (err) {
             console.error('Mark done failed', err);
-            setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'PENDING', completedDate: undefined } : i));
+            setInstances(prev => prev.map(i => i.id === id ? { ...i, status: instance.status, completedDate: instance.completedDate } : i));
             alert('Failed to mark task as done. Please try again.');
+        } finally {
+            setMarkingIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+        }
+    };
+
+    const handleStopTask = async (id: string, dbId?: string) => {
+        const instance = instances.find(i => i.id === id);
+        if (!instance || instance.status !== 'PENDING' || markingIds.has(id)) return;
+
+        if (!dbId) {
+            console.warn('No dbId for', id);
+            alert('Hold on! The system is still syncing this task with the server. Please wait a moment and refresh before trying again.');
+            return;
+        }
+
+        setMarkingIds(prev => new Set(prev).add(id));
+        setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'STOPPED' } : i));
+
+        try {
+            const updated = { ...instance, status: 'STOPPED' };
+            await api.put(`/checklists/${dbId}`, { done: false, item: JSON.stringify(updated) }, { withCredentials: true });
+        } catch (err) {
+            console.error('Stop task failed', err);
+            setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'PENDING' } : i));
+            alert('Failed to stop task. Please try again.');
+        } finally {
+            setMarkingIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+        }
+    };
+
+    const handleMissTask = async (id: string, dbId?: string) => {
+        const instance = instances.find(i => i.id === id);
+        if (!instance || instance.status !== 'PENDING' || markingIds.has(id)) return;
+
+        if (!dbId) {
+            console.warn('No dbId for', id);
+            alert('Hold on! The system is still syncing this task with the server. Please wait a moment and refresh before trying again.');
+            return;
+        }
+
+        setMarkingIds(prev => new Set(prev).add(id));
+        setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'MISSED' } : i));
+
+        try {
+            const updated = { ...instance, status: 'MISSED' };
+            await api.put(`/checklists/${dbId}`, { done: false, item: JSON.stringify(updated) }, { withCredentials: true });
+        } catch (err) {
+            console.error('Miss task failed', err);
+            setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'PENDING' } : i));
+            alert('Failed to mark task as missed. Please try again.');
         } finally {
             setMarkingIds(prev => { const s = new Set(prev); s.delete(id); return s; });
         }
@@ -390,6 +461,93 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
         } catch (err) {
             console.error('Delete failed', err);
             alert('Failed to delete template.');
+        }
+    };
+
+    const handleToggleActive = async (tpl: ChecklistTemplate) => {
+        const newActive = tpl.active === false ? true : false;
+        if (!newActive && !confirm('Stop this routine? All future pending tasks will be hidden, but past completed/stopped tasks will remain.')) return;
+        if (newActive && !confirm('Reactivate this routine? The routine will resume generating tasks. You may need to refresh the page to see new tasks.')) return;
+
+        try {
+            const updated = { ...tpl, active: newActive };
+            await api.put(`/checklist-templates/${encodeURIComponent(tpl.id)}`, updated, { withCredentials: true });
+            setTemplates(prev => prev.map(t => t.id === tpl.id ? updated : t));
+
+            if (!newActive) {
+                setInstances(prev => prev.filter(i => !(String(i.templateId) === String(tpl.id) && i.status === 'PENDING')));
+            } else {
+                const newInsts = generateInstances(updated);
+                setInstances(prev => [...prev, ...newInsts]);
+                if (newInsts.length > 0) {
+                    api.post('/checklists/bulk', { items: newInsts.map(i => ({ id: i.id, item: JSON.stringify(i), done: false })) }, { withCredentials: true }).catch(console.error);
+                }
+            }
+        } catch (err) {
+            console.error('Toggle active failed', err);
+            alert('Failed to update routine status.');
+        }
+    };
+
+    const handleOpenEditFreq = (tpl: ChecklistTemplate) => {
+        setEditingTemplate(tpl);
+        setEditConfig({
+            frequency: tpl.config.frequency,
+            particularDateType: tpl.config.particularDateType ?? 'EVERY-MONTH',
+            startDate: tpl.startDate,
+        });
+    };
+
+    const handleSaveFrequency = async () => {
+        if (!editingTemplate) return;
+        if (!editConfig.startDate) { alert('Please select a start date.'); return; }
+        setIsSavingFreq(true);
+        try {
+            const updatedConfig = {
+                ...editingTemplate.config,
+                frequency: editConfig.frequency,
+                particularDateType: editConfig.frequency === 'PARTICULAR-DATE' ? editConfig.particularDateType : undefined,
+            };
+            // Patch the template on the server
+            await api.put(
+                `/checklist-templates/${encodeURIComponent(editingTemplate.id)}`,
+                {
+                    taskName: editingTemplate.taskName,
+                    doerId: editingTemplate.doerId,
+                    buddyId: editingTemplate.buddyId,
+                    department: editingTemplate.department,
+                    startDate: editConfig.startDate,
+                    config: updatedConfig,
+                    active: editingTemplate.active,
+                },
+                { withCredentials: true }
+            );
+
+            // Update local template list
+            const updatedTpl: ChecklistTemplate = { ...editingTemplate, config: updatedConfig, startDate: editConfig.startDate };
+            setTemplates(prev => prev.map(t => t.id === updatedTpl.id ? updatedTpl : t));
+
+            // Remove all PENDING instances for this template, regenerate with new frequency + date
+            setInstances(prev => prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.status === 'PENDING')));
+            const newInsts = generateInstances(updatedTpl);
+
+            // Bulk-save new instances to DB (fire and forget)
+            safePost('/checklists/bulk', {
+                items: newInsts.map(inst => ({
+                    refId: updatedTpl.id,
+                    refType: 'TEMPLATE_INSTANCE',
+                    item: JSON.stringify({ ...inst, templateId: updatedTpl.id }),
+                }))
+            }).then(() => setRefreshTrigger(prev => prev + 1))
+              .catch(e => console.warn('[Checklist] Regen bulk save failed:', e));
+
+            setEditingTemplate(null);
+            addNotification('Routine Updated', `"${updatedTpl.taskName}" updated — ${editConfig.frequency} from ${editConfig.startDate}.`, 'CHECKLIST', String(updatedTpl.doerId));
+        } catch (err) {
+            console.error('Update routine failed', err);
+            alert('Failed to update routine. Please try again.');
+        } finally {
+            setIsSavingFreq(false);
         }
     };
 
@@ -465,7 +623,7 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
 
     // Split for admin: pending vs completed sections
     const monitorPending = useMemo(() => monitorData.filter(i => i.status === 'PENDING'), [monitorData]);
-    const monitorCompleted = useMemo(() => monitorData.filter(i => i.status === 'COMPLETED'), [monitorData]);
+    const monitorCompleted = useMemo(() => monitorData.filter(i => i.status === 'COMPLETED' || i.status === 'STOPPED' || i.status === 'MISSED'), [monitorData]);
 
     const totalPendingPages = Math.max(1, Math.ceil(monitorPending.length / itemsPerPage));
     const totalCompletedPages = Math.max(1, Math.ceil(monitorCompleted.length / itemsPerPage));
@@ -491,7 +649,7 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
 
     const frequencies: { id: FrequencyType; label: string }[] = [
         { id: 'ONE-TIME', label: 'One-time' }, { id: 'DAILY', label: 'Daily' }, { id: 'ALTERNATE', label: 'Alternate' },
-        { id: 'WEEKLY', label: 'Weekly' }, { id: 'FORTNIGHTLY', label: 'Fortnightly' }, { id: 'MONTHLY', label: 'Monthly' },
+        { id: 'WEEKLY', label: 'Weekly' }, { id: 'FORTNIGHTLY', label: 'Fortnightly' }, { id: 'ALTERNATE-WEEK', label: 'Alternative Week' }, { id: 'MONTHLY', label: 'Monthly' },
         { id: 'QUARTERLY', label: 'Quarterly' }, { id: 'HALF-YEARLY', label: 'Half-yearly' }, { id: 'YEARLY', label: 'Yearly' },
         { id: 'PARTICULAR-DATE', label: 'Particular Date' }, { id: 'EVENT-BASED', label: 'Event-based' },
     ];
@@ -614,13 +772,13 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
 
                 {/* ── Tabs ── */}
                 <div className="flex gap-1 mb-6 bg-[#e8e6e0] p-1 rounded-xl w-full md:w-fit overflow-x-auto flex-nowrap">
-                    {(['AGENDA', 'MONITOR', ...(isAdmin ? ['MASTER'] : [])] as const).map(tab => (
+                    {(['AGENDA', 'MONITOR', 'MISSED', ...(isAdmin ? ['MASTER'] : [])] as const).map(tab => (
                         <button
                             key={tab}
                             onClick={() => setActiveTab(tab as any)}
                             className={`px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${activeTab === tab ? 'tab-active shadow-sm' : 'tab-inactive'}`}
                         >
-                            {tab === 'AGENDA' ? 'My Agenda' : tab === 'MONITOR' ? (isAdmin ? 'Team Status' : 'Status') : 'Master Rules'}
+                            {tab === 'AGENDA' ? 'My Agenda' : tab === 'MONITOR' ? (isAdmin ? 'Team Status' : 'Status') : tab === 'MISSED' ? 'Missed Tasks' : 'Master Rules'}
                         </button>
                     ))}
                 </div>
@@ -699,6 +857,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                         // Already done — never show in agenda (agenda only shows PENDING)
                                         // but guard anyway
                                         const isDone = item.status === 'COMPLETED';
+                                        const isStopped = item.status === 'STOPPED';
+                                        const isMissed = item.status === 'MISSED';
 
                                         return (
                                             <div
@@ -735,26 +895,49 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                     </div>
                                                 </div>
 
-                                                {/* Action button — DISABLED if done or marking */}
-                                                <button
-                                                    onClick={() => !isDone && !isMarking && handleMarkDone(item.id, (item as any).dbId)}
-                                                    disabled={isDone || isMarking}
-                                                    className={cx(
-                                                        'shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all',
-                                                        isDone
-                                                            ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-not-allowed'
-                                                            : isMarking
-                                                                ? 'bg-slate-100 text-slate-400 cursor-wait'
-                                                                : 'bg-[#1a1a2e] text-white hover:bg-[#6366f1] active:scale-95 cursor-pointer shadow-sm'
+                                                {/* Action buttons */}
+                                                <div className="flex gap-2 shrink-0 items-center">
+                                                    {!isDone && !isStopped && !isMissed && (
+                                                        <button
+                                                            onClick={() => !isMarking && handleStopTask(item.id, (item as any).dbId)}
+                                                            disabled={isMarking}
+                                                            className={cx(
+                                                                'flex items-center justify-center p-2 rounded-xl text-[#9ca3af] transition-all hover:bg-red-50 hover:text-red-500',
+                                                                isMarking ? 'opacity-50 cursor-wait' : 'cursor-pointer'
+                                                            )}
+                                                            title="Stop Task"
+                                                        >
+                                                            <X size={16} />
+                                                        </button>
                                                     )}
-                                                >
-                                                    {isDone
-                                                        ? <><CheckCheck size={13} /> Done</>
-                                                        : isMarking
-                                                            ? <><Loader2 size={13} className="spin" /> Saving…</>
-                                                            : <><ArrowRight size={13} /> Mark Done</>
-                                                    }
-                                                </button>
+                                                    <button
+                                                        onClick={() => !isDone && !isStopped && !isMissed && !isMarking && handleMarkDone(item.id, (item as any).dbId)}
+                                                        disabled={isDone || isStopped || isMissed || isMarking}
+                                                        className={cx(
+                                                            'flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all',
+                                                            isDone
+                                                                ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-not-allowed'
+                                                                : isStopped
+                                                                ? 'bg-red-50 text-red-600 border border-red-200 cursor-not-allowed'
+                                                                : isMissed
+                                                                ? 'bg-orange-50 text-orange-600 border border-orange-200 cursor-not-allowed'
+                                                                : isMarking
+                                                                    ? 'bg-slate-100 text-slate-400 cursor-wait'
+                                                                    : 'bg-[#1a1a2e] text-white hover:bg-[#6366f1] active:scale-95 cursor-pointer shadow-sm'
+                                                        )}
+                                                    >
+                                                        {isDone
+                                                            ? <><CheckCheck size={13} /> Done</>
+                                                            : isStopped
+                                                                ? <><AlertCircle size={13} /> Stopped</>
+                                                                : isMissed
+                                                                ? <><X size={13} /> Missed</>
+                                                                : isMarking
+                                                                    ? <><Loader2 size={13} className="spin" /> Saving…</>
+                                                                    : <><ArrowRight size={13} /> Mark Done</>
+                                                        }
+                                                    </button>
+                                                </div>
                                             </div>
                                         );
                                     })}
@@ -872,6 +1055,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                             <option value="ALL">All Status</option>
                                             <option value="PENDING">Pending Only</option>
                                             <option value="COMPLETED">Completed Only</option>
+                                            <option value="STOPPED">Stopped Only</option>
+                                            <option value="MISSED">Missed Only</option>
                                         </select>
                                     </div>
                                 </div>
@@ -933,18 +1118,48 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                                     <td className="px-4 py-3 text-[#374151] text-sm break-words whitespace-normal min-w-[200px] max-w-[300px] md:max-w-none">{name}</td>
                                                                     <td className="px-4 py-3">{freq && <FrequencyBadge freq={freq} />}</td>
                                                                     <td className="px-4 py-3 text-right">
-                                                                        <button
-                                                                            onClick={() => !isMarking && handleMarkDone(item.id, item.dbId)}
-                                                                            disabled={isMarking}
-                                                                            className={cx(
-                                                                                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all',
-                                                                                isMarking
-                                                                                    ? 'bg-slate-100 text-slate-400 cursor-wait'
-                                                                                    : 'bg-[#1a1a2e] text-white hover:bg-[#6366f1] active:scale-95 cursor-pointer'
+                                                                        <div className="flex items-center justify-end gap-2">
+                                                                            <button
+                                                                                onClick={() => !isMarking && handleStopTask(item.id, item.dbId)}
+                                                                                disabled={isMarking}
+                                                                                className={cx(
+                                                                                    'inline-flex items-center justify-center p-1.5 rounded-lg transition-all text-[#9ca3af]',
+                                                                                    isMarking
+                                                                                        ? 'opacity-50 cursor-wait'
+                                                                                        : 'hover:bg-red-50 hover:text-red-500 cursor-pointer'
+                                                                                )}
+                                                                                title="Stop Task"
+                                                                            >
+                                                                                <X size={14} />
+                                                                            </button>
+                                                                            {isAdmin && (
+                                                                                <button
+                                                                                    onClick={() => !isMarking && handleMissTask(item.id, item.dbId)}
+                                                                                    disabled={isMarking}
+                                                                                    className={cx(
+                                                                                        'inline-flex items-center justify-center px-2 py-1.5 rounded-lg transition-all text-xs font-bold border',
+                                                                                        isMarking
+                                                                                            ? 'opacity-50 cursor-wait bg-slate-50 text-slate-400 border-slate-200'
+                                                                                            : 'bg-white text-orange-600 border-orange-200 hover:bg-orange-50 cursor-pointer shadow-sm'
+                                                                                    )}
+                                                                                    title="Mark as Missed"
+                                                                                >
+                                                                                    Mark Missed
+                                                                                </button>
                                                                             )}
-                                                                        >
-                                                                            {isMarking ? <><Loader2 size={11} className="spin" /> Saving</> : <><CheckCheck size={11} /> Mark Done</>}
-                                                                        </button>
+                                                                            <button
+                                                                                onClick={() => !isMarking && handleMarkDone(item.id, item.dbId)}
+                                                                                disabled={isMarking}
+                                                                                className={cx(
+                                                                                    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all',
+                                                                                    isMarking
+                                                                                        ? 'bg-slate-100 text-slate-400 cursor-wait'
+                                                                                        : 'bg-[#1a1a2e] text-white hover:bg-[#6366f1] active:scale-95 cursor-pointer'
+                                                                                )}
+                                                                            >
+                                                                                {isMarking ? <><Loader2 size={11} className="spin" /> Saving</> : <><CheckCheck size={11} /> Mark Done</>}
+                                                                            </button>
+                                                                        </div>
                                                                     </td>
                                                                 </tr>
                                                             );
@@ -976,11 +1191,11 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                 )}
 
                                 {/* ── COMPLETED SECTION — clearly separated ── */}
-                                {(monitorStatus === 'ALL' || monitorStatus === 'COMPLETED') && monitorCompleted.length > 0 && (
+                                {(monitorStatus === 'ALL' || monitorStatus === 'COMPLETED' || monitorStatus === 'STOPPED') && monitorCompleted.length > 0 && (
                                     <div className="mt-2">
                                         <div className="flex items-center gap-2 mb-3">
                                             <div className="w-2 h-2 rounded-full bg-emerald-400" />
-                                            <h3 className="text-[11px] font-bold text-[#9ca3af] uppercase tracking-widest">Completed Tasks</h3>
+                                            <h3 className="text-[11px] font-bold text-[#9ca3af] uppercase tracking-widest">Task History</h3>
                                             <span className="ml-auto text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
                                                 {monitorCompleted.length}
                                             </span>
@@ -1016,10 +1231,16 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                                     <td className="px-4 py-3 text-[#374151] text-sm break-words whitespace-normal min-w-[200px] max-w-[300px] md:max-w-none">{name}</td>
                                                                     <td className="px-4 py-3">{freq && <FrequencyBadge freq={freq} />}</td>
                                                                     <td className="px-4 py-3 text-right">
-                                                                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                                                                            <CheckCheck size={12} />
-                                                                            {item.completedDate || '—'}
-                                                                        </span>
+                                                                        {item.status === 'STOPPED' ? (
+                                                                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-600">
+                                                                                <AlertCircle size={12} /> Stopped
+                                                                            </span>
+                                                                        ) : (
+                                                                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                                                                                <CheckCheck size={12} />
+                                                                                {item.completedDate || '—'}
+                                                                            </span>
+                                                                        )}
                                                                     </td>
                                                                 </tr>
                                                             );
@@ -1052,6 +1273,78 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                             </div>
                         )}
 
+                        {/* ════════════ MISSED TAB ════════════ */}
+                        {activeTab === 'MISSED' && (
+                            <div className="space-y-5 fade-up">
+                                <div className="bg-white rounded-2xl border border-orange-100 overflow-hidden shadow-sm">
+                                    <div className="bg-orange-50 border-b border-orange-100 px-4 py-3 flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <X size={16} className="text-orange-600" />
+                                            <p className="text-xs font-bold text-orange-700 uppercase tracking-widest">Missed Tasks Review</p>
+                                        </div>
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-sm min-w-[700px]">
+                                            <thead className="bg-[#f4f3f0] border-b border-[#e8e6e0]">
+                                                <tr>
+                                                    <th className="px-4 py-3 text-left text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">Date</th>
+                                                    <th className="px-4 py-3 text-left text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">Member</th>
+                                                    <th className="px-4 py-3 text-left text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">Task</th>
+                                                    <th className="px-4 py-3 text-left text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">Frequency</th>
+                                                    {isAdmin && <th className="px-4 py-3 text-right text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">Action</th>}
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-[#f4f3f0]">
+                                                {instances.filter(i => {
+                                                    const tpl = templates.find(t => String(t.id) === String(i.templateId));
+                                                    const isMe = doesDoerMatch(i.doerId ?? tpl?.doerId, currentUser) || doesDoerMatch(tpl?.buddyId, currentUser);
+                                                    return i.status === 'MISSED' && (isAdmin || isMe);
+                                                }).length === 0 ? (
+                                                    <tr><td colSpan={isAdmin ? 5 : 4} className="px-4 py-12 text-center text-[#9ca3af] text-sm">No missed tasks found.</td></tr>
+                                                ) : instances.filter(i => {
+                                                    const tpl = templates.find(t => String(t.id) === String(i.templateId));
+                                                    const isMe = doesDoerMatch(i.doerId ?? tpl?.doerId, currentUser) || doesDoerMatch(tpl?.buddyId, currentUser);
+                                                    return i.status === 'MISSED' && (isAdmin || isMe);
+                                                }).sort((a, b) => b.date.localeCompare(a.date)).map(item => {
+                                                    const tpl = templates.find(t => String(t.id) === String(item.templateId));
+                                                    const name = item.taskName || tpl?.taskName || 'Unnamed';
+                                                    const freq = tpl?.config?.frequency || (item as any)?.frequency || (tpl as any)?.frequency || 'ONE-TIME';
+                                                    const doerId = item.doerId || tpl?.doerId;
+                                                    const lead = employees.find(e => String(e.id) === String(doerId));
+                                                    const isMarking = markingIds.has(item.id);
+
+                                                    return (
+                                                        <tr key={item.id} className="hover:bg-[#fafaf8] transition-colors">
+                                                            <td className="px-4 py-3 font-mono-dm text-xs text-orange-600 font-bold">{item.date}</td>
+                                                            <td className="px-4 py-3 font-semibold text-[#1a1a2e] text-sm">{lead?.name || 'Unknown'}</td>
+                                                            <td className="px-4 py-3 text-[#374151] text-sm break-words whitespace-normal min-w-[200px] max-w-[300px] md:max-w-none">{name}</td>
+                                                            <td className="px-4 py-3">{freq && <FrequencyBadge freq={freq} />}</td>
+                                                            {isAdmin && (
+                                                                <td className="px-4 py-3 text-right">
+                                                                    <button
+                                                                        onClick={() => !isMarking && handleMarkDone(item.id, (item as any).dbId)}
+                                                                        disabled={isMarking}
+                                                                        className={cx(
+                                                                            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all',
+                                                                            isMarking
+                                                                                ? 'bg-slate-100 text-slate-400 cursor-wait'
+                                                                                : 'bg-[#1a1a2e] text-white hover:bg-emerald-600 active:scale-95 shadow-sm'
+                                                                        )}
+                                                                    >
+                                                                        {isMarking ? 'Saving…' : <><CheckCheck size={12} /> Force Complete</>}
+                                                                    </button>
+                                                                </td>
+                                                            )}
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* ════════════ MASTER TAB ════════════ */}
                         {activeTab === 'MASTER' && isAdmin && (
                             <div className="fade-up">
@@ -1080,20 +1373,49 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                     return (
                                                         <tr key={t.id} className="hover:bg-[#fafaf8] transition-colors group">
                                                             <td className="px-4 py-3 break-words whitespace-normal min-w-[200px] max-w-[300px] md:max-w-none">
-                                                                <p className="font-bold text-[#1a1a2e] text-sm">{t.taskName}</p>
+                                                                <div className="flex items-center gap-2">
+                                                                    <p className={cx("font-bold text-sm", t.active === false ? "text-[#9ca3af] line-through" : "text-[#1a1a2e]")}>{t.taskName}</p>
+                                                                    {t.active === false && <span className="text-[9px] font-bold bg-red-50 text-red-600 border border-red-200 px-1.5 py-0.5 rounded uppercase">Stopped</span>}
+                                                                </div>
                                                                 <p className="font-mono-dm text-[9px] text-[#9ca3af] mt-0.5">{t.id}</p>
                                                             </td>
                                                             <td className="px-4 py-3 font-semibold text-[#374151]">{lead?.name || 'Unknown'}</td>
                                                             <td className="px-4 py-3 text-[#6b7280] text-xs">{t.department}</td>
-                                                            <td className="px-4 py-3"><FrequencyBadge freq={freqLabel} /></td>
+                                                            <td className="px-4 py-3">
+                                                                <div className="flex items-center gap-2">
+                                                                    <FrequencyBadge freq={freqLabel} />
+                                                                    <button
+                                                                        onClick={() => handleOpenEditFreq(t)}
+                                                                        className="opacity-0 group-hover:opacity-100 p-1 text-[#9ca3af] hover:text-[#6366f1] hover:bg-indigo-50 rounded-md transition-all"
+                                                                        title="Change Frequency"
+                                                                    >
+                                                                        <Pencil size={12} />
+                                                                    </button>
+                                                                </div>
+                                                            </td>
                                                             <td className="px-4 py-3 font-mono-dm text-xs text-[#6b7280] font-bold">{t.startDate}</td>
                                                             <td className="px-4 py-3 text-right">
-                                                                <button
-                                                                    onClick={() => handleDeleteTemplate(t.id)}
-                                                                    className="p-2 text-[#d1d5db] hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                                                                >
-                                                                    <Trash2 size={14} />
-                                                                </button>
+                                                                <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                    <button
+                                                                        onClick={() => handleToggleActive(t)}
+                                                                        className={cx(
+                                                                            'px-2.5 py-1 text-[10px] font-bold rounded-md transition-all border',
+                                                                            t.active !== false
+                                                                                ? 'text-amber-600 bg-amber-50 hover:bg-amber-100 border-amber-200'
+                                                                                : 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
+                                                                        )}
+                                                                        title={t.active !== false ? "Stop Routine" : "Reactivate Routine"}
+                                                                    >
+                                                                        {t.active !== false ? 'Stop' : 'Reactivate'}
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => handleDeleteTemplate(t.id)}
+                                                                        className="p-1.5 text-[#d1d5db] hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                                                        title="Delete Routine"
+                                                                    >
+                                                                        <Trash2 size={14} />
+                                                                    </button>
+                                                                </div>
                                                             </td>
                                                         </tr>
                                                     );
@@ -1107,6 +1429,129 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                     </>
                 )}
             </div>
+
+            {/* ════════════ EDIT FREQUENCY MODAL ════════════ */}
+            {editingTemplate && (
+                <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4">
+                    <div className="bg-white w-full md:max-w-lg rounded-t-3xl md:rounded-3xl shadow-2xl flex flex-col max-h-[85vh] fade-up">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-5 border-b border-[#e8e6e0] shrink-0">
+                            <div>
+                                <h2 className="font-extrabold text-[#1a1a2e] text-lg flex items-center gap-2">
+                                    <Pencil size={16} className="text-[#6366f1]" /> Edit Routine
+                                </h2>
+                                <p className="text-xs text-[#9ca3af] font-medium mt-0.5 truncate max-w-xs">{editingTemplate.taskName}</p>
+                            </div>
+                            <button onClick={() => setEditingTemplate(null)} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[#f4f3f0] text-[#9ca3af] transition-all">
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {/* Body */}
+                        <div className="p-6 space-y-5 overflow-y-auto">
+                            {/* Current info strip */}
+                            <div className="flex items-center gap-3 bg-[#f4f3f0] rounded-2xl px-4 py-3">
+                                <span className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">Current</span>
+                                <FrequencyBadge freq={editingTemplate.config.frequency} />
+                                <span className="ml-auto text-[10px] text-[#9ca3af] font-mono-dm">{editingTemplate.startDate}</span>
+                            </div>
+
+                            {/* Start Date */}
+                            <div>
+                                <label className="block text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mb-1.5">
+                                    <span className="flex items-center gap-1.5"><Calendar size={11} /> New Start / Anchor Date *</span>
+                                </label>
+                                <input
+                                    type="date"
+                                    className="w-full border border-[#e8e6e0] bg-[#fafaf8] px-4 py-3 rounded-xl text-sm font-bold text-[#1a1a2e] focus:outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/20 transition-all"
+                                    value={editConfig.startDate}
+                                    onChange={e => setEditConfig(prev => ({ ...prev, startDate: e.target.value }))}
+                                />
+                                <p className="text-[10px] text-[#9ca3af] mt-1.5 font-medium">
+                                    This is the anchor date from which the new schedule is generated.
+                                </p>
+                            </div>
+
+                            {/* Frequency picker */}
+                            <div>
+                                <label className="block text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mb-2">New Recurrence Rule</label>
+                                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                                    {frequencies.map(f => (
+                                        <button
+                                            key={f.id}
+                                            type="button"
+                                            onClick={() => setEditConfig(prev => ({ ...prev, frequency: f.id }))}
+                                            className={cx(
+                                                'py-2 px-2 rounded-xl text-[10px] font-bold tracking-wide uppercase transition-all border',
+                                                editConfig.frequency === f.id
+                                                    ? 'bg-[#6366f1] text-white border-[#6366f1] shadow-sm'
+                                                    : 'bg-white text-[#6b7280] border-[#e8e6e0] hover:border-[#6366f1] hover:text-[#6366f1]'
+                                            )}
+                                        >
+                                            {f.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Particular-date sub-options */}
+                            {editConfig.frequency === 'PARTICULAR-DATE' && (
+                                <div className="bg-[#f4f3f0] rounded-2xl p-4 space-y-3">
+                                    <p className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest flex items-center gap-1.5"><Target size={12} /> Cycle</p>
+                                    <div className="flex gap-2">
+                                        {([
+                                            { type: 'EVERY-MONTH' as const, label: `Monthly on ${editConfig.startDate ? format(parseDateSafe(editConfig.startDate), 'do') : 'day'}` },
+                                            { type: 'EVERY-YEAR' as const, label: `Yearly on ${editConfig.startDate ? format(parseDateSafe(editConfig.startDate), 'MMM do') : 'date'}` },
+                                        ]).map(opt => (
+                                            <button
+                                                key={opt.type}
+                                                type="button"
+                                                onClick={() => setEditConfig(prev => ({ ...prev, particularDateType: opt.type }))}
+                                                className={cx(
+                                                    'flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wide transition-all border',
+                                                    editConfig.particularDateType === opt.type
+                                                        ? 'bg-[#6366f1] text-white border-[#6366f1]'
+                                                        : 'bg-white text-[#6b7280] border-[#e8e6e0]'
+                                                )}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Warning note */}
+                            <div className="flex gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-4">
+                                <AlertTriangle size={15} className="text-amber-500 shrink-0 mt-0.5" />
+                                <p className="text-[11px] text-amber-700 leading-relaxed">
+                                    Changing the frequency will <strong>delete all pending future tasks</strong> for this routine and regenerate them using the new schedule. Completed tasks are preserved.
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Footer */}
+                        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#e8e6e0] bg-[#fafaf8] shrink-0">
+                            <button
+                                onClick={() => setEditingTemplate(null)}
+                                className="px-5 py-2.5 text-xs font-bold text-[#6b7280] hover:bg-[#e8e6e0] rounded-xl transition-all uppercase tracking-widest"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSaveFrequency}
+                                disabled={isSavingFreq || (!editConfig.startDate || (editConfig.frequency === editingTemplate.config.frequency && editConfig.startDate === editingTemplate.startDate))}
+                                className="flex items-center gap-2 px-6 py-2.5 bg-[#6366f1] hover:bg-[#4f46e5] disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg active:scale-95 uppercase tracking-widest"
+                            >
+                                {isSavingFreq
+                                    ? <><Loader2 size={14} className="spin" /> Saving…</>
+                                    : <><Save size={14} /> Save Frequency</>
+                                }
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ════════════ CREATE MODAL ════════════ */}
             {showCreateModal && (

@@ -1169,7 +1169,10 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie('token', { path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'none' });
+  // Clear the cookie for both possible parameter sets used during login to ensure the browser strictly removes it.
+  res.clearCookie('token', { path: '/', httpOnly: true, secure: true, sameSite: 'none' });
+  res.clearCookie('token', { path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' });
+  res.clearCookie('token', { path: '/' });
   return success(res, null, 'Logged out');
 });
 
@@ -1612,6 +1615,73 @@ app.delete('/api/employees/:id', requireAuth, (req, res) => {
     return success(res, null, 'Archived');
   } catch (err) {
     console.error('Employees DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// --- Permanent Delete Employee ---
+// DELETE /api/employees/:id/permanent  (Admin only)
+// Body: { replacementEmployeeId?: string }  — if provided, tasks are reassigned to this employee
+app.delete('/api/employees/:id/permanent', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    ensureEmployeesTable();
+    const id = req.params.id;
+    const { replacementEmployeeId } = req.body || {};
+
+    // 1. Reassign or clear tasks assigned to this employee
+    try {
+      if (replacementEmployeeId) {
+        const upd = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ?");
+        upd.run([replacementEmployeeId, id]);
+        upd.free();
+      } else {
+        // Unassign — set to empty string so admin can reassign later
+        const upd = db.prepare("UPDATE tasks SET assignedTo = '' WHERE assignedTo = ?");
+        upd.run([id]);
+        upd.free();
+      }
+    } catch (e) { console.warn('Could not reassign tasks', e && (e.message || e)); }
+
+    // 2. Delete checklist instances for templates assigned to this employee
+    try {
+      // Get template IDs for this doer
+      const tplsStmt = db.prepare("SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+      tplsStmt.bind([id]);
+      const tplIds = [];
+      while (tplsStmt.step()) { tplIds.push(tplsStmt.getAsObject().id); }
+      tplsStmt.free();
+
+      for (const tplId of tplIds) {
+        try {
+          const delInst = db.prepare("DELETE FROM checklists WHERE refId = ?");
+          delInst.run([tplId]);
+          delInst.free();
+          const delTpl = db.prepare("DELETE FROM checklist_templates WHERE id = ?");
+          delTpl.run([tplId]);
+          delTpl.free();
+        } catch (e2) { console.warn('Could not delete checklist template', tplId, e2 && (e2.message || e2)); }
+      }
+    } catch (e) { console.warn('Could not delete checklist templates for employee', e && (e.message || e)); }
+
+    // 3. Delete linked user account
+    try {
+      const delUser = db.prepare("DELETE FROM users WHERE employeeId = ?");
+      delUser.run([id]);
+      delUser.free();
+    } catch (e) { console.warn('Could not delete linked user', e && (e.message || e)); }
+
+    // 4. Hard-delete the employee record
+    const del = db.prepare("DELETE FROM employees WHERE id = ?");
+    del.run([id]);
+    del.free();
+
+    persistDB();
+    return success(res, null, 'Employee permanently deleted');
+  } catch (err) {
+    console.error('Employees permanent DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
   }
 });
@@ -2371,7 +2441,7 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
 
       // Build update SQL parts - preserve existing when not provided. Also set snake_case columns accordingly
       // Persist statusNote, extensionRequest and extensionHistory if provided
-      const updateStmt = db.prepare('UPDATE tasks SET title = coalesce(?, title), description = coalesce(?, description), assignedTo = coalesce(?, assignedTo), assignedBy = coalesce(?, assignedBy), priority = coalesce(?, priority), dueDate = coalesce(?, dueDate), assigned_to = coalesce(?, assigned_to), assigned_by = coalesce(?, assigned_by), due_date = coalesce(?, due_date), status = coalesce(?, status), statusNote = coalesce(?, statusNote), extensionRequest = coalesce(?, extensionRequest), extensionHistory = coalesce(?, extensionHistory), completionDate = coalesce(?, completionDate), completionProcess = coalesce(?, completionProcess), completionAttachment = coalesce(?, completionAttachment), createdAt = coalesce(?, createdAt), created_at = coalesce(?, created_at) WHERE id = ?');
+      const updateStmt = db.prepare('UPDATE tasks SET title = coalesce(?, title), description = coalesce(?, description), assignedTo = coalesce(?, assignedTo), assignedBy = coalesce(?, assignedBy), priority = coalesce(?, priority), dueDate = coalesce(?, dueDate), assigned_to = coalesce(?, assigned_to), assigned_by = coalesce(?, assigned_by), due_date = coalesce(?, due_date), status = coalesce(?, status), statusNote = coalesce(?, statusNote), extensionRequest = coalesce(?, extensionRequest), extensionHistory = coalesce(?, extensionHistory), completionDate = coalesce(?, completionDate), completionProcess = coalesce(?, completionProcess), completionAttachment = coalesce(?, completionAttachment), createdAt = coalesce(?, createdAt), created_at = coalesce(?, created_at), attachment = coalesce(?, attachment), externalLink = coalesce(?, externalLink) WHERE id = ?');
 
       // If assignment changed, set assignedBy/assigned_by to current user
       const assignerCamel = (updates.assignedTo && updates.assignedTo !== existing.assignedTo) ? String(req.user.id) : null;
@@ -2411,6 +2481,8 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
         updates.completionAttachment || null,
         updates.createdAt || null,
         updates.created_at || null,
+        updates.attachment || null,
+        updates.externalLink || null,
         id
       ]);
       updateStmt.free();
@@ -2420,7 +2492,7 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
       else console.log('Tasks PUT: updated task persisted to DB file');
       console.log('Tasks PUT: updated task', { id, assigned_to_val, assignedToEmp, assignerNumeric: assignerNumeric });
 
-      const outStmt = db.prepare('SELECT id, title, description, assignedTo, assigned_to, priority, dueDate, due_date, status, createdAt, created_at, assignedBy, completionDate, completionProcess, completionAttachment, statusNote FROM tasks WHERE id = ?');
+      const outStmt = db.prepare('SELECT id, title, description, assignedTo, assigned_to, priority, dueDate, due_date, status, createdAt, created_at, assignedBy, completionDate, completionProcess, completionAttachment, statusNote, attachment, externalLink FROM tasks WHERE id = ?');
       outStmt.bind([id]);
       outStmt.step();
       const updated = outStmt.getAsObject();
@@ -2784,6 +2856,37 @@ app.delete('/api/notifications/:id', requireAuth, (req, res) => {
       return failure(res, 'Internal server error while deleting notification', 500);
     }
   } catch (err) { console.error('Notifications DELETE error', { path: req.path, err: err && (err.stack || err.message || err) }); return failure(res, 'Internal server error', 500); }
+});
+
+// Mark all notifications as read for a user
+app.put('/api/notifications/read-all/:userId', requireAuth, (req, res) => {
+  try {
+    const userId = req.params.userId;
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN' && req.user.employeeId !== userId) return failure(res, 'Forbidden', 403);
+
+    try {
+      db.run('BEGIN TRANSACTION');
+      let upd;
+      if (req.user.role === 'ADMIN') {
+        // Admin marking their own notifications read
+        upd = db.prepare("UPDATE notifications SET isRead = 1 WHERE isRead = 0 AND (userId = 'ADMIN' OR userId = 'ALL' OR userId = ?)");
+        upd.run([userId]);
+      } else {
+        upd = db.prepare("UPDATE notifications SET isRead = 1 WHERE isRead = 0 AND (userId = ? OR userId = 'ALL')");
+        upd.run([userId]);
+      }
+      upd.free && upd.free();
+      db.run('COMMIT');
+      if (!persistDB()) console.warn('Notifications PUT read-all: failed to persist DB file');
+      else console.log('Notifications PUT read-all: marked all read and persisted');
+      return success(res, null, 'All marked read');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      console.error('Notifications PUT read-all transactional error', e && (e.stack || e.message || e));
+      return failure(res, 'Internal server error', 500);
+    }
+  } catch (err) { console.error('Notifications read-all error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
 // Projects
@@ -3636,6 +3739,71 @@ app.post('/api/chat', requireAuth, (req, res) => {
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Chat POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+app.get('/api/chat/unread_count_fast', requireAuth, (req, res) => {
+  try {
+    const userId = req.user && (req.user.employeeId || String(req.user.id));
+    if (!userId) return success(res, 0);
+
+    // Simple unread count across all chats this user participates in
+    let totalUnread = 0;
+    try {
+      const stmt = db.prepare(`
+        SELECT c.teamId, count(*) as unread
+        FROM chat c
+        LEFT JOIN chat_reads cr ON c.teamId = cr.teamId AND cr.userId = ?
+        WHERE (c.teamId LIKE ? OR c.teamId = ?)
+          AND c.senderId != ?
+          AND (cr.lastReadAt IS NULL OR c.createdAt > cr.lastReadAt)
+        GROUP BY c.teamId
+      `);
+      stmt.bind([userId, '%-' + userId + '-%', userId, userId]);
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        totalUnread += row.unread || 0;
+      }
+      stmt.free();
+    } catch (e) {
+      console.warn('Chat fast unread count error', e && (e.message || e));
+    }
+    return success(res, totalUnread);
+  } catch (err) {
+    return success(res, 0);
+  }
+});
+
+app.get('/api/chat/unread_summary', requireAuth, (req, res) => {
+  try {
+    const userId = req.user && (req.user.employeeId || String(req.user.id));
+    if (!userId) return success(res, {});
+
+    const counts = {};
+    try {
+      const stmt = db.prepare(`
+        SELECT c.teamId, count(*) as unread
+        FROM chat c
+        LEFT JOIN chat_reads cr ON c.teamId = cr.teamId AND cr.userId = ?
+        WHERE (c.teamId LIKE ? OR c.teamId = ?)
+          AND c.senderId != ?
+          AND (cr.lastReadAt IS NULL OR c.createdAt > cr.lastReadAt)
+        GROUP BY c.teamId
+      `);
+      stmt.bind([userId, '%-' + userId + '-%', userId, userId]);
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        if (row.teamId) {
+          counts[row.teamId] = row.unread || 0;
+        }
+      }
+      stmt.free();
+    } catch (e) {
+      console.warn('Chat fast unread summary error', e && (e.message || e));
+    }
+    return success(res, counts);
+  } catch (err) {
+    return success(res, {});
+  }
 });
 
 app.get('/api/chat/:teamId', requireAuth, (req, res) => {
@@ -5217,6 +5385,141 @@ try {
   console.error('CRITICAL: PMS routes registration failed', pmsError);
 }
 
+// --- CRM Leads Module ---
+
+function ensureCrmLeadsTable() {
+  try {
+    const chk = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='crm_leads'");
+    const has = chk.step();
+    chk.free();
+    if (!has) {
+      console.log('crm_leads table missing — creating table');
+      db.run(`CREATE TABLE crm_leads (
+        id TEXT PRIMARY KEY,
+        s_no INTEGER,
+        date TEXT,
+        name TEXT,
+        mobile TEXT,
+        source TEXT,
+        site_visit INTEGER DEFAULT 0,
+        status TEXT,
+        priority TEXT,
+        next_followup_date TEXT,
+        deal_value REAL,
+        remarks TEXT,
+        assigned_to TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      )`);
+      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      console.log('crm_leads table created');
+    }
+  } catch (err) {
+    console.error('ensureCrmLeadsTable failed', err);
+    throw err;
+  }
+}
+
+app.get('/api/crm/leads', requireAuth, (req, res) => {
+  try {
+    ensureCrmLeadsTable();
+    const stmt = db.prepare('SELECT * FROM crm_leads ORDER BY s_no DESC');
+    const out = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      row.site_visit = !!row.site_visit;
+      out.push(row);
+    }
+    stmt.free();
+    return success(res, out);
+  } catch (err) {
+    console.error('GET /api/crm/leads error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.post('/api/crm/leads', requireAuth, (req, res) => {
+  try {
+    ensureCrmLeadsTable();
+    const { name, mobile, source, site_visit, status, priority, next_followup_date, deal_value, remarks, assigned_to } = req.body || {};
+    if (!name || !mobile) return failure(res, 'Name and Mobile are required', 400);
+
+    const id = `CRM-${Date.now()}`;
+    
+    // Auto increment s_no
+    let s_no = 1;
+    try {
+      const q = db.prepare("SELECT MAX(s_no) as maxNum FROM crm_leads");
+      if (q.step()) {
+        const data = q.getAsObject();
+        if (data.maxNum) s_no = data.maxNum + 1;
+      }
+      q.free();
+    } catch(e) {}
+
+    const now = new Date().toISOString();
+    const date = now.split('T')[0];
+
+    const insert = db.prepare('INSERT INTO crm_leads (id, s_no, date, name, mobile, source, site_visit, status, priority, next_followup_date, deal_value, remarks, assigned_to, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    insert.run([id, s_no, date, name, mobile, source || 'Call', site_visit ? 1 : 0, status || 'New', priority || 'Warm', next_followup_date || null, deal_value || 0, remarks || null, assigned_to || null, now, now]);
+    insert.free && insert.free();
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    return success(res, { id, s_no }, 'Lead created', 201);
+  } catch (err) {
+    console.error('POST /api/crm/leads error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.put('/api/crm/leads/:id', requireAuth, (req, res) => {
+  try {
+    ensureCrmLeadsTable();
+    const id = req.params.id;
+    const { name, mobile, source, site_visit, status, priority, next_followup_date, deal_value, remarks, assigned_to } = req.body || {};
+
+    const chk = db.prepare('SELECT id FROM crm_leads WHERE id = ?');
+    chk.bind([id]);
+    if (!chk.step()) { chk.free(); return failure(res, 'Not found', 404); }
+    chk.free();
+
+    const now = new Date().toISOString();
+    const update = db.prepare('UPDATE crm_leads SET name = coalesce(?, name), mobile = coalesce(?, mobile), source = coalesce(?, source), site_visit = coalesce(?, site_visit), status = coalesce(?, status), priority = coalesce(?, priority), next_followup_date = coalesce(?, next_followup_date), deal_value = coalesce(?, deal_value), remarks = coalesce(?, remarks), assigned_to = coalesce(?, assigned_to), updated_at = ? WHERE id = ?');
+    
+    update.run([name || null, mobile || null, source || null, site_visit == null ? null : (site_visit ? 1 : 0), status || null, priority || null, next_followup_date !== undefined ? next_followup_date : null, deal_value !== undefined ? deal_value : null, remarks !== undefined ? remarks : null, assigned_to !== undefined ? assigned_to : null, now, id]);
+    update.free && update.free();
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    return success(res, null, 'Lead updated');
+  } catch (err) {
+    console.error('PUT /api/crm/leads/:id error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.delete('/api/crm/leads/:id', requireAuth, (req, res) => {
+  try {
+    // Only admins can delete CRM leads
+    if (!req.user || !['ADMIN', 'SUPER_ADMIN'].includes(req.user.role)) {
+      return failure(res, 'Forbidden', 403);
+    }
+    ensureCrmLeadsTable();
+    const id = req.params.id;
+
+    const chk = db.prepare('SELECT id FROM crm_leads WHERE id = ?');
+    chk.bind([id]);
+    if (!chk.step()) { chk.free(); return failure(res, 'Lead not found', 404); }
+    chk.free();
+
+    const del = db.prepare('DELETE FROM crm_leads WHERE id = ?');
+    del.run([id]);
+    del.free && del.free();
+    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    return success(res, null, 'Lead deleted');
+  } catch (err) {
+    console.error('DELETE /api/crm/leads/:id error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
 // Catch-all for any unmatched API routes — return JSON 404 instead of falling through to static host/index.html
 app.use('/api', (req, res) => {
   console.warn('Unmatched API request', { method: req.method, path: req.path, origin: req.headers.origin || null, cookies: req.headers.cookie || null });
@@ -5336,6 +5639,43 @@ cron.schedule('0 9 * * *', () => {
   } catch (err) {
     console.error('Checklist cron job failed', err);
     try { if (stmt) stmt.free(); } catch(e){}
+  }
+});
+
+// CRM Daily Report Cron (runs at 8:00 PM)
+cron.schedule('0 20 * * *', () => {
+  console.log('Running daily CRM report cron at 8:00 PM');
+  try {
+    ensureCrmLeadsTable();
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    const stmt = db.prepare('SELECT * FROM crm_leads');
+    const leads = [];
+    while (stmt.step()) {
+      leads.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    const todayLeads = leads.filter(l => l.date === todayStr || (l.created_at && l.created_at.startsWith(todayStr)));
+    const totalToday = todayLeads.length;
+    const siteVisitsToday = todayLeads.filter(l => l.site_visit).length;
+    
+    // Overall Stats
+    const totalLeads = leads.length;
+    const siteVisits = leads.filter(l => l.site_visit).length;
+    const closed = leads.filter(l => l.status === 'Closed').length;
+    const conversion = totalLeads > 0 ? Math.round((closed / totalLeads) * 100) : 0;
+
+    const mailOptions = {
+      from: '"CRM System" <' + (process.env.SMTP_USER || 'noreply@fms.local') + '>',
+      to: process.env.SMTP_USER || 'admin@example.com',
+      subject: `Daily CRM Report: ${todayStr}`,
+      text: `Hello,\\n\\nHere is the CRM report for today (${todayStr}):\\n\\nNew Leads Today: ${totalToday}\\nSite Visits Today: ${siteVisitsToday}\\n\\nOverall Metrics:\\nTotal Leads: ${totalLeads}\\nTotal Site Visits: ${siteVisits}\\nConversion Rate: ${conversion}%\\nClosed Deals: ${closed}\\n\\nRegards,\\nCRM Automation`
+    };
+    transporter.sendMail(mailOptions).catch(err => console.warn('CRM Cron email error:', err.message));
+    console.log('CRM daily report dispatched');
+  } catch (err) {
+    console.error('CRM cron job failed', err);
   }
 });
 

@@ -11,7 +11,7 @@
         theme: {
           extend: {
             fontFamily: {
-              sans: ['Outfit', 'sans-serif'],
+              sans: ['"DM Sans"', 'sans-serif'],
             },
             animation: {
               'blob': 'blob 7s infinite',
@@ -45,7 +45,7 @@
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
     <script type="importmap">
 {
   "imports": {
@@ -65,7 +65,7 @@
 </script>
     <style>
       body {
-        font-family: 'Outfit', sans-serif;
+        font-family: 'DM Sans', sans-serif;
         background-color: #f1f5f9;
         color: #1e293b;
         overflow: hidden;
@@ -114,7 +114,101 @@
       .animate-blob {
         animation: blob 7s infinite;
       }
-    </style>
+
+      /* ─── Global Mobile Responsiveness ─────────────────────────────────────── */
+
+      /* Prevent horizontal overflow on all screens */
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { max-width: 100vw; overflow-x: hidden; }
+
+      /* Tables: always horizontally scrollable on mobile */
+      .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      table { min-width: 500px; }
+
+      /* Text scaling down on mobile */
+      @media (max-width: 640px) {
+        h1 { font-size: clamp(1rem, 4vw, 1.5rem) !important; }
+        h2 { font-size: clamp(0.9rem, 3.5vw, 1.25rem) !important; }
+        h3 { font-size: clamp(0.8rem, 3vw, 1.1rem) !important; }
+
+        /* Tighter padding on mobile */
+        .p-6 { padding: 0.75rem !important; }
+        .p-8 { padding: 1rem !important; }
+        .px-6 { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+        .px-8 { padding-left: 1rem !important; padding-right: 1rem !important; }
+        .py-6 { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+        .py-8 { padding-top: 1rem !important; padding-bottom: 1rem !important; }
+        .gap-6 { gap: 0.75rem !important; }
+        .gap-8 { gap: 1rem !important; }
+
+        /* Stats grids: 2 columns on mobile */
+        .grid-cols-4, .grid-cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+
+        /* Modals: full screen on mobile */
+        .fixed.inset-0 > div[class*="max-w"] {
+          max-width: 100% !important;
+          width: 100% !important;
+          margin: 0 !important;
+          border-radius: 0 !important;
+          min-height: 100dvh !important;
+        }
+
+        /* Tables: make them scrollable and compact */
+        table { font-size: 0.75rem !important; }
+        th, td { padding: 0.4rem 0.5rem !important; white-space: nowrap; }
+
+        /* Hide low-priority columns on mobile */
+        .mobile-hidden { display: none !important; }
+
+        /* Buttons: full width in stacked layouts */
+        .mobile-full { width: 100% !important; }
+
+        /* Card layouts: single column */
+        .md\:grid-cols-2, .md\:grid-cols-3, .md\:grid-cols-4 { 
+          grid-template-columns: minmax(0, 1fr) !important; 
+        }
+
+        /* Flex rows that should wrap on mobile */
+        .mobile-wrap { flex-wrap: wrap !important; }
+        .mobile-wrap > * { min-width: 0; }
+
+        /* Tab bars: horizontal scroll */
+        .tab-bar { overflow-x: auto; white-space: nowrap; display: flex; -webkit-overflow-scrolling: touch; }
+        .tab-bar > * { flex-shrink: 0; }
+
+        /* Filter bars: wrap */
+        [class*="filter"], [class*="search"] { flex-wrap: wrap !important; }
+
+        /* Main content area: remove margin on mobile */
+        main { margin: 0 !important; border-radius: 0 !important; }
+
+        /* Charts: scale down */
+        .recharts-wrapper { overflow: visible; }
+      }
+
+      @media (max-width: 768px) {
+        /* Medium mobile adjustments */
+        .md\:flex-row { flex-direction: column !important; }
+        .md\:w-96 { width: 100% !important; }
+
+        /* Notification panel: full width */
+        .fixed.top-20.right-4 { right: 0 !important; left: 0 !important; max-width: 100% !important; padding: 0.5rem; }
+
+        /* Toast: bottom full width */
+        .fixed.bottom-6 { bottom: 0 !important; left: 0 !important; right: 0 !important; border-radius: 0 !important; }
+
+        /* Ensure tables scroll */
+        div:has(> table) { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
+      }
+
+      /* Ensure the app shell never overflows */
+      #root > div { max-width: 100vw; overflow: hidden; }
+
+      /* Mobile bottom navigation safe area */
+      @supports (padding-bottom: env(safe-area-inset-bottom)) {
+        body { padding-bottom: env(safe-area-inset-bottom); }
+      }
+</style>
 </head>
   <body>
     <div id="root"></div>

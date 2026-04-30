@@ -8,7 +8,7 @@ import {
   Cake, Camera, BarChart, FileText, Upload, CheckCircle2, 
   X, AlertTriangle, TrendingUp, Award, Zap, ChevronRight, FileBarChart, RefreshCw
 } from 'lucide-react';
-import { LEAVE_QUOTA_YEARLY } from '../constants';
+
 import { convertFileToBase64 } from '../utils/fileHelper';
 
 interface EmployeeDashboardProps {
@@ -127,7 +127,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   const formatTime = (totalSeconds: number) => {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
+    const seconds = Math.floor(totalSeconds % 60);
     return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
@@ -169,7 +169,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
     }
   });
 
-  const remainingQuota = LEAVE_QUOTA_YEARLY - takenLeaves;
+
   const hoursWorked = elapsed / 3600;
   const overtime = Math.max(0, hoursWorked - 8);
 
@@ -492,36 +492,21 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
           {/* Right Column: Quotas & Compliance */}
           <div className="lg:col-span-4 space-y-10">
             
-            {/* Leave Quota Card */}
+            {/* Leave Analysis Card */}
             <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.05)] relative overflow-hidden group hover:border-blue-200 transition-all duration-500">
                 <div className="absolute top-0 right-0 p-6 text-blue-500/5 group-hover:scale-110 transition-transform">
                    <Calendar size={120} />
                 </div>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-4">Leave Consumption</p>
-                <h3 className="text-2xl font-black text-slate-900 mb-8 leading-tight">Paid Leave <br/>Balance <span className="text-blue-600">{currentYear}</span></h3>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-4">Leave Analysis</p>
+                <h3 className="text-2xl font-black text-slate-900 mb-8 leading-tight">Total Leaves <br/>Taken <span className="text-blue-600">{currentYear}</span></h3>
                 
-                <div className="space-y-8">
-                    <div className="flex items-end justify-between">
-                        <div>
-                            <p className="text-sm font-bold text-slate-400 mb-1">Taken</p>
-                            <p className="text-4xl font-black text-slate-800 tracking-tighter">{takenLeaves.toFixed(1)} <span className="text-xs font-bold text-slate-300 tracking-widest uppercase">Days</span></p>
+                <div className="space-y-8 flex flex-col justify-center items-center py-4">
+                    <div className="flex flex-col items-center justify-center bg-blue-50/50 p-8 rounded-3xl border border-dashed border-blue-200 w-full">
+                        <span className="text-blue-400 text-[10px] font-black uppercase tracking-widest mb-2">Total</span>
+                        <div className="flex items-baseline gap-2">
+                            <span className="text-6xl font-black text-blue-600 tracking-tighter">{takenLeaves.toFixed(1)}</span>
+                            <span className="text-xl font-bold text-blue-400">Days</span>
                         </div>
-                        <div className="text-right">
-                            <p className="text-sm font-bold text-slate-400 mb-1">Remaining</p>
-                            <p className={`text-4xl font-black tracking-tighter ${remainingQuota < 0 ? 'text-red-500' : 'text-blue-600'}`}>{remainingQuota.toFixed(1)}</p>
-                        </div>
-                    </div>
-
-                    <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden shadow-inner">
-                        <div 
-                            className={`h-full transition-all duration-1000 delay-500 ${takenLeaves > LEAVE_QUOTA_YEARLY ? 'bg-red-500' : 'bg-gradient-to-r from-blue-500 to-indigo-600'}`}
-                            style={{ width: `${Math.min((takenLeaves / LEAVE_QUOTA_YEARLY) * 100, 100)}%` }}
-                        ></div>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                        <span>Min: 0</span>
-                        <span>Yearly Limit: {LEAVE_QUOTA_YEARLY}</span>
                     </div>
                 </div>
             </div>
@@ -686,7 +671,7 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
                       {[
                         { label: 'Total Logs', value: Object.keys(empAttendance).length, color: 'slate' },
                         { label: 'Leaves Taken', value: takenLeaves.toFixed(1), color: 'rose' },
-                        { label: 'Remaining', value: remainingQuota.toFixed(1), color: 'indigo' },
+                        { label: 'Days Present', value: Object.values(empAttendance).filter(v => v === 1 || (typeof v === 'number' && v > 0 && v < 1)).length.toString(), color: 'indigo' },
                         { label: 'Overtime Hrs', value: overtime.toFixed(1), color: 'emerald' }
                       ].map((item, i) => (
                         <div key={i} className={`p-8 bg-${item.color}-50/50 border border-${item.color}-100 rounded-[2.5rem] transition-all hover:shadow-lg hover:shadow-${item.color}-500/5 group`}>

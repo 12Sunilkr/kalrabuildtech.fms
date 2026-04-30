@@ -2,34 +2,36 @@
 import React, { useState, useEffect, useCallback, useLayoutEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Auth } from './components/Auth';
-import { AttendanceSheet } from './components/AttendanceSheet';
-import { EmployeeMaster } from './components/EmployeeMaster';
-import { LeaveManagement } from './components/LeaveManagement';
 import { Dashboard } from './components/Dashboard';
 import { EmployeeDashboard } from './components/EmployeeDashboard';
-import { ReadMe } from './components/ReadMe';
-import { HolidayManager } from './components/HolidayManager';
-import { TaskManager } from './components/TaskManager';
-import { MaterialOrders } from './components/MaterialOrders';
-import { ArchivedStaff } from './components/ArchivedStaff';
-import { PerformanceReport } from './components/PerformanceReport';
-import { QuerySystem } from './components/QuerySystem';
-import { ChatSystem } from './components/ChatSystem';
-import { TimeLogViewer } from './components/TimeLogViewer';
-import { NotificationCenter } from './components/NotificationCenter';
-import { OrganizationTree } from './components/OrganizationTree';
-import { ProjectManager } from './components/ProjectManager';
-import { CalendarView } from './components/CalendarView';
-import { FinanceDashboard } from './components/FinanceDashboard';
-import { Notepad } from './components/Notepad';
-import { ChecklistSystem } from './components/ChecklistSystem';
-import { DatabaseManager } from './components/DatabaseManager';
-import PMSDashboard from './components/PMSDashboard';
-import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, Project, SitePhoto, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance } from './types';
-import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_PROJECTS, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
+
+// Lazy load heavy modules to improve initial load time and responsiveness
+const AttendanceSheet = React.lazy(() => import('./components/AttendanceSheet').then(m => ({ default: m.AttendanceSheet })));
+const EmployeeMaster = React.lazy(() => import('./components/EmployeeMaster').then(m => ({ default: m.EmployeeMaster })));
+const LeaveManagement = React.lazy(() => import('./components/LeaveManagement').then(m => ({ default: m.LeaveManagement })));
+const ReadMe = React.lazy(() => import('./components/ReadMe').then(m => ({ default: m.ReadMe })));
+const HolidayManager = React.lazy(() => import('./components/HolidayManager').then(m => ({ default: m.HolidayManager })));
+const TaskManager = React.lazy(() => import('./components/TaskManager').then(m => ({ default: m.TaskManager })));
+const MaterialOrders = React.lazy(() => import('./components/MaterialOrders').then(m => ({ default: m.MaterialOrders })));
+const ArchivedStaff = React.lazy(() => import('./components/ArchivedStaff').then(m => ({ default: m.ArchivedStaff })));
+const PerformanceReport = React.lazy(() => import('./components/PerformanceReport').then(m => ({ default: m.PerformanceReport })));
+const QuerySystem = React.lazy(() => import('./components/QuerySystem').then(m => ({ default: m.QuerySystem })));
+const ChatSystem = React.lazy(() => import('./components/ChatSystem').then(m => ({ default: m.ChatSystem })));
+const TimeLogViewer = React.lazy(() => import('./components/TimeLogViewer').then(m => ({ default: m.TimeLogViewer })));
+const NotificationCenter = React.lazy(() => import('./components/NotificationCenter').then(m => ({ default: m.NotificationCenter })));
+const OrganizationTree = React.lazy(() => import('./components/OrganizationTree').then(m => ({ default: m.OrganizationTree })));
+const CalendarView = React.lazy(() => import('./components/CalendarView').then(m => ({ default: m.CalendarView })));
+const FinanceDashboard = React.lazy(() => import('./components/FinanceDashboard').then(m => ({ default: m.FinanceDashboard })));
+const Notepad = React.lazy(() => import('./components/Notepad').then(m => ({ default: m.Notepad })));
+const ChecklistSystem = React.lazy(() => import('./components/ChecklistSystem').then(m => ({ default: m.ChecklistSystem })));
+const DatabaseManager = React.lazy(() => import('./components/DatabaseManager').then(m => ({ default: m.DatabaseManager })));
+const PMSDashboard = React.lazy(() => import('./components/PMSDashboard'));
+const CRMModule = React.lazy(() => import('./components/CRMModule').then(m => ({ default: m.CRMModule })));
+import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance, CRMLead } from './types';
+import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
 import { differenceInMinutes } from 'date-fns';
-import { Menu, Bell, CheckCircle, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
+import { Menu, Bell, CheckCircle, AlertCircle, Info, X, AlertTriangle, MessageCircle } from 'lucide-react';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from './src/utils/api';
 
 const App: React.FC = () => {
@@ -103,7 +105,8 @@ const App: React.FC = () => {
         // (this avoids restoring sessions on refresh if logout didn't fully invalidate cookies).
         if (sessionStorage.getItem('kbt_session_logout')) {
           console.log('Skipping session restore due to recent logout');
-          try { sessionStorage.removeItem('kbt_session_logout'); } catch (e) { /* ignore */ }
+          // DO NOT remove kbt_session_logout here. Keep it until explicit login,
+          // to completely prevent auto-restore on subsequent refreshes.
           setCurrentUser(null);
         } else {
           // Try to restore session via shared axios client
@@ -236,8 +239,6 @@ const App: React.FC = () => {
   const [queries, setQueries] = useState<Query[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatGroups, setChatGroups] = useState<ChatGroup[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [sitePhotos, setSitePhotos] = useState<SitePhoto[]>([]);
   const [sundayRequests, setSundayRequests] = useState<SundayRequest[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(INITIAL_LEAVE_REQUESTS);
   const [clientFinancials, setClientFinancials] = useState<ClientFinancial[]>([]);
@@ -249,6 +250,26 @@ const App: React.FC = () => {
   const [showNotifications, setShowNotifications] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null);
 
+  // Initialize the unread count check across the app
+  const [globalUnreadChatCount, setGlobalUnreadChatCount] = useState(0);
+
+  // Quick background unread messages check (for header badge)
+  useEffect(() => {
+    if (!currentUser) return;
+    const fetchUnread = async () => {
+      try {
+        const res = await safeGet('/chat/unread_count_fast');
+        const count = extractPayload(res) || 0;
+        setGlobalUnreadChatCount(count);
+      } catch (e) {
+        // ignore fast polling failures silently
+      }
+    };
+    fetchUnread();
+    const iv = setInterval(fetchUnread, 15000);
+    return () => clearInterval(iv);
+  }, [currentUser]);
+
   useEffect(() => {
     if (toast) {
       const timer = setTimeout(() => setToast(null), 5000);
@@ -259,7 +280,7 @@ const App: React.FC = () => {
   // Fetch data specific to the current view ON DEMAND (lazy loading)
   useEffect(() => {
     if (!currentUser) return;
-    
+
     // Helper to run a specific fetch safely
     const fetchForView = async () => {
       try {
@@ -294,7 +315,7 @@ const App: React.FC = () => {
               tlAg[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration });
             });
             setTimeLogs(tlAg);
-            
+
             // Also refresh tasks when hitting Performance/Dashboard
             const tRes = await safeGet('/tasks');
             setTasks(ensureArray(extractPayload(tRes)));
@@ -303,42 +324,42 @@ const App: React.FC = () => {
             try {
               const ctRes = await safeGet('/checklist-templates');
               const mappedTpl = ensureArray(extractPayload(ctRes)).map((x: any) => ({
-                 id: x.id,
-                 taskName: x.data?.taskName || x.taskName,
-                 doerId: x.data?.doerId || x.doerId,
-                 buddyId: x.data?.buddyId || x.buddyId,
-                 department: x.data?.department || x.department,
-                 startDate: x.data?.startDate || x.startDate,
-                 config: x.data?.config ?? x.config ?? { frequency: 'DAILY' },
-                 active: x.data?.active ?? x.active ?? true
+                id: x.id,
+                taskName: x.data?.taskName || x.taskName,
+                doerId: x.data?.doerId || x.doerId,
+                buddyId: x.data?.buddyId || x.buddyId,
+                department: x.data?.department || x.department,
+                startDate: x.data?.startDate || x.startDate,
+                config: x.data?.config ?? x.config ?? { frequency: 'DAILY' },
+                active: x.data?.active ?? x.active ?? true
               }));
               setChecklistTemplates(mappedTpl);
-              
+
               const insts: any[] = [];
               await Promise.all(mappedTpl.map(async (tpl) => {
-                 try {
-                   const ir = await safeGet(`/checklists/${encodeURIComponent(tpl.id)}`);
-                   const rows = ensureArray(extractPayload(ir));
-                   rows.forEach((it: any) => {
-                     try {
-                       const p = JSON.parse(it.item);
-                       insts.push({
-                         ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId,
-                         department: p.department ?? tpl.department,
-                         taskName: p.taskName ?? tpl.taskName,
-                         templateId: String(tpl.id),
-                         status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'),
-                         completedDate: p.completedDate
-                       });
-                     } catch {
-                       insts.push({
-                         id: it.id, templateId: String(tpl.id), date: it.item,
-                         status: it.done ? 'COMPLETED' : 'PENDING',
-                         dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName
-                       });
-                     }
-                   });
-                 } catch { /* ignore */ }
+                try {
+                  const ir = await safeGet(`/checklists/${encodeURIComponent(tpl.id)}`);
+                  const rows = ensureArray(extractPayload(ir));
+                  rows.forEach((it: any) => {
+                    try {
+                      const p = JSON.parse(it.item);
+                      insts.push({
+                        ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId,
+                        department: p.department ?? tpl.department,
+                        taskName: p.taskName ?? tpl.taskName,
+                        templateId: String(tpl.id),
+                        status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'),
+                        completedDate: p.completedDate
+                      });
+                    } catch {
+                      insts.push({
+                        id: it.id, templateId: String(tpl.id), date: it.item,
+                        status: it.done ? 'COMPLETED' : 'PENDING',
+                        dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName
+                      });
+                    }
+                  });
+                } catch { /* ignore */ }
               }));
               setChecklistInstances(insts);
             } catch (e) {
@@ -352,12 +373,7 @@ const App: React.FC = () => {
             setTasks(ensureArray(extractPayload(tRes)));
             break;
           }
-          case ViewMode.PROJECTS:
-          case ViewMode.EMPLOYEE_PROJECTS: {
-            const p = await safeGet('/projects');
-            setProjects(ensureArray(extractPayload(p)));
-            break;
-          }
+
           case ViewMode.CALENDAR:
           case ViewMode.HOLIDAYS: {
             const h = await safeGet('/holidays');
@@ -380,12 +396,12 @@ const App: React.FC = () => {
             break;
           }
           case ViewMode.NOTEPAD: {
-             const uid = currentUser.employeeId || currentUser.id;
-             if (uid) {
-               const np = await safeGet(`/notepad/${encodeURIComponent(uid)}`);
-               setNotes(ensureArray(extractPayload(np)));
-             }
-             break;
+            const uid = currentUser.employeeId || currentUser.id;
+            if (uid) {
+              const np = await safeGet(`/notepad/${encodeURIComponent(uid)}`);
+              setNotes(ensureArray(extractPayload(np)));
+            }
+            break;
           }
           case ViewMode.LEAVES: {
             const qUser = currentUser && (currentUser.employeeId || currentUser.id);
@@ -400,18 +416,18 @@ const App: React.FC = () => {
             break;
           }
         }
-        
+
         // Fetch notifications regularly or on view change so they are updated
         if (currentUser && (currentUser.employeeId || currentUser.id)) {
-           const uid = currentUser.employeeId || currentUser.id;
-           const n = await safeGet(`/notifications/${encodeURIComponent(uid)}`);
-           setNotifications(ensureArray(extractPayload(n)));
+          const uid = currentUser.employeeId || currentUser.id;
+          const n = await safeGet(`/notifications/${encodeURIComponent(uid)}`);
+          setNotifications(ensureArray(extractPayload(n)));
         }
       } catch (err) {
         console.warn('Lazy fetch for view failed', currentView, err);
       }
     };
-    
+
     fetchForView();
   }, [currentView, currentUser]);
 
@@ -536,7 +552,7 @@ const App: React.FC = () => {
       time: new Date().toLocaleTimeString(),
       read: false, type, targetUser
     };
-    
+
     // Show on-screen toast for immediate visibility
     const toastType = type === 'SYSTEM' || type === 'ORDER' ? 'info' : (type === 'TASK' ? 'success' : 'info');
     showToast(`${title}: ${message}`, toastType as any);
@@ -741,8 +757,6 @@ const App: React.FC = () => {
       leaveRequests, setLeaveRequests,
       holidays, setHolidays,
       timeLogs, setTimeLogs,
-      projects, setProjects,
-      sitePhotos, setPhotos: setSitePhotos,
       sundayRequests, setSundayRequests,
       notes, setNotes,
       checklistTemplates, setChecklistTemplates,
@@ -762,7 +776,6 @@ const App: React.FC = () => {
         case ViewMode.CHECKLIST: return <ChecklistSystem {...commonProps} templates={checklistTemplates} setTemplates={setChecklistTemplates} instances={checklistInstances} setInstances={setChecklistInstances} />;
         case ViewMode.FMS_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.MATERIAL_ORDERS: return <MaterialOrders {...commonProps} />;
-        case ViewMode.PROJECTS: return <ProjectManager {...commonProps} photos={sitePhotos} setPhotos={setSitePhotos} />;
         case ViewMode.PMS_ADMIN: return <PMSDashboard />;
         case ViewMode.FINANCE: return <FinanceDashboard {...commonProps} clientFinancials={clientFinancials} setClientFinancials={setClientFinancials} vendorFinancials={vendorFinancials} setVendorFinancials={setVendorFinancials} />;
         case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} />;
@@ -770,6 +783,7 @@ const App: React.FC = () => {
         case ViewMode.QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
         case ViewMode.CHAT: return <ChatSystem messages={chatMessages} setMessages={setChatMessages} groups={chatGroups} setGroups={setChatGroups} {...commonProps} />;
         case ViewMode.NOTEPAD: return <Notepad {...commonProps} />;
+        case ViewMode.CRM: return <CRMModule currentUser={currentUser} employees={employees} />;
         case ViewMode.ARCHIVED_STAFF: return <ArchivedStaff {...commonProps} />;
         case ViewMode.ORGANIZATION_TREE: return <OrganizationTree employees={employees} />;
         case ViewMode.HOLIDAYS: return <HolidayManager holidays={holidays} setHolidays={setHolidays} />;
@@ -783,7 +797,6 @@ const App: React.FC = () => {
       switch (currentView) {
         case ViewMode.EMPLOYEE_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.EMPLOYEE_ORDERS: return <MaterialOrders {...commonProps} />;
-        case ViewMode.EMPLOYEE_PROJECTS: return <ProjectManager {...commonProps} photos={sitePhotos} setPhotos={setSitePhotos} />;
         case ViewMode.PMS_EMPLOYEE: return <PMSDashboard />;
         case ViewMode.FINANCE: return <FinanceDashboard {...commonProps} clientFinancials={clientFinancials} setClientFinancials={setClientFinancials} vendorFinancials={vendorFinancials} setVendorFinancials={setVendorFinancials} />;
         case ViewMode.CHECKLIST: return <ChecklistSystem {...commonProps} templates={checklistTemplates} setTemplates={setChecklistTemplates} instances={checklistInstances} setInstances={setChecklistInstances} />;
@@ -793,6 +806,7 @@ const App: React.FC = () => {
         case ViewMode.EMPLOYEE_CHAT: return <ChatSystem messages={chatMessages} setMessages={setChatMessages} groups={chatGroups} setGroups={setChatGroups} {...commonProps} />;
         case ViewMode.EMPLOYEE_QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
+        case ViewMode.EMPLOYEE_CRM: return <CRMModule currentUser={currentUser} employees={employees} />;
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
         default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
       }
@@ -800,7 +814,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen w-full font-sans text-slate-900 overflow-hidden relative print:h-auto print:overflow-visible">
+    <div className="flex bg-slate-50 min-h-screen h-[100dvh] w-full font-sans text-slate-900 overflow-hidden relative print:h-auto print:overflow-visible">
       <div className="fixed inset-0 z-0 bg-slate-50 pointer-events-none print:hidden">
         <div className="absolute top-0 -left-4 w-96 h-96 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob"></div>
         <div className="absolute top-0 -right-4 w-96 h-96 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000"></div>
@@ -819,24 +833,36 @@ const App: React.FC = () => {
       />
 
       <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:my-4 md:mr-4 md:rounded-r-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none">
-        <header className="bg-white/80 backdrop-blur-md p-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20 print:hidden">
-          <div className="flex items-center gap-2 md:hidden">
-            <img src={COMPANY_LOGO} alt="Logo" className="w-8 h-8 bg-white rounded-lg shadow-sm" />
-            <span className="font-extrabold text-sm uppercase tracking-tight">Kalra FMS</span>
-          </div>
+        <header className="bg-white/80 backdrop-blur-md px-3 py-2 md:px-4 md:py-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20 print:hidden">
+          <button
+            className="flex items-center gap-2 md:hidden hover:opacity-80 transition-opacity focus:outline-none text-left"
+            onClick={() => setCurrentView(currentUser.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)}
+          >
+            <img src={COMPANY_LOGO} alt="Logo" className="w-7 h-7 bg-white rounded-lg shadow-sm" />
+            <span className="font-extrabold text-xs uppercase tracking-tight">Kalra FMS</span>
+          </button>
           <div className="flex-1"></div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 md:gap-4">
             <button className="relative p-2 text-slate-500 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors" onClick={() => setShowNotifications(!showNotifications)}>
-              <Bell size={24} />
+              <Bell size={22} />
               {unreadCount > 0 && <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 rounded-full text-[10px] flex items-center justify-center font-bold text-white border border-white animate-pulse">{unreadCount}</span>}
             </button>
-            <button onClick={() => setIsSidebarOpen(true)} className="p-2 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 md:hidden"><Menu size={24} /></button>
+            <button onClick={() => setIsSidebarOpen(true)} className="p-2 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 md:hidden"><Menu size={22} /></button>
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden relative print:overflow-visible print:h-auto">
-          <div key={currentView} className="h-full animate-fade-in-up">
-            {renderView()}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar relative print:overflow-visible print:h-auto">
+          <div key={currentView} className="min-h-full h-full animate-fade-in-up">
+            <React.Suspense fallback={
+              <div className="flex items-center justify-center h-full w-full bg-slate-50/50">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                  <span className="text-xs font-bold text-slate-500 animate-pulse">Loading module...</span>
+                </div>
+              </div>
+            }>
+              {renderView()}
+            </React.Suspense>
           </div>
         </div>
       </main>
@@ -850,18 +876,16 @@ const App: React.FC = () => {
       {/* Global Toast Notification */}
       {toast && (
         <div className="fixed bottom-6 right-6 left-6 md:left-auto md:w-96 z-[200] animate-fade-in-up">
-          <div className={`p-4 rounded-2xl shadow-2xl border backdrop-blur-md flex items-start gap-3 ${
-            toast.type === 'success' ? 'bg-emerald-50/90 border-emerald-100 text-emerald-900' :
-            toast.type === 'error' ? 'bg-rose-50/90 border-rose-100 text-rose-900' :
-            toast.type === 'warning' ? 'bg-amber-50/90 border-amber-100 text-amber-900' :
-            'bg-indigo-50/90 border-indigo-100 text-indigo-900'
-          }`}>
-            <div className={`p-2 rounded-xl shrink-0 ${
-              toast.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
-              toast.type === 'error' ? 'bg-rose-100 text-rose-600' :
-              toast.type === 'warning' ? 'bg-amber-100 text-amber-600' :
-              'bg-indigo-100 text-indigo-600'
+          <div className={`p-4 rounded-2xl shadow-2xl border backdrop-blur-md flex items-start gap-3 ${toast.type === 'success' ? 'bg-emerald-50/90 border-emerald-100 text-emerald-900' :
+              toast.type === 'error' ? 'bg-rose-50/90 border-rose-100 text-rose-900' :
+                toast.type === 'warning' ? 'bg-amber-50/90 border-amber-100 text-amber-900' :
+                  'bg-indigo-50/90 border-indigo-100 text-indigo-900'
             }`}>
+            <div className={`p-2 rounded-xl shrink-0 ${toast.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
+                toast.type === 'error' ? 'bg-rose-100 text-rose-600' :
+                  toast.type === 'warning' ? 'bg-amber-100 text-amber-600' :
+                    'bg-indigo-100 text-indigo-600'
+              }`}>
               {toast.type === 'success' && <CheckCircle size={18} />}
               {toast.type === 'error' && <AlertCircle size={18} />}
               {toast.type === 'warning' && <AlertTriangle size={18} />}
@@ -870,7 +894,7 @@ const App: React.FC = () => {
             <div className="flex-1 pt-1">
               <p className="text-sm font-bold leading-tight">{toast.message}</p>
             </div>
-            <button 
+            <button
               onClick={() => setToast(null)}
               className="p-1 hover:bg-black/5 rounded-lg transition-colors shrink-0"
             >
