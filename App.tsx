@@ -27,6 +27,7 @@ const ChecklistSystem = React.lazy(() => import('./components/ChecklistSystem').
 const DatabaseManager = React.lazy(() => import('./components/DatabaseManager').then(m => ({ default: m.DatabaseManager })));
 const PMSDashboard = React.lazy(() => import('./components/PMSDashboard'));
 const CRMModule = React.lazy(() => import('./components/CRMModule').then(m => ({ default: m.CRMModule })));
+const Playbook = React.lazy(() => import('./components/Playbook').then(m => ({ default: m.Playbook })));
 import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance, CRMLead } from './types';
 import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
@@ -704,8 +705,15 @@ const App: React.FC = () => {
   };
 
   const handleUpdateProfile = async (empId: string, data: Partial<Employee>) => {
+    if (!empId || empId.trim() === '') {
+      console.warn('handleUpdateProfile: empId is empty, skipping update');
+      return;
+    }
+    // Optimistic update — show change immediately in UI before server confirms
+    setEmployees(prev => prev.map(e => e.id === empId ? { ...e, ...data } : e));
     try {
       await api.put(`/employees/${encodeURIComponent(empId)}`, data, { withCredentials: true });
+      // Refresh from server to get authoritative state (including avatar inside documents)
       const res = await safeGet('/employees');
       setEmployees(ensureArray(extractPayload(res)));
       showToast('Profile Updated Successfully', 'success');
@@ -713,6 +721,8 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to update profile', err);
       showToast('Profile update failed', 'error');
+      // Rollback optimistic update on failure by refreshing from server
+      try { const res = await safeGet('/employees'); setEmployees(ensureArray(extractPayload(res))); } catch { }
     }
   };
 
@@ -786,6 +796,7 @@ const App: React.FC = () => {
         case ViewMode.CRM: return <CRMModule currentUser={currentUser} employees={employees} />;
         case ViewMode.ARCHIVED_STAFF: return <ArchivedStaff {...commonProps} />;
         case ViewMode.ORGANIZATION_TREE: return <OrganizationTree employees={employees} />;
+        case ViewMode.PLAYBOOK: return <Playbook currentUser={currentUser} employees={employees} />;
         case ViewMode.HOLIDAYS: return <HolidayManager holidays={holidays} setHolidays={setHolidays} />;
         case ViewMode.LEAVES: return <LeaveManagement {...commonProps} />;
         case ViewMode.DATABASE: return <DatabaseManager allData={{ ...commonProps, users }} onRestore={(d) => { }} onReset={() => { }} />;
@@ -808,13 +819,14 @@ const App: React.FC = () => {
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.EMPLOYEE_CRM: return <CRMModule currentUser={currentUser} employees={employees} />;
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
+        case ViewMode.PLAYBOOK: return <Playbook currentUser={currentUser} employees={employees} />;
         default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
       }
     }
   };
 
   return (
-    <div className="flex bg-slate-50 min-h-screen h-[100dvh] w-full font-sans text-slate-900 overflow-hidden relative print:h-auto print:overflow-visible">
+    <div className="flex bg-slate-50 min-h-screen h-[100dvh] w-full font-sans text-slate-900 overflow-hidden relative print:h-auto print:overflow-visible print:block">
       <div className="fixed inset-0 z-0 bg-slate-50 pointer-events-none print:hidden">
         <div className="absolute top-0 -left-4 w-96 h-96 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob"></div>
         <div className="absolute top-0 -right-4 w-96 h-96 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000"></div>
@@ -832,7 +844,7 @@ const App: React.FC = () => {
         userDepartment={employees.find(e => e.id === currentUser.employeeId)?.department}
       />
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:my-4 md:mr-4 md:rounded-r-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none">
+      <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:my-4 md:mr-4 md:rounded-r-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none print:block">
         <header className="bg-white/80 backdrop-blur-md px-3 py-2 md:px-4 md:py-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20 print:hidden">
           <button
             className="flex items-center gap-2 md:hidden hover:opacity-80 transition-opacity focus:outline-none text-left"
@@ -851,7 +863,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar relative print:overflow-visible print:h-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar relative print:overflow-visible print:h-auto print:block">
           <div key={currentView} className="min-h-full h-full animate-fade-in-up">
             <React.Suspense fallback={
               <div className="flex items-center justify-center h-full w-full bg-slate-50/50">
@@ -877,14 +889,14 @@ const App: React.FC = () => {
       {toast && (
         <div className="fixed bottom-6 right-6 left-6 md:left-auto md:w-96 z-[200] animate-fade-in-up">
           <div className={`p-4 rounded-2xl shadow-2xl border backdrop-blur-md flex items-start gap-3 ${toast.type === 'success' ? 'bg-emerald-50/90 border-emerald-100 text-emerald-900' :
-              toast.type === 'error' ? 'bg-rose-50/90 border-rose-100 text-rose-900' :
-                toast.type === 'warning' ? 'bg-amber-50/90 border-amber-100 text-amber-900' :
-                  'bg-indigo-50/90 border-indigo-100 text-indigo-900'
+            toast.type === 'error' ? 'bg-rose-50/90 border-rose-100 text-rose-900' :
+              toast.type === 'warning' ? 'bg-amber-50/90 border-amber-100 text-amber-900' :
+                'bg-indigo-50/90 border-indigo-100 text-indigo-900'
             }`}>
             <div className={`p-2 rounded-xl shrink-0 ${toast.type === 'success' ? 'bg-emerald-100 text-emerald-600' :
-                toast.type === 'error' ? 'bg-rose-100 text-rose-600' :
-                  toast.type === 'warning' ? 'bg-amber-100 text-amber-600' :
-                    'bg-indigo-100 text-indigo-600'
+              toast.type === 'error' ? 'bg-rose-100 text-rose-600' :
+                toast.type === 'warning' ? 'bg-amber-100 text-amber-600' :
+                  'bg-indigo-100 text-indigo-600'
               }`}>
               {toast.type === 'success' && <CheckCircle size={18} />}
               {toast.type === 'error' && <AlertCircle size={18} />}

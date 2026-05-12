@@ -163,11 +163,8 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
   const getStats = (empId: string) => {
     const emp = employees.find(e => e.id === empId);
 
-    // Determine the start date for tracking stats:
-    // If 'createdAt' exists (System Entry Date), use that.
-    // Otherwise, fallback to 'joiningDate' (Legacy behavior).
     const trackingStartDate = emp
-      ? (emp.createdAt ? startOfDay(new Date(emp.createdAt)) : startOfDay(new Date(emp.joiningDate)))
+      ? (emp.joiningDate ? startOfDay(new Date(emp.joiningDate)) : (emp.createdAt ? startOfDay(new Date(emp.createdAt)) : new Date(0)))
       : new Date(0);
 
     const record = attendanceData[empId] || {};
@@ -293,14 +290,25 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
             {employees
-              .filter(emp => showHidden || !emp.hideAttendance || (currentUser && currentUser.role === 'ADMIN' && currentUser.employeeId === emp.id))
+              .filter(emp => {
+                if (!showHidden && emp.hideAttendance && !(currentUser && currentUser.role === 'ADMIN' && currentUser.employeeId === emp.id)) return false;
+                const trackDate = emp.joiningDate ? startOfDay(new Date(emp.joiningDate)) : (emp.createdAt ? startOfDay(new Date(emp.createdAt)) : new Date(0));
+                const viewYear = currentDate.getFullYear();
+                const viewMonth = currentDate.getMonth();
+                const joinYear = trackDate.getFullYear();
+                const joinMonth = trackDate.getMonth();
+                if (viewYear < joinYear || (viewYear === joinYear && viewMonth < joinMonth)) {
+                  return false;
+                }
+                return true;
+              })
               .map(emp => {
                 const stats = getStats(emp.id);
 
                 // Determine start date for rendering logic
-                const trackingStartDate = emp.createdAt
-                  ? startOfDay(new Date(emp.createdAt))
-                  : startOfDay(new Date(emp.joiningDate));
+                const trackingStartDate = emp.joiningDate
+                  ? startOfDay(new Date(emp.joiningDate))
+                  : (emp.createdAt ? startOfDay(new Date(emp.createdAt)) : new Date(0));
 
                 return (
                   <tr key={emp.id} className="hover:bg-blue-50/30 transition-colors group">
@@ -359,7 +367,10 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
                       }
 
                       const colorClass = val === null ? 'bg-white' : (STATUS_COLORS[val.toString()] || 'bg-white');
-                      const displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : (val === 'LEAVE' ? 'L' : (val === 'CO' ? 'C' : val))));
+                      let displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : (val === 'LEAVE' ? 'L' : (val === 'CO' ? 'C' : val))));
+                      if (val === null && isBeforeTracking) {
+                        displayText = '-';
+                      }
 
                       // Style hint for pre-tracking empty cells (optional, kept subtle)
                       const cellStyle = (isBeforeTracking && val === null) ? '' : '';

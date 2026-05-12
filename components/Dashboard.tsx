@@ -84,7 +84,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
              if (val === 'LEAVE') {
                  leaves += 1;
              } else if (val === 0) {
-                 absents += 1;
+                 absent += 1;
              } else if (val === 1) {
                  present += 1;
              } else if (val !== 'OFF' && val !== 'HOLIDAY' && val !== 'CO' && typeof val === 'number') {

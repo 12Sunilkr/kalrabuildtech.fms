@@ -452,6 +452,37 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
         }
     };
 
+    const handleMarkIncomplete = async (id: string, dbId?: string) => {
+        const instance = instances.find(i => i.id === id);
+        if (!instance || instance.status !== 'COMPLETED' || markingIds.has(id)) return;
+
+        if (!dbId) {
+            console.warn('No dbId for', id);
+            alert('Hold on! The system is still syncing this task with the server. Please wait a moment and refresh before trying again.');
+            return;
+        }
+
+        setMarkingIds(prev => new Set(prev).add(id));
+        // Optimistically revert to PENDING
+        setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'PENDING', completedDate: undefined } : i));
+
+        try {
+            const updated = { ...instance, status: 'PENDING' };
+            delete updated.completedDate;
+            await api.put(`/checklists/${dbId}`, { done: false, item: JSON.stringify(updated) }, { withCredentials: true });
+
+            // Switch monitor filter to ALL so the reverted PENDING task is visible
+            setMonitorStatus('ALL');
+        } catch (err) {
+            console.error('Mark incomplete failed', err);
+            // Rollback on failure
+            setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'COMPLETED', completedDate: instance.completedDate } : i));
+            alert('Failed to mark task as incomplete. Please try again.');
+        } finally {
+            setMarkingIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+        }
+    };
+
     const handleDeleteTemplate = async (id: string) => {
         if (!confirm('Delete this routine? All pending tasks will be removed.')) return;
         try {
@@ -1203,7 +1234,9 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                         <div className="bg-white rounded-2xl border border-emerald-100 overflow-hidden">
                                             <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-2 flex items-center gap-2">
                                                 <CheckCheck size={14} className="text-emerald-600" />
-                                                <p className="text-[11px] font-bold text-emerald-700">Verified Complete — these tasks cannot be modified</p>
+                                                <p className="text-[11px] font-bold text-emerald-700">
+                                                    Verified Complete — {isAdmin ? 'admins can mark tasks as incomplete' : 'these tasks cannot be modified'}
+                                                </p>
                                             </div>
                                             <div className="overflow-x-auto">
                                                 <table className="w-full text-sm min-w-[700px]">
@@ -1223,6 +1256,7 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                             const freq = tpl?.config?.frequency || (item as any)?.frequency || (tpl as any)?.frequency || 'ONE-TIME';
                                                             const doerId = item.doerId || tpl?.doerId;
                                                             const lead = employees.find(e => String(e.id) === String(doerId));
+                                                            const isMarking = markingIds.has(item.id);
 
                                                             return (
                                                                 <tr key={item.id} className="done-row hover:opacity-100 transition-opacity">
@@ -1236,10 +1270,27 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                                                 <AlertCircle size={12} /> Stopped
                                                                             </span>
                                                                         ) : (
-                                                                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                                                                                <CheckCheck size={12} />
-                                                                                {item.completedDate || '—'}
-                                                                            </span>
+                                                                            <div className="flex items-center justify-end gap-3">
+                                                                                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                                                                                    <CheckCheck size={12} />
+                                                                                    {item.completedDate || '—'}
+                                                                                </span>
+                                                                                {isAdmin && (
+                                                                                    <button
+                                                                                        onClick={() => !isMarking && handleMarkIncomplete(item.id, item.dbId)}
+                                                                                        disabled={isMarking}
+                                                                                        className={cx(
+                                                                                            'inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-bold transition-all border',
+                                                                                            isMarking
+                                                                                                ? 'opacity-50 cursor-wait bg-slate-50 text-slate-400 border-slate-200'
+                                                                                                : 'bg-white text-orange-600 border-orange-200 hover:bg-orange-50 cursor-pointer shadow-sm'
+                                                                                        )}
+                                                                                        title="Mark as Incomplete"
+                                                                                    >
+                                                                                        <RefreshCw size={10} /> Uncomplete
+                                                                                    </button>
+                                                                                )}
+                                                                            </div>
                                                                         )}
                                                                     </td>
                                                                 </tr>

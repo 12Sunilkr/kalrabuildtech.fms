@@ -1491,7 +1491,12 @@ app.get('/api/employees', requireAuth, (req, res) => {
       while (stmt.step()) {
         const row = stmt.getAsObject();
         if (row.documents) {
-          try { row.documents = JSON.parse(row.documents); } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
+          try {
+            const docs = JSON.parse(row.documents);
+            // Surface avatar as a top-level field for frontend compatibility
+            if (docs && docs.avatar) row.avatar = docs.avatar;
+            row.documents = docs;
+          } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
         }
         out.push(row);
       }
@@ -1507,7 +1512,12 @@ app.get('/api/employees', requireAuth, (req, res) => {
       while (stmt.step()) {
         const row = stmt.getAsObject();
         if (row.documents) {
-          try { row.documents = JSON.parse(row.documents); } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
+          try {
+            const docs = JSON.parse(row.documents);
+            // Surface avatar as a top-level field for frontend compatibility
+            if (docs && docs.avatar) row.avatar = docs.avatar;
+            row.documents = docs;
+          } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
         }
         out.push(row);
       }
@@ -1536,7 +1546,11 @@ app.get('/api/employees/:id', requireAuth, (req, res) => {
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     const row = stmt.getAsObject();
     if (row.documents) {
-      try { row.documents = JSON.parse(row.documents); } catch (e) { console.warn('Failed to parse documents JSON for employee', req.params.id, e); }
+      try {
+        const docs = JSON.parse(row.documents);
+        if (docs && docs.avatar) row.avatar = docs.avatar;
+        row.documents = docs;
+      } catch (e) { console.warn('Failed to parse documents JSON for employee', req.params.id, e); }
     }
     stmt.free();
     return success(res, row);
@@ -1577,13 +1591,28 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     if (req.user.role !== 'ADMIN' && req.user.employeeId !== id) return failure(res, 'Forbidden', 403);
 
     ensureEmployeesTable();
-    const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, is_archived } = req.body || {};
-    const stmt = db.prepare('SELECT id FROM employees WHERE id = ?');
+    const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, is_archived, avatar } = req.body || {};
+    const stmt = db.prepare('SELECT id, documents FROM employees WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
+    const existing = stmt.getAsObject();
     stmt.free();
 
-    const docs = documents ? JSON.stringify(documents) : null;
+    // Merge avatar and documents together into the documents JSON column
+    let existingDocs = {};
+    if (existing.documents) {
+      try { existingDocs = JSON.parse(existing.documents); } catch (e) { existingDocs = {}; }
+    }
+    // If documents object was sent, merge it; if avatar was sent separately, add it to documents
+    let mergedDocs = existingDocs;
+    if (documents && typeof documents === 'object') {
+      mergedDocs = { ...existingDocs, ...documents };
+    }
+    if (avatar) {
+      mergedDocs = { ...mergedDocs, avatar };
+    }
+    const docs = Object.keys(mergedDocs).length > 0 ? JSON.stringify(mergedDocs) : null;
+
     // If setting is_archived, record archived_at timestamp when archiving
     const archivedAt = is_archived ? new Date().toISOString() : null;
 
@@ -2384,6 +2413,54 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
   }
 });
 
+// PUT /api/tasks/:id/uncomplete - Admin-only: revert a completed task back to pending/overdue
+app.put('/api/tasks/:id/uncomplete', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Admin only', 403);
+
+    const id = req.params.id;
+
+    // Check the task exists
+    const getStmt = db.prepare('SELECT id, dueDate, due_date FROM tasks WHERE id = ?');
+    getStmt.bind([id]);
+    if (!getStmt.step()) { getStmt.free(); return failure(res, 'Task not found', 404); }
+    const existing = getStmt.getAsObject();
+    getStmt.free();
+
+    try {
+      db.run('BEGIN TRANSACTION');
+
+      // Directly NULL out all completion-related fields; set status to PENDING
+      // This bypasses coalesce so the fields are truly cleared
+      const stmt = db.prepare(
+        'UPDATE tasks SET status = ?, completionDate = NULL, completionProcess = NULL, completionAttachment = NULL WHERE id = ?'
+      );
+      stmt.run(['PENDING', id]);
+      stmt.free();
+
+      db.run('COMMIT');
+      if (!persistDB()) console.warn('Tasks uncomplete: commit succeeded but failed to persist DB file');
+      else console.log('Tasks uncomplete: task reverted to pending', { id });
+
+      // Return the updated task
+      const outStmt = db.prepare('SELECT id, title, description, assignedTo, assigned_to, priority, dueDate, due_date, status, createdAt, created_at, assignedBy, completionDate, completionProcess, completionAttachment, statusNote, attachment, externalLink FROM tasks WHERE id = ?');
+      outStmt.bind([id]);
+      outStmt.step();
+      const updated = outStmt.getAsObject();
+      outStmt.free();
+      return success(res, { task: updated }, 'Task reverted to pending');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      console.error('Tasks uncomplete transactional error', e && (e.stack || e.message || e));
+      return failure(res, 'Internal server error while reverting task', 500);
+    }
+  } catch (err) {
+    console.error('Tasks uncomplete error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
 // PUT /api/tasks/:id - update a task (assignee or admin)
 app.put('/api/tasks/:id', requireAuth, (req, res) => {
   try {
@@ -2448,8 +2525,8 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
       const assignerNumeric = (updates.assignedTo && updates.assignedTo !== existing.assignedTo) ? Number(req.user.id) : null;
 
       // Convert extension fields to JSON strings for storage (or null if not provided)
-      const extReqStr = updates.extensionRequest ? (typeof updates.extensionRequest === 'string' ? updates.extensionRequest : JSON.stringify(updates.extensionRequest)) : null;
-      const extHistStr = updates.extensionHistory ? (typeof updates.extensionHistory === 'string' ? updates.extensionHistory : JSON.stringify(updates.extensionHistory)) : null;
+      const extReqStr = updates.extensionRequest ? (typeof updates.extensionRequest === 'string' ? updates.extensionRequest : JSON.stringify(updates.extensionRequest)) : (updates.extensionRequest === '' ? '' : null);
+      const extHistStr = updates.extensionHistory ? (typeof updates.extensionHistory === 'string' ? updates.extensionHistory : JSON.stringify(updates.extensionHistory)) : (updates.extensionHistory === '' ? '' : null);
 
       // Idempotency: If the update would result in no change (e.g., extension already approved/rejected), skip write
       const incomingExtStatus = updates.extensionRequest && (updates.extensionRequest.status || ((typeof updates.extensionRequest === 'string') ? (() => { try { return JSON.parse(updates.extensionRequest).status; } catch (e) { return null; } })() : updates.extensionRequest.status));
@@ -2463,26 +2540,26 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
       } catch (e) { /* ignore parse errors and proceed */ }
 
       updateStmt.run([
-        updates.title || null,
-        updates.description || null,
-        assignedToEmp || updates.assignedTo || null,
+        updates.title !== undefined ? updates.title : null,
+        updates.description !== undefined ? updates.description : null,
+        assignedToEmp !== null ? assignedToEmp : (updates.assignedTo !== undefined ? updates.assignedTo : null),
         assignerCamel,
-        updates.priority || null,
-        updates.dueDate || updates.due_date || null,
-        assigned_to_val || updates.assigned_to || null,
+        updates.priority !== undefined ? updates.priority : null,
+        updates.dueDate !== undefined ? updates.dueDate : (updates.due_date !== undefined ? updates.due_date : null),
+        assigned_to_val !== null ? assigned_to_val : (updates.assigned_to !== undefined ? updates.assigned_to : null),
         assignerNumeric,
-        updates.dueDate || updates.due_date || null,
-        (updates.status || null),
-        (updates.statusNote || null),
+        updates.dueDate !== undefined ? updates.dueDate : (updates.due_date !== undefined ? updates.due_date : null),
+        updates.status !== undefined ? updates.status : null,
+        updates.statusNote !== undefined ? updates.statusNote : null,
         extReqStr,
         extHistStr,
-        updates.completionDate || updates.completion_date || null,
-        updates.completionProcess || null,
-        updates.completionAttachment || null,
-        updates.createdAt || null,
-        updates.created_at || null,
-        updates.attachment || null,
-        updates.externalLink || null,
+        updates.completionDate !== undefined ? updates.completionDate : (updates.completion_date !== undefined ? updates.completion_date : null),
+        updates.completionProcess !== undefined ? updates.completionProcess : null,
+        updates.completionAttachment !== undefined ? updates.completionAttachment : null,
+        updates.createdAt !== undefined ? updates.createdAt : null,
+        updates.created_at !== undefined ? updates.created_at : null,
+        updates.attachment !== undefined ? updates.attachment : null,
+        updates.externalLink !== undefined ? updates.externalLink : null,
         id
       ]);
       updateStmt.free();

@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, BarChart3, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database } from 'lucide-react';
+import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, BarChart3, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database, BookOpen } from 'lucide-react';
 import { ViewMode, Role } from '../types';
 import { COMPANY_LOGO } from '../constants';
 
@@ -24,6 +24,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.DATABASE, label: 'Data Hub & Backups', icon: Database },
     { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
     { id: ViewMode.ORGANIZATION_TREE, label: 'Organization Tree', icon: GitGraph }, 
+    { id: ViewMode.PLAYBOOK, label: 'Playbook', icon: BookOpen },
       { id: ViewMode.PMS_ADMIN, label: 'PMS Dashboard', icon: BarChart3 },
     { id: ViewMode.CRM, label: 'CRM', icon: Users },
     { id: ViewMode.TIME_LOGS, label: 'Shift Logs', icon: Clock },
@@ -54,6 +55,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.EMPLOYEE_CHAT, label: 'Team Chat', icon: MessageCircle }, 
     { id: ViewMode.EMPLOYEE_QUERIES, label: 'Raise Query', icon: HelpCircle }, 
     { id: ViewMode.NOTEPAD, label: 'My Notepad', icon: StickyNote }, 
+    { id: ViewMode.PLAYBOOK, label: 'Playbook', icon: BookOpen },
     { id: ViewMode.README, label: 'Help & Docs', icon: Info },
   ];
 

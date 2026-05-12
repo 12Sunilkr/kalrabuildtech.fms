@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, AttendanceRecord, Employee, TimeLog, Task, SundayRequest, Notification } from '../types';
 import { formatDateKey, isDateSunday } from '../utils/dateUtils';
 import { format, differenceInSeconds, differenceInYears, getDate, getMonth } from 'date-fns';
@@ -6,9 +6,10 @@ import {
   CheckCircle, Clock, Calendar, ShieldCheck, LogOut, 
   PlayCircle, MapPin, Mail, Briefcase, User as UserIcon, 
   Cake, Camera, BarChart, FileText, Upload, CheckCircle2, 
-  X, AlertTriangle, TrendingUp, Award, Zap, ChevronRight, FileBarChart, RefreshCw
+  X, AlertTriangle, TrendingUp, Award, Zap, ChevronRight, FileBarChart, RefreshCw, ImagePlus
 } from 'lucide-react';
 
+import { ImageCropModal } from './ImageCropModal';
 import { convertFileToBase64 } from '../utils/fileHelper';
 
 interface EmployeeDashboardProps {
@@ -40,6 +41,8 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
 }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const handleRefresh = () => {
     setIsRefreshing(true);
@@ -132,13 +135,24 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   };
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0] && onUpdateProfile) {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      // Reset input so same file can be re-selected after cancel
+      e.target.value = '';
       try {
-        const base64 = await convertFileToBase64(e.target.files[0]);
-        onUpdateProfile(empId, { avatar: base64 });
+        const base64 = await convertFileToBase64(file);
+        // Open crop modal instead of saving directly
+        setCropSrc(base64);
       } catch (err) {
-        console.error(err);
+        console.error('Failed to read file', err);
       }
+    }
+  };
+
+  const handleCropComplete = (croppedBase64: string) => {
+    setCropSrc(null);
+    if (onUpdateProfile && empId) {
+      onUpdateProfile(empId, { avatar: croppedBase64 });
     }
   };
 
@@ -229,22 +243,31 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   );
 
   return (
+    <>
     <div className="p-4 md:p-8 h-full overflow-auto bg-[#f8fafc] custom-scrollbar">
       <div className="max-w-7xl mx-auto space-y-10 animate-fade-in-up">
 
         {/* Dynamic Greeting & Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
             <div className="flex items-center gap-6">
-                <div className="w-20 h-20 bg-white rounded-3xl shadow-xl border border-slate-100 flex items-center justify-center p-1 overflow-hidden group relative">
-                    {employeeDetails?.avatar ? (
-                        <img src={employeeDetails.avatar} className="w-full h-full object-cover rounded-[1.25rem]" alt="" />
-                    ) : (
-                        <UserIcon size={40} className="text-slate-300" />
-                    )}
-                    <label className="absolute inset-0 bg-slate-900/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer backdrop-blur-sm">
-                        <input type="file" className="hidden" accept="image/*" onChange={handleAvatarChange} />
-                        <Camera size={24} className="text-white" />
-                    </label>
+                <div className="relative group">
+                    <div className="w-20 h-20 bg-white rounded-3xl shadow-xl border border-slate-100 flex items-center justify-center p-1 overflow-hidden">
+                        {employeeDetails?.avatar ? (
+                            <img src={employeeDetails.avatar} className="w-full h-full object-cover rounded-[1.25rem]" alt="Profile" />
+                        ) : (
+                            <UserIcon size={40} className="text-slate-300" />
+                        )}
+                    </div>
+                    {/* Camera overlay — always clickable */}
+                    <button
+                        onClick={() => avatarInputRef.current?.click()}
+                        className="absolute inset-0 bg-slate-900/50 rounded-3xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-200 cursor-pointer backdrop-blur-sm"
+                        title={employeeDetails?.avatar ? 'Replace Photo' : 'Upload Photo'}
+                    >
+                        <Camera size={20} className="text-white" />
+                    </button>
+                    {/* Hidden file input */}
+                    <input ref={avatarInputRef} type="file" className="hidden" accept="image/*" onChange={handleAvatarChange} />
                 </div>
                 <div>
                    <p className="text-slate-500 font-bold text-sm">Welcome back,</p>
@@ -255,6 +278,14 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
                         </span>
                         <p className="text-slate-400 font-bold text-xs">{format(today, 'EEEE, MMMM do, yyyy')}</p>
                    </div>
+                   {/* Change/Upload photo link */}
+                   <button
+                     onClick={() => avatarInputRef.current?.click()}
+                     className="mt-2 flex items-center gap-1.5 text-[10px] font-black text-indigo-500 hover:text-indigo-700 uppercase tracking-widest transition-colors"
+                   >
+                     <Camera size={11} />
+                     {employeeDetails?.avatar ? 'Replace Photo' : 'Upload Photo'}
+                   </button>
                 </div>
             </div>
 
@@ -696,5 +727,15 @@ export const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
 
       </div>
     </div>
+
+    {/* Image Crop Modal */}
+    {cropSrc && (
+      <ImageCropModal
+        imageSrc={cropSrc}
+        onCropComplete={handleCropComplete}
+        onClose={() => setCropSrc(null)}
+      />
+    )}
+  </>
   );
 };

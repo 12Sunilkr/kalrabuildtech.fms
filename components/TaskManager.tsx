@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Task, TaskStatus, Employee, User, Notification, ExtensionRequest } from '../types';
 import { format, isPast, differenceInHours } from 'date-fns';
-import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link } from 'lucide-react';
+import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw } from 'lucide-react';
 import { AITextEnhancer } from './AITextEnhancer';
 import { convertFileToBase64 } from '../utils/fileHelper';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
@@ -327,6 +327,44 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     }
   };
 
+  const handleIncompleteTask = async (taskId: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const task = tasks.find(t => t.id === taskId);
+
+      // Call the dedicated uncomplete endpoint — this directly NULLs completionDate in the DB
+      await api.put(`/tasks/${taskId}/uncomplete`, {});
+
+      // Optimistically clear completion fields in local state
+      setTasks(prev => prev.map(t =>
+        t.id === taskId
+          ? { ...t, status: 'PENDING' as TaskStatus, completionDate: undefined, completionProcess: undefined, completionAttachment: undefined }
+          : t
+      ));
+
+      // Refresh from server so we get the authoritative state
+      await fetchTasks();
+
+      if (task) addNotification('Task Reverted', `Task "${task.title}" marked as incomplete by Admin.`, 'TASK', String(task.assignedTo));
+
+      // Figure out where the task belongs based on its due date
+      const dueDateObj = task?.dueDate ? new Date(task.dueDate) : null;
+      const isValidDate = dueDateObj && !isNaN(dueDateObj.getTime());
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const isLate = isValidDate && dueDateObj! < todayStart;
+
+      // Navigate admin/user to the correct tab
+      setActiveTab(isLate ? 'OVERDUE' : 'PENDING');
+    } catch (e) {
+      console.error('Mark incomplete failed', e);
+      setError('Failed to mark task as incomplete');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+
   const handleRaiseObjection = async (taskId: string) => {
     if (!extensionDate.trim()) {
       setError('Please provide a proposed new deadline date.');
@@ -496,9 +534,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     setIsLoading(true);
     setError(null);
     try {
-      await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: null });
+      await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: '' });
       // Optimistic UI update
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING', statusNote: null } : t));
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING', statusNote: '' } : t));
       await fetchTasks();
       const task = tasks.find(t => t.id === taskId);
       if (task) addNotification('Task Resumed', `Task ${taskId} is now active again.`, 'TASK', String(task.assignedTo));
@@ -533,11 +571,11 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
       if (approved && t.extensionRequest) {
         // Approving: move due date forward and set back to pending
-        await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null });
+        await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: '' });
         console.log('handleExtensionResponse: approved put completed', { taskId, newDate: t.extensionRequest.requestedDate });
 
         // Optimistic UI update
-        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: null } : task));
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: '' } : task));
 
       } else if (!approved && t.extensionRequest) {
         // Rejecting: keep task as PENDING (do not set to OVERDUE) and record admin rejection note
@@ -575,16 +613,16 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
       await api.put(`/tasks/${taskId}`, {
         status: newStatus,
-        extensionRequest: null,
-        statusNote: null,
+        extensionRequest: '',
+        statusNote: '',
         rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
       });
 
       setTasks(prev => prev.map(t => t.id === taskId ? {
         ...t,
         status: newStatus,
-        extensionRequest: null,
-        statusNote: null,
+        extensionRequest: undefined,
+        statusNote: '',
         rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
       } : t));
 
@@ -858,6 +896,16 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
               <Ban size={isMobile ? 18 : 14} /> Terminate
             </button>
           </>
+        )}
+
+        {/* Uncomplete Action (Admin Only) for Completed tasks */}
+        {isAdmin && displayStatus === 'COMPLETED' && (
+          <button
+            onClick={() => handleIncompleteTask(task.id)}
+            className={isMobile ? `${btnBaseClass} text-orange-600 hover:bg-orange-50` : `${btnBaseClass} bg-white border border-orange-200 text-orange-600 hover:bg-orange-50`}
+          >
+            <RefreshCw size={isMobile ? 18 : 14} /> Uncomplete
+          </button>
         )}
 
         {/* Admin Only Delete */}
