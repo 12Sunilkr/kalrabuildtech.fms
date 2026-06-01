@@ -69,7 +69,7 @@ const getStatusBadgeColor = (status: string) => {
  }
 };
 
-export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData, checklistInstances = [], checklistTemplates = [], timeLogs = {} }) => {
+const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData, checklistInstances = [], checklistTemplates = [], timeLogs = {} }) => {
  const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
  const [printMode, setPrintMode] = useState(false);
 
@@ -246,7 +246,7 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
  const processed = inRange.map(l => {
  const isMissed = !l.clockOut && l.date < today;
  const checkInTime = l.clockIn ? new Date(l.clockIn) : null;
- const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 0)) : false;
+ const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 15)) : false;
  const score = typeof attendanceData[empId]?.[l.date] === 'number' ? (attendanceData[empId][l.date] as number) : (l.clockIn ? 1 : 0);
  return { ...l, isMissed, isLate, score };
  });
@@ -668,7 +668,7 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
  }
  }
  `}</style>
- {employees.map(emp => {
+ {employees.map((emp, index) => {
  const stats = getEmployeeStats(emp.id);
  const att = getAttendanceStats(emp.id);
  const checkStats = getChecklistStats(emp.id);
@@ -700,8 +700,10 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
  const incompleteCombined = (stats.total - stats.completed) + (checkStats.total - checkStats.completed);
  const bulkCombinedScore = totalCombined > 0 ? Math.round((incompleteCombined / totalCombined) * 100) : 0;
 
+ const isLast = index === employees.length - 1;
+
  return (
- <div key={emp.id} className="print-container print:break-after-page p-8 bg-white text-slate-900 border-none shadow-none">
+ <div key={emp.id} className={`print-container ${isLast ? '' : 'print:break-after-page'} p-8 bg-white text-slate-900 border-none shadow-none`}>
  {/* Letterhead - Bulk Print */}
  <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6">
  <div className="flex items-center gap-3">
@@ -934,3 +936,5 @@ export const PerformanceReport: React.FC<PerformanceReportProps> = ({ employees,
  </div>
  );
 };
+
+export const PerformanceReport = React.memo(PerformanceReportComponent);

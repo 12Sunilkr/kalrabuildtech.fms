@@ -39,12 +39,11 @@ function formatDay(ts: string) {
 const avatarColors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#14b8a6'];
 function getColor(id: string) { let h = 0; for (let i = 0; i < id.length; i++) h = id.charCodeAt(i) + ((h << 5) - h); return avatarColors[Math.abs(h) % avatarColors.length]; }
 
-export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, groups, setGroups, currentUser, employees, addNotification }) => {
+const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages, groups, setGroups, currentUser, employees, addNotification }) => {
   const myId = currentUser.employeeId || ADMIN_ID;
   const isAdmin = currentUser.role === 'ADMIN';
 
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [inputText, setInputText] = useState('');
   const [search, setSearch] = useState('');
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -59,7 +58,6 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
   const lastSeenTsRef = useRef<Record<string, number>>({});
   const mountTs = useRef(Date.now());
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const activeFetch = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -136,10 +134,6 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, selectedChatId]);
 
-  useEffect(() => {
-    if (selectedChatId) inputRef.current?.focus();
-  }, [selectedChatId]);
-
   // ── Derive chat history ──
   const chatHistory = React.useMemo(() => {
     if (!selectedChatId) return [];
@@ -150,10 +144,8 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
   }, [messages, selectedChatId, groups, myId]);
 
   // ── Send message ──
-  const handleSend = async () => {
-    if (!inputText.trim() || !selectedChatId || isSending) return;
-    const text = inputText.trim();
-    setInputText('');
+  const handleSend = useCallback(async (text: string) => {
+    if (!text.trim() || !selectedChatId || isSending) return;
     setIsSending(true);
 
     const partnerId = isDmId(selectedChatId) ? getPartnerId(selectedChatId) : selectedChatId;
@@ -173,7 +165,7 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
       setMessages(ensureArray(extractPayload(r)));
     } catch (e) { console.warn('Send failed', e); }
     finally { setIsSending(false); }
-  };
+  }, [selectedChatId, isSending, myId, setMessages]);
 
   // ── Create group ──
   const handleCreateGroup = async () => {
@@ -431,14 +423,7 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
           </div>
 
           {/* Input */}
-          <div className="px-3 py-2 flex items-center gap-2" style={{ background: '#f0f2f5' }}>
-            <div className="flex-1 flex items-center gap-2 px-4 py-2 rounded-full" style={{ background: '#fff' }}>
-              <input ref={inputRef} value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()} placeholder="Type a message" className="flex-1 outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparent" />
-            </div>
-            <button onClick={handleSend} disabled={!inputText.trim() || isSending} className="w-11 h-11 rounded-full flex items-center justify-center text-white transition-all active:scale-95 disabled:opacity-50" style={{ background: '#00a884' }}>
-              <Send size={20} className={isSending ? 'animate-pulse' : ''} />
-            </button>
-          </div>
+          <ChatInput onSend={handleSend} isSending={isSending} selectedChatId={selectedChatId} />
         </div>
       ) : (
         <div className="hidden md:flex flex-1 flex-col items-center justify-center" style={{ background: '#f0f2f5' }}>
@@ -492,3 +477,52 @@ export const ChatSystem: React.FC<ChatSystemProps> = ({ messages, setMessages, g
     </div>
   );
 };
+
+interface ChatInputProps {
+  onSend: (text: string) => void;
+  isSending: boolean;
+  selectedChatId: string | null;
+}
+
+const ChatInput: React.FC<ChatInputProps> = React.memo(({ onSend, isSending, selectedChatId }) => {
+  const [text, setText] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (selectedChatId) {
+      setText('');
+      inputRef.current?.focus();
+    }
+  }, [selectedChatId]);
+
+  const handleSendClick = () => {
+    if (!text.trim() || isSending) return;
+    onSend(text.trim());
+    setText('');
+  };
+
+  return (
+    <div className="px-3 py-2 flex items-center gap-2" style={{ background: '#f0f2f5' }}>
+      <div className="flex-1 flex items-center gap-2 px-4 py-2 rounded-full" style={{ background: '#fff' }}>
+        <input
+          ref={inputRef}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSendClick()}
+          placeholder="Type a message"
+          className="flex-1 outline-none text-sm text-gray-800 placeholder-gray-400 bg-transparent"
+        />
+      </div>
+      <button
+        onClick={handleSendClick}
+        disabled={!text.trim() || isSending}
+        className="w-11 h-11 rounded-full flex items-center justify-center text-white transition-all active:scale-95 disabled:opacity-50"
+        style={{ background: '#00a884' }}
+      >
+        <Send size={20} className={isSending ? 'animate-pulse' : ''} />
+      </button>
+    </div>
+  );
+});
+
+export const ChatSystem = React.memo(ChatSystemComponent);

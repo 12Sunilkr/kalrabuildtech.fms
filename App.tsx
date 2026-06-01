@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useLayoutEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Auth } from './components/Auth';
 import { Dashboard } from './components/Dashboard';
@@ -33,7 +33,7 @@ import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIA
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
 import { differenceInMinutes } from 'date-fns';
 import { Menu, Bell, CheckCircle, AlertCircle, Info, X, AlertTriangle, MessageCircle } from 'lucide-react';
-import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from './src/utils/api';
+import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, safeGetSwr } from './src/utils/api';
 
 const App: React.FC = () => {
   // 1. AUTH STATE (Primary Authority)
@@ -67,7 +67,9 @@ const App: React.FC = () => {
       // Do not read from localStorage anymore. Authentication uses cookies or explicit Authorization headers.
 
       if (!reqInit.credentials) reqInit.credentials = 'include';
-      try { if (url.startsWith('/api') || url.includes('/api')) reqInit.cache = 'no-store'; } catch (e) { /* ignore */ }
+      // NOTE: Do NOT force cache:'no-store' here — caching is managed by the
+      // application-level SWR cache in requestCache.ts. Forcing no-store globally
+      // was the primary cause of full network round-trips on every tab switch.
 
       if (typeof input !== 'string' && body && !reqInit.body) reqInit.body = body as any;
 
@@ -101,6 +103,7 @@ const App: React.FC = () => {
       };
 
       const ensureArray = (v: any) => Array.isArray(v) ? v : [];
+      let meUser: User | null = null;
       try {
         // If the user logged out intentionally during this browser session, skip restoring the server session
         // (this avoids restoring sessions on refresh if logout didn't fully invalidate cookies).
@@ -124,7 +127,7 @@ const App: React.FC = () => {
                 console.warn('Retry /auth/me with cacheBust failed', e && (e.stack || e.message || e));
               }
             }
-            const meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
+            meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
             setCurrentUser(meUser || null);
             if (meUser) {
               try {
@@ -142,33 +145,41 @@ const App: React.FC = () => {
       } catch (err) {
         console.warn('Auth/me unexpected error', err && (err.stack || err.message || err));
       }
-      try {
-        const uRes = await safeGet('/users');
-        const uPayload = extractPayload(uRes);
-        const uArr = ensureArray(uPayload);
-        setUsers(uArr.length ? uArr : INITIAL_USERS);
-      } catch (err) {
-        console.error('User API unreachable, using local defaults', err && (err.stack || err.message || err));
+
+      if (meUser) {
+        try {
+          const uRes = await safeGet('/users');
+          const uPayload = extractPayload(uRes);
+          const uArr = ensureArray(uPayload);
+          setUsers(uArr.length ? uArr : INITIAL_USERS);
+        } catch (err) {
+          console.error('User API unreachable, using local defaults', err && (err.stack || err.message || err));
+          setUsers(INITIAL_USERS);
+        }
+
+        // Try to load employees from server
+        try {
+          const r = await safeGet('/employees');
+          const empsPayload = extractPayload(r);
+          const empsArr = ensureArray(empsPayload).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+          setEmployees(empsArr);
+        } catch (err) {
+          console.warn('Employees API unreachable', err && (err.stack || err.message || err));
+        }
+
+        // Also load archived employees separately (admin only)
+        if (meUser.role === 'ADMIN') {
+          try {
+            const ra = await safeGet('/employees?archived=1');
+            const archivedArr = ensureArray(extractPayload(ra)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+            setArchivedEmployees(archivedArr);
+          } catch (err) {
+            console.warn('Archived employees fetch failed', err && (err.stack || err.message || err));
+          }
+        }
+      } else {
+        // Fallback to local default users if not authenticated
         setUsers(INITIAL_USERS);
-      }
-
-      // Try to load employees from server
-      try {
-        const r = await safeGet('/employees');
-        const empsPayload = extractPayload(r);
-        const empsArr = ensureArray(empsPayload).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
-        setEmployees(empsArr);
-      } catch (err) {
-        console.warn('Employees API unreachable', err && (err.stack || err.message || err));
-      }
-
-      // Also load archived employees separately (admin only)
-      try {
-        const ra = await safeGet('/employees?archived=1');
-        const archivedArr = ensureArray(extractPayload(ra)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
-        setArchivedEmployees(archivedArr);
-      } catch (err) {
-        console.warn('Archived employees fetch failed', err && (err.stack || err.message || err));
       }
 
       // Load attendance records from server
@@ -181,6 +192,17 @@ const App: React.FC = () => {
   // 2. VIEW STATE (Decoupled from hash if not logged in)
   const [currentView, setCurrentView] = useState<ViewMode>(ViewMode.DASHBOARD);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [, startTransition] = React.useTransition();
+
+  const onNavigate = useCallback((view: ViewMode) => {
+    startTransition(() => {
+      setCurrentView(view);
+    });
+  }, []);
+
+  const closeSidebar = useCallback(() => {
+    setIsSidebarOpen(false);
+  }, []);
 
   // SECURITY GUARD: Clear hash immediately if no user session found on load
   useLayoutEffect(() => {
@@ -251,24 +273,67 @@ const App: React.FC = () => {
   const [showNotifications, setShowNotifications] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' | 'warning' } | null>(null);
 
+  const [showPolicyPopup, setShowPolicyPopup] = useState(false);
+
+  useEffect(() => {
+    if (currentUser && currentUser.role !== 'ADMIN') {
+      // Show only once per calendar day per user
+      const uid = currentUser.employeeId || currentUser.id;
+      const storageKey = `kbt_policy_seen_${uid}`;
+      const today = new Date().toISOString().split('T')[0]; // e.g. "2026-05-28"
+      const lastSeen = localStorage.getItem(storageKey);
+      if (lastSeen !== today) {
+        setShowPolicyPopup(true);
+      }
+    }
+  }, [currentUser]);
+
+  const handleClosePolicyPopup = useCallback(() => {
+    setShowPolicyPopup(false);
+    // Record today's date so the popup doesn't show again today
+    if (currentUser) {
+      const uid = currentUser.employeeId || currentUser.id;
+      const today = new Date().toISOString().split('T')[0];
+      try { localStorage.setItem(`kbt_policy_seen_${uid}`, today); } catch { /* ignore */ }
+    }
+  }, [currentUser]);
+
+  const currentUserDepartment = useMemo(() => {
+    if (!currentUser) return undefined;
+    return employees.find(e => e.id === currentUser.employeeId)?.department;
+  }, [currentUser, employees]);
+
+  const myNotifications = useMemo(() => {
+    if (!currentUser) return [];
+    return notifications.filter(n => currentUser.role === 'ADMIN' || n.targetUser === currentUser.employeeId || n.targetUser === 'ALL');
+  }, [notifications, currentUser]);
+
+  const unreadCount = useMemo(() => myNotifications.filter(n => !n.read).length, [myNotifications]);
+
   // Initialize the unread count check across the app
   const [globalUnreadChatCount, setGlobalUnreadChatCount] = useState(0);
 
-  // Quick background unread messages check (for header badge)
+  // Background unread chat badge (pauses when tab hidden, slower interval)
   useEffect(() => {
     if (!currentUser) return;
     const fetchUnread = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
-        const res = await safeGet('/chat/unread_count_fast');
+        const res = await safeGet('/chat/unread_count_fast', { cacheTtlMs: 12000 });
         const count = extractPayload(res) || 0;
         setGlobalUnreadChatCount(count);
-      } catch (e) {
-        // ignore fast polling failures silently
+      } catch {
+        /* ignore polling failures */
       }
     };
     fetchUnread();
-    const iv = setInterval(fetchUnread, 15000);
-    return () => clearInterval(iv);
+    const iv = setInterval(fetchUnread, 45000);
+    const onVisible = () => { if (document.visibilityState === 'visible') fetchUnread(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [currentUser]);
 
   useEffect(() => {
@@ -278,128 +343,215 @@ const App: React.FC = () => {
     }
   }, [toast]);
 
-  // Fetch data specific to the current view ON DEMAND (lazy loading)
+  // --- SWR helpers ---
+  // applyAttendance / applyTimelogs / loadChecklistsBatch are defined once outside useEffect
+  // so we can call them from both the main useEffect and SWR callbacks.
+
+  const applyAttendance = useCallback((arr: any[]) => {
+    const ag: Record<string, AttendanceRecord> = {};
+    arr.forEach((a: any) => {
+      if (!a) return;
+      if (!ag[a.userId]) ag[a.userId] = {};
+      ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+    });
+    setAttendanceData(ag);
+  }, []);
+
+  const applyTimelogs = useCallback((tlPayload: any[]) => {
+    const tlAg: Record<string, Record<string, TimeLog[]>> = {};
+    tlPayload.forEach((t: any) => {
+      if (!t) return;
+      const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
+      if (!tlAg[t.userId]) tlAg[t.userId] = {};
+      if (!tlAg[t.userId][dateKey]) tlAg[t.userId][dateKey] = [];
+      let duration = t.durationHours;
+      if (!duration && t.startTime && t.endTime) {
+        duration = Math.max(0, (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 3600000);
+      }
+      tlAg[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration });
+    });
+    setTimeLogs(tlAg);
+  }, []);
+
+  // Fetch data specific to the current view ON DEMAND (lazy loading, stale-while-revalidate)
   useEffect(() => {
     if (!currentUser) return;
 
-    // Helper to run a specific fetch safely
+    const loadChecklistsBatch = async () => {
+      try {
+        // Checklist templates (SWR: instant from cache, refresh in bg)
+        const ctRes = await safeGetSwr(
+          '/checklist-templates',
+          (fresh) => {
+            const mappedTpl = ensureArray(extractPayload(fresh)).map((x: any) => ({
+              id: x.id,
+              taskName: x.data?.taskName || x.taskName,
+              doerId: x.data?.doerId || x.doerId,
+              buddyId: x.data?.buddyId || x.buddyId,
+              department: x.data?.department || x.department,
+              startDate: x.data?.startDate || x.startDate,
+              config: x.data?.config ?? x.config ?? { frequency: 'DAILY' },
+              active: x.data?.active ?? x.active ?? true
+            }));
+            setChecklistTemplates(mappedTpl);
+          }
+        );
+        const mappedTpl = ensureArray(extractPayload(ctRes)).map((x: any) => ({
+          id: x.id,
+          taskName: x.data?.taskName || x.taskName,
+          doerId: x.data?.doerId || x.doerId,
+          buddyId: x.data?.buddyId || x.buddyId,
+          department: x.data?.department || x.department,
+          startDate: x.data?.startDate || x.startDate,
+          config: x.data?.config ?? x.config ?? { frequency: 'DAILY' },
+          active: x.data?.active ?? x.active ?? true
+        }));
+        setChecklistTemplates(mappedTpl);
+
+        const batchRes = await safeGetSwr(
+          '/checklists-instances/all',
+          (fresh) => {
+            const grouped = extractPayload(fresh) as Record<string, any[]> || {};
+            const insts: any[] = [];
+            mappedTpl.forEach((tpl) => {
+              const rows = ensureArray(grouped[String(tpl.id)]);
+              rows.forEach((it: any) => {
+                try {
+                  const p = JSON.parse(it.item);
+                  insts.push({ ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId, department: p.department ?? tpl.department, taskName: p.taskName ?? tpl.taskName, templateId: String(tpl.id), status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'), completedDate: p.completedDate });
+                } catch {
+                  insts.push({ id: it.id, templateId: String(tpl.id), date: it.item, status: it.done ? 'COMPLETED' : 'PENDING', dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName });
+                }
+              });
+            });
+            setChecklistInstances(insts);
+          }
+        );
+        const grouped = extractPayload(batchRes) as Record<string, any[]> || {};
+        const insts: any[] = [];
+        mappedTpl.forEach((tpl) => {
+          const rows = ensureArray(grouped[String(tpl.id)]);
+          rows.forEach((it: any) => {
+            try {
+              const p = JSON.parse(it.item);
+              insts.push({ ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId, department: p.department ?? tpl.department, taskName: p.taskName ?? tpl.taskName, templateId: String(tpl.id), status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'), completedDate: p.completedDate });
+            } catch {
+              insts.push({ id: it.id, templateId: String(tpl.id), date: it.item, status: it.done ? 'COMPLETED' : 'PENDING', dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName });
+            }
+          });
+        });
+        setChecklistInstances(insts);
+      } catch (e) {
+        console.warn('Failed to load checklists', e);
+      }
+    };
+
+    // SWR-based fetchers: serve cached data instantly, revalidate in background
     const fetchForView = async () => {
       try {
         switch (currentView) {
-          case ViewMode.DASHBOARD:
-          case ViewMode.EMPLOYEE_HOME:
-          case ViewMode.ATTENDANCE:
-          case ViewMode.TIME_LOGS:
-          case ViewMode.PERFORMANCE: {
-            // Fetch Attendance
-            const sat = await safeGet('/attendance');
-            const arr = ensureArray(extractPayload(sat));
-            const ag: Record<string, AttendanceRecord> = {};
-            arr.forEach((a: any) => {
-              if (!a) return;
-              if (!ag[a.userId]) ag[a.userId] = {};
-              ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
-            });
-            setAttendanceData(ag);
-
-            // Fetch Timelogs
-            const stl = await safeGet('/timelogs');
-            const tlPayload = ensureArray(extractPayload(stl));
-            const tlAg: Record<string, Record<string, TimeLog[]>> = {};
-            tlPayload.forEach((t: any) => {
-              if (!t) return;
-              const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
-              if (!tlAg[t.userId]) tlAg[t.userId] = {};
-              if (!tlAg[t.userId][dateKey]) tlAg[t.userId][dateKey] = [];
-              let duration = t.durationHours;
-              if (!duration && t.startTime && t.endTime) duration = Math.max(0, (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 3600000);
-              tlAg[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration });
-            });
-            setTimeLogs(tlAg);
-
-            // Also refresh tasks when hitting Performance/Dashboard
-            const tRes = await safeGet('/tasks');
-            setTasks(ensureArray(extractPayload(tRes)));
-
-            // Fetch Checklists to display stats natively
-            try {
-              const ctRes = await safeGet('/checklist-templates');
-              const mappedTpl = ensureArray(extractPayload(ctRes)).map((x: any) => ({
-                id: x.id,
-                taskName: x.data?.taskName || x.taskName,
-                doerId: x.data?.doerId || x.doerId,
-                buddyId: x.data?.buddyId || x.buddyId,
-                department: x.data?.department || x.department,
-                startDate: x.data?.startDate || x.startDate,
-                config: x.data?.config ?? x.config ?? { frequency: 'DAILY' },
-                active: x.data?.active ?? x.active ?? true
-              }));
-              setChecklistTemplates(mappedTpl);
-
-              const insts: any[] = [];
-              await Promise.all(mappedTpl.map(async (tpl) => {
-                try {
-                  const ir = await safeGet(`/checklists/${encodeURIComponent(tpl.id)}`);
-                  const rows = ensureArray(extractPayload(ir));
-                  rows.forEach((it: any) => {
-                    try {
-                      const p = JSON.parse(it.item);
-                      insts.push({
-                        ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId,
-                        department: p.department ?? tpl.department,
-                        taskName: p.taskName ?? tpl.taskName,
-                        templateId: String(tpl.id),
-                        status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'),
-                        completedDate: p.completedDate
-                      });
-                    } catch {
-                      insts.push({
-                        id: it.id, templateId: String(tpl.id), date: it.item,
-                        status: it.done ? 'COMPLETED' : 'PENDING',
-                        dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName
-                      });
-                    }
-                  });
-                } catch { /* ignore */ }
-              }));
-              setChecklistInstances(insts);
-            } catch (e) {
-              console.warn('Failed to load checklists in dashboard', e);
+          case ViewMode.DASHBOARD: {
+            if (currentUser.role === 'ADMIN') {
+              await Promise.all([
+                safeGetSwr('/tasks', (fresh) => setTasks(ensureArray(extractPayload(fresh)))),
+                safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
+                safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
+              ]).then(([tRes, sat, eRes]) => {
+                // Apply data from cache immediately (may be stale, bg refresh handles update)
+                setTasks(ensureArray(extractPayload(tRes)));
+                applyAttendance(ensureArray(extractPayload(sat)));
+                setEmployees(ensureArray(extractPayload(eRes)));
+              });
             }
+            break;
+          }
+          case ViewMode.EMPLOYEE_HOME: {
+            const uid = currentUser.employeeId || String(currentUser.id);
+            await Promise.all([
+              safeGetSwr(`/attendance?userId=${encodeURIComponent(uid)}`, (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
+              safeGetSwr(`/timelogs?userId=${encodeURIComponent(uid)}`, (fresh) => applyTimelogs(ensureArray(extractPayload(fresh)))),
+            ]).then(([sat, stl]) => {
+              applyAttendance(ensureArray(extractPayload(sat)));
+              applyTimelogs(ensureArray(extractPayload(stl)));
+            });
+            break;
+          }
+          case ViewMode.ATTENDANCE: {
+            await Promise.all([
+              safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
+            ]).then(([sat, eRes]) => {
+              applyAttendance(ensureArray(extractPayload(sat)));
+              setEmployees(ensureArray(extractPayload(eRes)));
+            });
+            break;
+          }
+          case ViewMode.TIME_LOGS: {
+            await Promise.all([
+              safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/timelogs', (fresh) => applyTimelogs(ensureArray(extractPayload(fresh)))),
+            ]).then(([sat, stl]) => {
+              applyAttendance(ensureArray(extractPayload(sat)));
+              applyTimelogs(ensureArray(extractPayload(stl)));
+            });
+            break;
+          }
+          case ViewMode.PERFORMANCE: {
+            await Promise.all([
+              safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/timelogs', (fresh) => applyTimelogs(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/tasks', (fresh) => setTasks(ensureArray(extractPayload(fresh)))),
+            ]).then(([sat, stl, eRes, tRes]) => {
+              applyAttendance(ensureArray(extractPayload(sat)));
+              applyTimelogs(ensureArray(extractPayload(stl)));
+              setEmployees(ensureArray(extractPayload(eRes)));
+              setTasks(ensureArray(extractPayload(tRes)));
+            });
+            await loadChecklistsBatch();
+            break;
+          }
+          case ViewMode.CHECKLIST: {
+            await loadChecklistsBatch();
             break;
           }
           case ViewMode.FMS_TASKS:
           case ViewMode.EMPLOYEE_TASKS: {
-            const tRes = await safeGet('/tasks');
+            const tRes = await safeGetSwr('/tasks', (fresh) => setTasks(ensureArray(extractPayload(fresh))));
             setTasks(ensureArray(extractPayload(tRes)));
             break;
           }
-
           case ViewMode.CALENDAR:
           case ViewMode.HOLIDAYS: {
-            const h = await safeGet('/holidays');
-            setHolidays(ensureArray(extractPayload(h)));
-            const r = await safeGet('/reminders');
-            setReminders(ensureArray(extractPayload(r)));
+            await Promise.all([
+              safeGetSwr('/holidays', (fresh) => setHolidays(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/reminders', (fresh) => setReminders(ensureArray(extractPayload(fresh)))),
+            ]).then(([h, r]) => {
+              setHolidays(ensureArray(extractPayload(h)));
+              setReminders(ensureArray(extractPayload(r)));
+            });
             break;
           }
           case ViewMode.MATERIAL_ORDERS:
           case ViewMode.EMPLOYEE_ORDERS: {
-            const o2 = await safeGet('/o2d');
+            const o2 = await safeGetSwr('/o2d', async (fresh) => {
+              const { normalizeO2dArray } = await import('./src/utils/o2d');
+              setOrders(normalizeO2dArray(ensureArray(extractPayload(fresh))));
+            });
             const { normalizeO2dArray } = await import('./src/utils/o2d');
             setOrders(normalizeO2dArray(ensureArray(extractPayload(o2))));
             break;
           }
           case ViewMode.QUERIES:
           case ViewMode.EMPLOYEE_QUERIES: {
-            const q = await safeGet('/queries');
+            const q = await safeGetSwr('/queries', (fresh) => setQueries(ensureArray(extractPayload(fresh))));
             setQueries(ensureArray(extractPayload(q)));
             break;
           }
           case ViewMode.NOTEPAD: {
             const uid = currentUser.employeeId || currentUser.id;
             if (uid) {
-              const np = await safeGet(`/notepad/${encodeURIComponent(uid)}`);
+              const np = await safeGetSwr(`/notepad/${encodeURIComponent(uid)}`, (fresh) => setNotes(ensureArray(extractPayload(fresh))));
               setNotes(ensureArray(extractPayload(np)));
             }
             break;
@@ -407,21 +559,27 @@ const App: React.FC = () => {
           case ViewMode.LEAVES: {
             const qUser = currentUser && (currentUser.employeeId || currentUser.id);
             const leavesUrl = currentUser.role === 'ADMIN' ? '/leave' : (qUser ? `/leave?userId=${encodeURIComponent(qUser)}` : '/leave');
-            const lv = await safeGet(leavesUrl);
+            const lv = await safeGetSwr(leavesUrl, (fresh) => setLeaveRequests(ensureArray(extractPayload(fresh))));
             setLeaveRequests(ensureArray(extractPayload(lv)));
             break;
           }
           case ViewMode.FINANCE: {
-            const f = await safeGet('/finance');
+            const f = await safeGetSwr('/finance', (fresh) => setClientFinancials(ensureArray(extractPayload(fresh))));
             setClientFinancials(ensureArray(extractPayload(f)));
             break;
           }
         }
 
-        // Fetch notifications regularly or on view change so they are updated
+        // Notifications: SWR with a shorter TTL (30s fresh, 5min stale)
         if (currentUser && (currentUser.employeeId || currentUser.id)) {
           const uid = currentUser.employeeId || currentUser.id;
-          const n = await safeGet(`/notifications/${encodeURIComponent(uid)}`);
+          const n = await safeGetSwr(
+            `/notifications/${encodeURIComponent(uid)}`,
+            (fresh) => setNotifications(ensureArray(extractPayload(fresh))),
+            undefined,
+            30_000,
+            300_000
+          );
           setNotifications(ensureArray(extractPayload(n)));
         }
       } catch (err) {
@@ -430,11 +588,11 @@ const App: React.FC = () => {
     };
 
     fetchForView();
-  }, [currentView, currentUser]);
+  }, [currentView, currentUser, applyAttendance, applyTimelogs]);
 
-  const showToast = (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
     setToast({ message, type });
-  };
+  }, []);
 
   // --- Handlers ---
 
@@ -527,7 +685,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     try {
       // Avoid sending the literal string "null" as JSON body which body-parser
       // rejects in strict mode. Passing undefined omits the request body.
@@ -544,9 +702,9 @@ const App: React.FC = () => {
     // Mark session as intentionally logged out so a subsequent refresh will not restore it
     try { sessionStorage.setItem('kbt_session_logout', '1'); } catch (e) { /* ignore */ }
     window.location.hash = ''; // Clear hash from URL on logout
-  };
+  }, []);
 
-  const addNotification = (title: string, message: string, type: Notification['type'], targetUser: string = 'ALL') => {
+  const addNotification = useCallback((title: string, message: string, type: Notification['type'], targetUser: string = 'ALL') => {
     const newNote: Notification = {
       id: `N-${Date.now()}`,
       title, message,
@@ -578,9 +736,9 @@ const App: React.FC = () => {
         console.error('Failed to persist notification to server', e && (e.stack || e.message || e));
       }
     })();
-  };
+  }, [currentUser, extractPayload, ensureArray, safeGet, showToast]);
 
-  const handleClockIn = async () => {
+  const handleClockIn = useCallback(async () => {
     if (!currentUser?.employeeId) return;
     const empId = currentUser.employeeId;
     const now = new Date();
@@ -638,9 +796,9 @@ const App: React.FC = () => {
       addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
       addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
     }
-  };
+  }, [currentUser, sundayRequests, addNotification]);
 
-  const handleClockOut = async () => {
+  const handleClockOut = useCallback(async () => {
     if (!currentUser?.employeeId) return;
     const empId = currentUser.employeeId;
     const now = new Date();
@@ -702,9 +860,9 @@ const App: React.FC = () => {
       addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
       addNotification('System Alert', `${currentUser.name} clocked out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
     }
-  };
+  }, [currentUser, timeLogs, addNotification]);
 
-  const handleUpdateProfile = async (empId: string, data: Partial<Employee>) => {
+  const handleUpdateProfile = useCallback(async (empId: string, data: Partial<Employee>) => {
     if (!empId || empId.trim() === '') {
       console.warn('handleUpdateProfile: empId is empty, skipping update');
       return;
@@ -724,7 +882,7 @@ const App: React.FC = () => {
       // Rollback optimistic update on failure by refreshing from server
       try { const res = await safeGet('/employees'); setEmployees(ensureArray(extractPayload(res))); } catch { }
     }
-  };
+  }, [addNotification, ensureArray, extractPayload, safeGet, showToast]);
 
   // MASTER SECURITY GUARD: If not logged in, return Auth component IMMEDIATELY
   if (!currentUser) {
@@ -754,9 +912,6 @@ const App: React.FC = () => {
   }
 
   // --- Render Logic (Only executes if authenticated) ---
-  const myNotifications = notifications.filter(n => currentUser.role === 'ADMIN' || n.targetUser === currentUser.employeeId || n.targetUser === 'ALL');
-  const unreadCount = myNotifications.filter(n => !n.read).length;
-
   const renderView = () => {
     const commonProps = {
       employees, setEmployees,
@@ -806,6 +961,8 @@ const App: React.FC = () => {
       }
     } else {
       switch (currentView) {
+        case ViewMode.EMPLOYEE_HOME:
+          return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
         case ViewMode.EMPLOYEE_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.EMPLOYEE_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.PMS_EMPLOYEE: return <PMSDashboard />;
@@ -835,13 +992,13 @@ const App: React.FC = () => {
 
       <Sidebar
         currentView={currentView}
-        onNavigate={setCurrentView}
+        onNavigate={onNavigate}
         role={currentUser.role}
         onLogout={handleLogout}
         userName={currentUser.name}
         isOpen={isSidebarOpen}
-        onClose={() => setIsSidebarOpen(false)}
-        userDepartment={employees.find(e => e.id === currentUser.employeeId)?.department}
+        onClose={closeSidebar}
+        userDepartment={currentUserDepartment}
       />
 
       <main className="flex-1 flex flex-col h-full overflow-hidden relative z-10 glass-panel md:my-4 md:mr-4 md:rounded-r-3xl border-slate-200 shadow-2xl print:m-0 print:rounded-none print:shadow-none print:border-none print:block">
@@ -864,7 +1021,7 @@ const App: React.FC = () => {
         </header>
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar relative print:overflow-visible print:h-auto print:block">
-          <div key={currentView} className="min-h-full h-full animate-fade-in-up">
+          <div className="min-h-full h-full animate-fade-in-up">
             <React.Suspense fallback={
               <div className="flex items-center justify-center h-full w-full bg-slate-50/50">
                 <div className="flex flex-col items-center gap-3">
@@ -912,6 +1069,44 @@ const App: React.FC = () => {
             >
               <X size={16} className="opacity-40" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {showPolicyPopup && (
+        <div className="fixed inset-0 z-[300] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in duration-300">
+            <div className="p-6 sm:p-8">
+              <div className="w-12 h-12 bg-red-100 text-red-600 rounded-2xl flex items-center justify-center mb-6">
+                <AlertTriangle size={24} />
+              </div>
+              <h2 className="text-xl sm:text-2xl font-black text-slate-900 mb-4 leading-tight">
+                📢 New Attendance Policy
+                <span className="block text-sm text-red-500 font-bold mt-1 uppercase tracking-wider">(Effective Immediately)</span>
+              </h2>
+              <div className="space-y-4 text-sm sm:text-base text-slate-600 font-medium leading-relaxed">
+                <p>
+                  Employees are permitted to arrive 5 to 15 minutes late up to <strong className="text-slate-900">two times per month</strong> without any penalty.
+                </p>
+                <p>
+                  Beginning with the third occurrence in the same month, a fine of <strong className="text-red-600">₹200</strong> will be applied for each additional late arrival.
+                </p>
+                <p>
+                  The total amount collected through these fines will be utilized for employee welfare and team engagement activities at the end of each month.
+                </p>
+                <p className="pt-2 text-slate-500 italic">
+                  We appreciate your cooperation in maintaining workplace discipline and punctuality.
+                </p>
+              </div>
+            </div>
+            <div className="p-4 sm:p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                onClick={handleClosePolicyPopup}
+                className="w-full sm:w-auto px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all active:scale-95 shadow-lg shadow-indigo-200"
+              >
+                I have read and understood
+              </button>
+            </div>
           </div>
         </div>
       )}

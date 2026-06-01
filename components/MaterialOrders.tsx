@@ -3,7 +3,7 @@ import { MaterialOrder, Employee, User, OrderStatus, Notification, TATUnit } fro
 import { MATERIAL_TAT_LIST } from '../constants';
 import { Package, Plus, MapPin, Search, CheckCircle2, Clock, Truck, Camera, Upload, X, Ban, User as UserIcon, FileText, AlertTriangle, ArrowRight, ClipboardCheck, CloudRain, Download } from 'lucide-react';
 import { format, addHours, addDays, addMonths, differenceInDays } from 'date-fns';
-import { AITextEnhancer } from './AITextEnhancer';
+
 import { convertFileToBase64 } from '../utils/fileHelper';
 import api, { safeGet, safePost, extractPayload, ensureArray } from '../src/utils/api';
 import { normalizeO2dEntry } from '../src/utils/o2d';

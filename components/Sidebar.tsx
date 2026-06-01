@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, BarChart3, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database, BookOpen } from 'lucide-react';
 import { ViewMode, Role } from '../types';
 import { COMPANY_LOGO } from '../constants';
@@ -15,7 +15,7 @@ interface SidebarProps {
   userDepartment?: string;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role, onLogout, userName, isOpen, onClose, userDepartment }) => {
+const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, role, onLogout, userName, isOpen, onClose, userDepartment }) => {
   
   const adminItems = [
     { id: ViewMode.DASHBOARD, label: 'Dashboard', icon: LayoutDashboard },
@@ -43,31 +43,36 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     { id: ViewMode.README, label: 'Documentation', icon: Info },
   ];
 
-  const employeeItems = [
-    { id: ViewMode.EMPLOYEE_HOME, label: 'My Portal', icon: LayoutDashboard },
-    { id: ViewMode.CALENDAR, label: 'Company Calendar', icon: Calendar }, 
-    { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
-    { id: ViewMode.CHECKLIST, label: 'My Checklist', icon: ListChecks },
-    { id: ViewMode.EMPLOYEE_TASKS, label: 'My Tasks', icon: ClipboardList },
-    { id: ViewMode.PMS_EMPLOYEE, label: 'PMS', icon: BarChart3 },
-    { id: ViewMode.EMPLOYEE_ORDERS, label: 'O2D', icon: Package },
-    { id: ViewMode.LEAVES, label: 'Leave Application', icon: FileBarChart },
-    { id: ViewMode.EMPLOYEE_CHAT, label: 'Team Chat', icon: MessageCircle }, 
-    { id: ViewMode.EMPLOYEE_QUERIES, label: 'Raise Query', icon: HelpCircle }, 
-    { id: ViewMode.NOTEPAD, label: 'My Notepad', icon: StickyNote }, 
-    { id: ViewMode.PLAYBOOK, label: 'Playbook', icon: BookOpen },
-    { id: ViewMode.README, label: 'Help & Docs', icon: Info },
-  ];
-
-
-
   const isFinanceOrSales = userDepartment === 'Finance & Accounts' || userDepartment === 'Sales & Marketing';
-  if (isFinanceOrSales && role === 'EMPLOYEE') {
-      employeeItems.splice(3, 0, { id: ViewMode.FINANCE, label: 'Finance & Payments', icon: DollarSign });
-      employeeItems.splice(4, 0, { id: ViewMode.EMPLOYEE_CRM, label: 'CRM Leads', icon: Users });
-  }
 
-  const menuItems = role === 'ADMIN' ? adminItems : employeeItems;
+  const employeeMenuItems = useMemo(() => {
+    const baseEmployeeItems = [
+      { id: ViewMode.EMPLOYEE_HOME, label: 'My Portal', icon: LayoutDashboard },
+      { id: ViewMode.CALENDAR, label: 'Company Calendar', icon: Calendar }, 
+      { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
+      { id: ViewMode.CHECKLIST, label: 'My Checklist', icon: ListChecks },
+      { id: ViewMode.EMPLOYEE_TASKS, label: 'My Tasks', icon: ClipboardList },
+      { id: ViewMode.PMS_EMPLOYEE, label: 'PMS', icon: BarChart3 },
+      { id: ViewMode.EMPLOYEE_ORDERS, label: 'O2D', icon: Package },
+      { id: ViewMode.LEAVES, label: 'Leave Application', icon: FileBarChart },
+      { id: ViewMode.EMPLOYEE_CHAT, label: 'Team Chat', icon: MessageCircle }, 
+      { id: ViewMode.EMPLOYEE_QUERIES, label: 'Raise Query', icon: HelpCircle }, 
+      { id: ViewMode.NOTEPAD, label: 'My Notepad', icon: StickyNote }, 
+      { id: ViewMode.PLAYBOOK, label: 'Playbook', icon: BookOpen },
+      { id: ViewMode.README, label: 'Help & Docs', icon: Info },
+    ];
+
+    if (isFinanceOrSales && role === 'EMPLOYEE') {
+      const extended = [...baseEmployeeItems];
+      extended.splice(3, 0, { id: ViewMode.FINANCE, label: 'Finance & Payments', icon: DollarSign });
+      extended.splice(4, 0, { id: ViewMode.EMPLOYEE_CRM, label: 'CRM Leads', icon: Users });
+      return extended;
+    }
+
+    return baseEmployeeItems;
+  }, [role, isFinanceOrSales]);
+
+  const menuItems = role === 'ADMIN' ? adminItems : employeeMenuItems;
 
   return (
     <>
@@ -142,3 +147,5 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, role,
     </>
   );
 };
+
+export const Sidebar = React.memo(SidebarComponent);

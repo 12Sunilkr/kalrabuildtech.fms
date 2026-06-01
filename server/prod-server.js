@@ -4,10 +4,16 @@ process.env.VITE_EMBEDDED = '1';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import compression from 'compression';
 import initSqlJs from 'sql.js';
-import apiApp from './index.js';
+
+// Must import the API app dynamically so VITE_EMBEDDED is set before server/index.js evaluates.
+const apiApp = (await import('./index.js')).default;
 
 const host = express();
+
+// Enable Gzip compression
+host.use(compression());
 
 // Mount API first
 host.use(apiApp);
@@ -43,9 +49,17 @@ if (process.env.RUN_DEMO_CLEANUP === '1') {
   })();
 }
 
-// Serve static built files
+// Serve static built files with browser caching (1 year for immutable assets)
 const staticRoot = path.resolve(process.cwd(), 'dist');
-host.use(express.static(staticRoot));
+host.use(express.static(staticRoot, {
+  maxAge: '1y',
+  setHeaders: (res, path) => {
+    if (path.endsWith('.html')) {
+      // Don't cache index.html
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
+}));
 
 // SPA fallback
 host.get('*', (req, res) => {
@@ -56,6 +70,8 @@ const port = process.env.PORT || 3000;
 const server = host.listen(port, '0.0.0.0', () => {
   console.log(`Production server (static + API) listening on http://0.0.0.0:${port}`);
 });
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 server.on('error', (err) => {
   console.error('Production server error', err && (err.stack || err.message || err));
   if (err && err.code === 'EADDRINUSE') {

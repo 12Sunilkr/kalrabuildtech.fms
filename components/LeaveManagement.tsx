@@ -4,7 +4,7 @@ import { Employee, AttendanceRecord, LeaveRequest, User, Notification, LeaveType
 import { LEAVE_SUBJECT_TEMPLATES, LEAVE_TYPES_LIST } from '../constants';
 import { AlertCircle, CheckCircle, FileBarChart, Plus, X, Send, Clock, CalendarDays, CheckCircle2, XCircle, ArrowRight, User as UserIcon } from 'lucide-react';
 import { isSunday, eachDayOfInterval } from 'date-fns';
-import { AITextEnhancer } from './AITextEnhancer';
+
 import api, { safePost, safeGet, extractPayload, ensureArray } from '../src/utils/api';
 import { formatDateKey } from '../utils/dateUtils';
 
@@ -57,18 +57,18 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                 let url = '/leaves';
                 if (activeTab === 'MY_APPLICATIONS' && !isAdmin) {
                     url = '/leaves?type=my';
-                    console.log('DEBUG: Fetching MY applications from', url);
+
                 } else if (activeTab === 'APPROVALS' && !isAdmin) {
                     url = '/leaves?type=approvals';
-                    console.log('DEBUG: Fetching APPROVALS from', url);
+
                 } else if (isAdmin) {
                     url = '/leaves';
-                    console.log('DEBUG: Fetching ALL leaves (admin) from', url);
+
                 }
 
                 const listRes = await safeGet(url);
                 const leaves = ensureArray(extractPayload(listRes));
-                console.log('DEBUG: Fetched leaves count:', leaves.length, 'for tab:', activeTab);
+
                 setLeaveRequests(leaves);
             } catch (err) {
                 console.error('Failed to fetch leaves', err);
@@ -166,16 +166,16 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                 durationType: newLeave.durationType
             };
 
-            console.log('DEBUG: Frontend Apply Leave Payload', body, 'User:', currentUser);
+
 
             await safePost('/leaves', body, { withCredentials: true });
 
             // Refresh list from server - use ?type=my for employees
             const url = isAdmin ? '/leaves' : '/leaves?type=my';
-            console.log('DEBUG: Fetching leaves from URL:', url);
+
             const listRes = await safeGet(url);
             const fetchedLeaves = ensureArray(extractPayload(listRes));
-            console.log('DEBUG: Fetched leaves count:', fetchedLeaves.length);
+
             setLeaveRequests(fetchedLeaves);
 
             setShowApplyModal(false);
@@ -197,7 +197,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
 
     const handleApproval = async (req: LeaveRequest, approved: boolean) => {
         try {
-            console.log('DEBUG: Approving/Rejecting leave', { id: req.id, approved, appliedBy: req.employeeId });
+
 
             // Optimistic update: update local state immediately
             const newStatus = approved ? 'APPROVED' : 'REJECTED';
@@ -251,7 +251,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
         } catch (err: any) {
             // Revert optimistic update on error
             const url = isAdmin ? '/leaves' : '/leaves?type=approvals';
-            console.log('DEBUG: Refetching leaves from:', url, 'on error');
+
             const listRes = await safeGet(url);
             setLeaveRequests(ensureArray(extractPayload(listRes)));
 
@@ -966,12 +966,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                         onChange={e => setNewLeave(prev => ({ ...prev, reason: e.target.value }))}
                                         placeholder="Please provide the specific reason for your leave request..."
                                     />
-                                    <div className="absolute bottom-6 right-6">
-                                        <AITextEnhancer
-                                            text={newLeave.reason || ''}
-                                            onUpdate={(text) => setNewLeave(prev => ({ ...prev, reason: text }))}
-                                        />
-                                    </div>
+
                                 </div>
                             </div>
                         </div>

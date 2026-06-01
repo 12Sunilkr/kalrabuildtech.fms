@@ -1,4 +1,5 @@
-import axios, { AxiosHeaders } from 'axios';
+import axios from 'axios';
+import { dedupedGet, swrGet, invalidateCache, setCached, getCachedEntry } from './requestCache';
 
 // Single shared axios instance for all frontend API calls.
 // Use a relative base so all requests go to the frontend service at `/api`.
@@ -7,16 +8,28 @@ const api = axios.create({
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
-    'Cache-Control': 'no-store'
+    // NOTE: Do NOT set Cache-Control: no-store globally — it prevents all
+    // browser-level caching and forces every request to hit the network.
+    // Cache-control headers are set per-request only when needed.
   }
 });
 
-// Attach Authorization header automatically from localStorage if present
-// Do NOT rely on localStorage for auth token in production builds.
-// The server sets an httpOnly cookie on login; axios is configured with
-// `withCredentials: true` so cookies will be sent automatically.
-// Keep request interceptor minimal to avoid accessing localStorage in SSR.
+// Keep request interceptor minimal
 api.interceptors.request.use((cfg) => cfg);
+
+// Automatically clear the entire client-side request cache on any data-modifying action (POST, PUT, DELETE)
+api.interceptors.response.use(
+  (response) => {
+    const method = response.config.method?.toUpperCase();
+    if (method && method !== 'GET') {
+      invalidateCache();
+    }
+    return response;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
 
 export function apiUrl(path: string) {
   const p = path.startsWith('/') ? path : '/' + path;
@@ -47,51 +60,83 @@ export function ensureArray(v: any) {
   return [];
 }
 
+// Internal fetcher that wraps axios.get
+function makeFetcher(path: string, cfg: any) {
+  return async () => {
+    try {
+      return await api.get(path, cfg);
+    } catch (err: any) {
+      if (err?.response?.status === 304) return err.response;
+      throw err;
+    }
+  };
+}
+
 // Safe GET with optional cache-busting. Returns axios response object.
-export async function safeGet(path: string, opts?: { cacheBust?: boolean, headers?: Record<string,string>, params?: any }) {
-  const cfg: any = { headers: { ...(opts && opts.headers ? opts.headers : {}) }, params: { ...(opts && opts.params ? opts.params : {}) } };
+export async function safeGet(path: string, opts?: { cacheBust?: boolean, headers?: Record<string,string>, params?: any, dedupe?: boolean, cacheTtlMs?: number }) {
+  const cfg: any = { headers: { ...(opts?.headers || {}) }, params: { ...(opts?.params || {}) } };
   if (opts?.cacheBust) {
-    // Set headers to prevent upstream caching and add a timestamp param
     cfg.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
     cfg.headers['Pragma'] = 'no-cache';
     cfg.headers['Expires'] = '0';
     cfg.params['_ts'] = Date.now();
   }
-  try {
-    const res = await api.get(path, cfg);
-    return res;
-  } catch (err: any) {
-    // If server returned 304, axios may throw; if so, try to build a minimal response object
-    if (err && err.response && err.response.status === 304) {
-      return err.response;
-    }
-    throw err;
-  }
+
+  const fetchOnce = makeFetcher(path, cfg);
+
+  const useDedupe = opts?.dedupe !== false && !opts?.cacheBust;
+  if (!useDedupe) return fetchOnce();
+
+  const key = `${path}|${JSON.stringify(cfg.params || {})}`;
+  return dedupedGet(key, fetchOnce, opts?.cacheTtlMs ?? 15000) as ReturnType<typeof fetchOnce>;
 }
+
+/**
+ * safeGetSwr — stale-while-revalidate GET.
+ *
+ * Returns cached data IMMEDIATELY (instant UI), then silently refreshes in background.
+ * On first load (no cache), awaits the network normally.
+ *
+ * @param path       API path (e.g. '/tasks')
+ * @param onFresh    Called with fresh data when background refresh completes
+ * @param params     Query params object
+ * @param ttlMs      How long data is considered "fresh" (no network) — default 15s
+ * @param staleTtlMs How long stale data can be served while refreshing — default 120s
+ */
+export async function safeGetSwr(
+  path: string,
+  onFresh: (data: any) => void,
+  params?: Record<string, any>,
+  ttlMs = 15_000,
+  staleTtlMs = 120_000
+) {
+  const cfg: any = { headers: {}, params: params || {} };
+  const fetchOnce = makeFetcher(path, cfg);
+  const key = `${path}|${JSON.stringify(params || {})}`;
+  return swrGet(key, fetchOnce, onFresh, ttlMs, staleTtlMs);
+}
+
+export { invalidateCache, setCached, getCachedEntry };
 
 // Safe write helpers: post/put/delete that return extracted payload when available.
 export async function safePost(path: string, body?: any, opts?: any) {
-  // Clone opts to avoid mutating caller provided object
   const cfg: any = opts ? { ...opts } : {};
   cfg.headers = { ...(cfg.headers || {}) };
-  // If body is FormData, ensure Content-Type header is unset so the browser/axios sets it with boundary
   try {
     if (typeof FormData !== 'undefined' && body instanceof FormData) {
-      // Explicitly unset Content-Type to override axios default 'application/json'
       cfg.headers['Content-Type'] = undefined;
       cfg.headers['content-type'] = undefined;
     }
   } catch (e) {
-    // ignore environment where FormData is not available
+    // ignore
   }
 
   try {
     const res = await api.post(path, body, cfg);
     return res;
   } catch (err: any) {
-    // Add richer error logging for debugging upload failures
     try {
-      console.error('safePost failed', { path, status: err && err.response && err.response.status, data: err && err.response && err.response.data });
+      console.error('safePost failed', { path, status: err?.response?.status, data: err?.response?.data });
     } catch (e) { /* ignore */ }
     throw err;
   }

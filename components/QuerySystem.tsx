@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Query, Employee, User, Notification } from '../types';
 import { HelpCircle, Plus, Search, CheckCircle2, X, Send, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
-import { AITextEnhancer } from './AITextEnhancer';
+
 import api, { safePost, safeGet, safePut, safeDelete, extractPayload, ensureArray } from '../src/utils/api';
 
 interface QuerySystemProps {
@@ -301,12 +301,7 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                     onChange={e => setNewQuery({ ...newQuery, subject: e.target.value })}
                     placeholder="Brief topic..."
                   />
-                  <AITextEnhancer
-                    text={newQuery.subject || ''}
-                    onUpdate={(text) => setNewQuery({ ...newQuery, subject: text })}
-                    context="concise"
-                    mini={true}
-                  />
+
                 </div>
               </div>
               <div>
@@ -330,10 +325,7 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                   onChange={e => setNewQuery({ ...newQuery, message: e.target.value })}
                   placeholder="Explain your query..."
                 />
-                <AITextEnhancer
-                  text={newQuery.message || ''}
-                  onUpdate={(text) => setNewQuery({ ...newQuery, message: text })}
-                />
+
               </div>
             </div>
             <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">

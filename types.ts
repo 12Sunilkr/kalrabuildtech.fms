@@ -1,4 +1,6 @@
 
+export type EmploymentType = 'Full Time' | 'Probation' | 'Contractual' | 'Internship' | 'Part Time';
+
 export interface Employee {
   id: string;
   name: string;
@@ -21,6 +23,7 @@ export interface Employee {
   compOffBalance?: number;
   // When true, this employee's attendance is hidden from admin users
   hideAttendance?: boolean;
+  employmentType?: string;
 }
 
 export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN';

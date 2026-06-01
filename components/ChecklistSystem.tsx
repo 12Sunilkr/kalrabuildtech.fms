@@ -67,7 +67,7 @@ const StatusPill: React.FC<{ status: string }> = ({ status }) => (
 
 // ─── main component ───────────────────────────────────────────────────────────
 
-export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
+const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
     templates, setTemplates, instances, setInstances, currentUser, employees, holidays, addNotification
 }) => {
     const [activeTab, setActiveTab] = useState<'AGENDA' | 'MONITOR' | 'MISSED' | 'MASTER'>('AGENDA');
@@ -81,16 +81,34 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
     const [editingTemplate, setEditingTemplate] = useState<ChecklistTemplate | null>(null);
     const [editConfig, setEditConfig] = useState<{ frequency: FrequencyType; particularDateType?: 'EVERY-MONTH' | 'EVERY-YEAR'; startDate: string }>({ frequency: 'DAILY', startDate: '' });
     const [isSavingFreq, setIsSavingFreq] = useState(false);
+    const [editDoerId, setEditDoerId] = useState<string>('');
+    const [transferEffectiveDate, setTransferEffectiveDate] = useState<string>('');
 
     // Monitor filters
     const [monitorLeadId, setMonitorLeadId] = useState<string>(
         currentUser.role === 'ADMIN' ? 'ALL' : (currentUser.employeeId || String(currentUser.id) || 'ALL')
     );
     const [monitorStatus, setMonitorStatus] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED'>('ALL');
+    const [monitorSearchInput, setMonitorSearchInput] = useState('');
     const [monitorSearch, setMonitorSearch] = useState('');
+    const [agendaSearchInput, setAgendaSearchInput] = useState('');
     const [agendaSearch, setAgendaSearch] = useState('');
     const [agendaDateFilter, setAgendaDateFilter] = useState<'TODAY' | 'UPCOMING_WEEK' | 'ALL'>('TODAY');
     const [agendaStatusFilter, setAgendaStatusFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED'>('PENDING');
+
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setMonitorSearch(monitorSearchInput);
+        }, 250);
+        return () => clearTimeout(handler);
+    }, [monitorSearchInput]);
+
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setAgendaSearch(agendaSearchInput);
+        }, 250);
+        return () => clearTimeout(handler);
+    }, [agendaSearchInput]);
     const [currentPage, setCurrentPage] = useState(1);
     const [pendingPage, setPendingPage] = useState(1);
     const [completedPage, setCompletedPage] = useState(1);
@@ -166,8 +184,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                     insts.push({
                                         ...p,
                                         dbId: it.id,
-                                        // Always trust template doerId as ground truth
-                                        doerId: tpl.doerId,
+                                        // Trust instance doerId if available, fall back to template doerId
+                                        doerId: p.doerId || tpl.doerId,
                                         department: p.department ?? tpl.department,
                                         taskName: p.taskName ?? tpl.taskName,
                                         templateId: String(tpl.id),
@@ -527,6 +545,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
             particularDateType: tpl.config.particularDateType ?? 'EVERY-MONTH',
             startDate: tpl.startDate,
         });
+        setEditDoerId(tpl.doerId);
+        setTransferEffectiveDate(format(new Date(), 'yyyy-MM-dd'));
     };
 
     const handleSaveFrequency = async () => {
@@ -539,38 +559,59 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                 frequency: editConfig.frequency,
                 particularDateType: editConfig.frequency === 'PARTICULAR-DATE' ? editConfig.particularDateType : undefined,
             };
+            const newDept = employees.find(e => String(e.id) === String(editDoerId))?.department || editingTemplate.department;
             // Patch the template on the server
             await api.put(
                 `/checklist-templates/${encodeURIComponent(editingTemplate.id)}`,
                 {
                     taskName: editingTemplate.taskName,
-                    doerId: editingTemplate.doerId,
+                    doerId: editDoerId,
                     buddyId: editingTemplate.buddyId,
-                    department: editingTemplate.department,
+                    department: newDept,
                     startDate: editConfig.startDate,
                     config: updatedConfig,
                     active: editingTemplate.active,
+                    transferEffectiveDate: editDoerId !== editingTemplate.doerId ? transferEffectiveDate : undefined,
                 },
                 { withCredentials: true }
             );
 
             // Update local template list
-            const updatedTpl: ChecklistTemplate = { ...editingTemplate, config: updatedConfig, startDate: editConfig.startDate };
+            const updatedTpl: ChecklistTemplate = { 
+                ...editingTemplate, 
+                config: updatedConfig, 
+                startDate: editConfig.startDate,
+                doerId: editDoerId,
+                department: newDept
+            };
             setTemplates(prev => prev.map(t => t.id === updatedTpl.id ? updatedTpl : t));
 
-            // Remove all PENDING instances for this template, regenerate with new frequency + date
-            setInstances(prev => prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.status === 'PENDING')));
-            const newInsts = generateInstances(updatedTpl);
+            const freqOrStartChanged = editConfig.frequency !== editingTemplate.config.frequency || editConfig.startDate !== editingTemplate.startDate;
 
-            // Bulk-save new instances to DB (fire and forget)
-            safePost('/checklists/bulk', {
-                items: newInsts.map(inst => ({
-                    refId: updatedTpl.id,
-                    refType: 'TEMPLATE_INSTANCE',
-                    item: JSON.stringify({ ...inst, templateId: updatedTpl.id }),
-                }))
-            }).then(() => setRefreshTrigger(prev => prev + 1))
-              .catch(e => console.warn('[Checklist] Regen bulk save failed:', e));
+            if (freqOrStartChanged) {
+                // Remove all PENDING instances for this template, regenerate with new frequency + date
+                setInstances(prev => prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.status === 'PENDING')));
+                const newInsts = generateInstances(updatedTpl);
+
+                // Bulk-save new instances to DB (fire and forget)
+                safePost('/checklists/bulk', {
+                    items: newInsts.map(inst => ({
+                        refId: updatedTpl.id,
+                        refType: 'TEMPLATE_INSTANCE',
+                        item: JSON.stringify({ ...inst, templateId: updatedTpl.id }),
+                    }))
+                }).then(() => setRefreshTrigger(prev => prev + 1))
+                  .catch(e => console.warn('[Checklist] Regen bulk save failed:', e));
+            } else if (editDoerId !== editingTemplate.doerId) {
+                // Assignee transferred, update future pending instances locally
+                setInstances(prev => prev.map(i => {
+                    if (String(i.templateId) === String(updatedTpl.id) && i.status === 'PENDING' && i.date >= transferEffectiveDate) {
+                        return { ...i, doerId: editDoerId, department: newDept };
+                    }
+                    return i;
+                }));
+                setRefreshTrigger(prev => prev + 1);
+            }
 
             setEditingTemplate(null);
             addNotification('Routine Updated', `"${updatedTpl.taskName}" updated — ${editConfig.frequency} from ${editConfig.startDate}.`, 'CHECKLIST', String(updatedTpl.doerId));
@@ -848,8 +889,8 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                                 type="text"
                                                 placeholder="Search tasks…"
                                                 className="w-full pl-9 pr-4 py-2 bg-white border border-[#e8e6e0] rounded-xl text-xs font-bold focus:outline-none ring-custom"
-                                                value={agendaSearch}
-                                                onChange={e => setAgendaSearch(e.target.value)}
+                                                value={agendaSearchInput}
+                                                onChange={e => setAgendaSearchInput(e.target.value)}
                                             />
                                         </div>
                                         <div className="flex gap-2 shrink-0">
@@ -1507,6 +1548,40 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                                 <span className="ml-auto text-[10px] text-[#9ca3af] font-mono-dm">{editingTemplate.startDate}</span>
                             </div>
 
+                            {/* Assignee / Transfer Task */}
+                            <div>
+                                <label className="block text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mb-1.5">
+                                    <span className="flex items-center gap-1.5"><Users size={11} /> Transfer / Reassign Assignee</span>
+                                </label>
+                                <select
+                                    className="w-full border border-[#e8e6e0] bg-[#fafaf8] px-4 py-3 rounded-xl text-sm font-bold text-[#1a1a2e] focus:outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/20 transition-all"
+                                    value={editDoerId}
+                                    onChange={e => setEditDoerId(e.target.value)}
+                                >
+                                    {employees.map(emp => (
+                                        <option key={emp.id} value={emp.id}>{emp.name} ({emp.designation || emp.department})</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Transfer Effective Date - Only shown if assignee is being changed */}
+                            {editDoerId !== editingTemplate.doerId && (
+                                <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-4 space-y-2 animate-fade-in">
+                                    <label className="block text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
+                                        <span className="flex items-center gap-1.5"><Calendar size={11} /> Transfer Effective Date *</span>
+                                    </label>
+                                    <input
+                                        type="date"
+                                        className="w-full border border-indigo-200 bg-white px-4 py-3 rounded-xl text-sm font-bold text-[#1a1a2e] focus:outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/20 transition-all"
+                                        value={transferEffectiveDate}
+                                        onChange={e => setTransferEffectiveDate(e.target.value)}
+                                    />
+                                    <p className="text-[10px] text-indigo-500 font-semibold leading-relaxed">
+                                        All pending checklist tasks on or after this date will be transferred to the new employee. Tasks before this date will remain with the current employee.
+                                    </p>
+                                </div>
+                            )}
+
                             {/* Start Date */}
                             <div>
                                 <label className="block text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest mb-1.5">
@@ -1591,7 +1666,7 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
                             </button>
                             <button
                                 onClick={handleSaveFrequency}
-                                disabled={isSavingFreq || (!editConfig.startDate || (editConfig.frequency === editingTemplate.config.frequency && editConfig.startDate === editingTemplate.startDate))}
+                                disabled={isSavingFreq || (!editConfig.startDate || (editConfig.frequency === editingTemplate.config.frequency && editConfig.startDate === editingTemplate.startDate && editDoerId === editingTemplate.doerId))}
                                 className="flex items-center gap-2 px-6 py-2.5 bg-[#6366f1] hover:bg-[#4f46e5] disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg active:scale-95 uppercase tracking-widest"
                             >
                                 {isSavingFreq
@@ -1747,3 +1822,5 @@ export const ChecklistSystem: React.FC<ChecklistSystemProps> = ({
         </div>
     );
 };
+
+export const ChecklistSystem = React.memo(ChecklistSystemComponent);

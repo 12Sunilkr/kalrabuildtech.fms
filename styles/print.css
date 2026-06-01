@@ -88,9 +88,12 @@
   /* ===== CONTAINER STYLES ===== */
   .print-container {
     page-break-inside: avoid;
-    page-break-after: always;
     break-inside: avoid;
-    break-after: always;
+  }
+
+  .print-container:not(:last-child) {
+    page-break-after: always !important;
+    break-after: always !important;
   }
 
   .print-section {

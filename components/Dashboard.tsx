@@ -13,7 +13,7 @@ interface DashboardProps {
   onNavigate: (view: ViewMode) => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData, onNavigate }) => {
+const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceData, onNavigate }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const currentDate = new Date();
   const dateKey = formatDateKey(currentDate);
@@ -364,3 +364,5 @@ export const Dashboard: React.FC<DashboardProps> = ({ employees, attendanceData,
     </div>
   );
 };
+
+export const Dashboard = React.memo(DashboardComponent);

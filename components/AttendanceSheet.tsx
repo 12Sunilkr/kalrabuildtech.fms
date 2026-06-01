@@ -19,7 +19,7 @@ interface AttendanceSheetProps {
   currentUser: User;
 }
 
-export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
+const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
   employees,
   setEmployees,
   attendanceData,
@@ -30,6 +30,7 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
   currentUser
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [, startCalTransition] = React.useTransition();
   const [showRequestsModal, setShowRequestsModal] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
 
@@ -51,7 +52,9 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
   }, []);
 
   const handleMonthChange = (delta: number) => {
-    setCurrentDate(new Date(year, month + delta, 1));
+    startCalTransition(() => {
+      setCurrentDate(new Date(year, month + delta, 1));
+    });
   };
 
   const updateAttendance = async (empId: string, date: Date, newVal: AttendanceValue) => {
@@ -234,7 +237,11 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
         <div className="flex items-center justify-between w-full md:w-auto gap-4">
           {currentUser?.role === 'ADMIN' && (
             <button
-              onClick={() => setShowHidden(!showHidden)}
+              onClick={() => {
+                startCalTransition(() => {
+                  setShowHidden(!showHidden);
+                });
+              }}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl border transition-all font-bold text-xs ${showHidden ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/30' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
               title={showHidden ? "Hide team members marked as hidden" : "Show team members marked as hidden"}
             >
@@ -495,3 +502,5 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({
     </div>
   );
 };
+
+export const AttendanceSheet = React.memo(AttendanceSheetComponent);

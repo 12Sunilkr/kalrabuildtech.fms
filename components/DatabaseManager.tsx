@@ -2,6 +2,7 @@
 import React, { useRef, useState } from 'react';
 import { Database, Download, Upload, Trash2, RefreshCw, ShieldAlert, FileJson, Table, Info, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { safePost } from '../src/utils/api';
 
 interface DatabaseManagerProps {
     allData: any;
@@ -13,6 +14,10 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [confirmReset, setConfirmReset] = useState(false);
     const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+    const sqliteInputRef = useRef<HTMLInputElement>(null);
+    const [sqliteUploadStatus, setSqliteUploadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+    const [sqliteReloadStatus, setSqliteReloadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
 
     const handleExport = () => {
         const dataStr = JSON.stringify(allData, null, 2);
@@ -64,6 +69,60 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
         onReset();
         setConfirmReset(false);
         alert("System data has been completely cleared.");
+    };
+
+    const handleSqliteUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        if (!confirm("WARNING: Uploading a SQLite database file will completely replace the current database and reset all active sessions. Are you sure you want to proceed?")) {
+            if (sqliteInputRef.current) sqliteInputRef.current.value = '';
+            return;
+        }
+
+        setSqliteUploadStatus('loading');
+        try {
+            const formData = new FormData();
+            formData.append('dbFile', file);
+
+            const res = await safePost('/admin/upload-db', formData);
+            if (res && res.data && res.data.success) {
+                setSqliteUploadStatus('success');
+                alert("SQLite database uploaded and applied successfully! The application will now reload.");
+                window.location.reload();
+            } else {
+                throw new Error(res?.data?.message || "Failed to upload database");
+            }
+        } catch (err: any) {
+            console.error("SQLite database upload failed:", err);
+            setSqliteUploadStatus('error');
+            alert(err?.response?.data?.message || err?.message || "Failed to upload SQLite database. Ensure it is a valid SQLite file.");
+            setTimeout(() => setSqliteUploadStatus('idle'), 4000);
+        }
+        if (sqliteInputRef.current) sqliteInputRef.current.value = '';
+    };
+
+    const handleReloadFromDisk = async () => {
+        if (!confirm("Are you sure you want to reload the SQLite database from the server's disk file? Any unsaved in-memory changes will be replaced.")) {
+            return;
+        }
+
+        setSqliteReloadStatus('loading');
+        try {
+            const res = await safePost('/admin/reload-db');
+            if (res && res.data && res.data.success) {
+                setSqliteReloadStatus('success');
+                alert("Database reloaded from disk successfully! The application will now reload.");
+                window.location.reload();
+            } else {
+                throw new Error(res?.data?.message || "Failed to reload database");
+            }
+        } catch (err: any) {
+            console.error("Database disk reload failed:", err);
+            setSqliteReloadStatus('error');
+            alert(err?.response?.data?.message || err?.message || "Failed to reload database from disk.");
+            setTimeout(() => setSqliteReloadStatus('idle'), 4000);
+        }
     };
 
     const stats = [
@@ -121,6 +180,55 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                     <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2 px-1">
                         <RefreshCw size={14}/> Data Operations
                     </h3>
+
+                    {/* SQLite Database Operations */}
+                    <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0"><Database size={20}/></div>
+                            <div>
+                                <h4 className="font-bold text-slate-800 text-sm">SQLite Database File</h4>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Direct DB Management</p>
+                            </div>
+                        </div>
+                        <p className="text-xs text-slate-500 font-medium">Upload an existing `database.sqlite` file directly, or hot-reload the file from the server's disk.</p>
+                        
+                        <div className="space-y-2">
+                            {/* Upload DB */}
+                            <input type="file" ref={sqliteInputRef} onChange={handleSqliteUpload} className="hidden" accept=".sqlite,.db,application/x-sqlite3" />
+                            <button 
+                                onClick={() => sqliteInputRef.current?.click()}
+                                disabled={sqliteUploadStatus === 'loading'}
+                                className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
+                                    sqliteUploadStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' :
+                                    sqliteUploadStatus === 'success' ? 'bg-green-600 text-white' :
+                                    sqliteUploadStatus === 'error' ? 'bg-red-600 text-white' :
+                                    'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20 cursor-pointer'
+                                }`}
+                            >
+                                {sqliteUploadStatus === 'loading' ? <><RefreshCw size={16} className="animate-spin"/> Uploading...</> :
+                                 sqliteUploadStatus === 'success' ? <><CheckCircle2 size={16}/> Applied!</> :
+                                 sqliteUploadStatus === 'error' ? 'Upload Failed' :
+                                 <><Upload size={16}/> Upload SQLite DB File</>}
+                            </button>
+
+                            {/* Reload from disk */}
+                            <button 
+                                onClick={handleReloadFromDisk}
+                                disabled={sqliteReloadStatus === 'loading'}
+                                className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 border-2 cursor-pointer ${
+                                    sqliteReloadStatus === 'loading' ? 'bg-slate-50 border-slate-100 text-slate-400 cursor-not-allowed' :
+                                    sqliteReloadStatus === 'success' ? 'bg-green-50 border-green-200 text-green-600' :
+                                    sqliteReloadStatus === 'error' ? 'bg-red-50 border-red-200 text-red-600' :
+                                    'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                                }`}
+                            >
+                                {sqliteReloadStatus === 'loading' ? <><RefreshCw size={16} className="animate-spin"/> Reloading...</> :
+                                 sqliteReloadStatus === 'success' ? <><CheckCircle2 size={16}/> Reloaded!</> :
+                                 sqliteReloadStatus === 'error' ? 'Reload Failed' :
+                                 <><RefreshCw size={16}/> Reload DB from Disk</>}
+                            </button>
+                        </div>
+                    </div>
                     
                     {/* Backup */}
                     <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">

@@ -2,8 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { Task, TaskStatus, Employee, User, Notification, ExtensionRequest } from '../types';
 import { format, isPast, differenceInHours } from 'date-fns';
-import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw } from 'lucide-react';
-import { AITextEnhancer } from './AITextEnhancer';
+import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronLeft, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw } from 'lucide-react';
+
 import { convertFileToBase64 } from '../utils/fileHelper';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
 
@@ -20,8 +20,9 @@ interface TaskManagerProps {
   addNotification: (title: string, msg: string, type: Notification['type'], targetUser: string) => void;
 }
 
-export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, addNotification }) => {
+const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, addNotification }) => {
   const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS' | 'TERMINATE' | 'REJECT'>('ALL');
+  const [, startTabTransition] = React.useTransition();
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null); // Task ID
   const [showObjectionModal, setShowObjectionModal] = useState<string | null>(null); // Task ID
@@ -32,29 +33,29 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   // Action Reason Modal State
   const [actionPrompt, setActionPrompt] = useState<{ taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE' } | null>(null);
-  const [actionReason, setActionReason] = useState('');
 
   const [mobileMenuOpenId, setMobileMenuOpenId] = useState<string | null>(null); // For mobile 3-dots menu
+  const [searchTermInput, setSearchTermInput] = useState('');
   const [searchTerm, setSearchTerm] = useState(''); // Text Search
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setSearchTerm(searchTermInput);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [searchTermInput]);
   const [searchDateFrom, setSearchDateFrom] = useState(''); // Date Search From
   const [searchDateTo, setSearchDateTo] = useState(''); // Date Search To
   const [selectedMemberId, setSelectedMemberId] = useState<string>('ALL'); // Member filter (admin only)
 
-  // Form States for New Task
-  const [newTask, setNewTask] = useState<Partial<Task>>({ priority: 'MEDIUM' });
   const [usersList, setUsersList] = useState<User[]>([]);
-  // store selected assignee as EMPLOYEE ID (string) to show all employees added in the app
-  const [newAssignedUserId, setNewAssignedUserId] = useState<string | ''>('');
-  const [attachment, setAttachment] = useState<string | null>(null);
-
-  // Form States for Completion/Objection
-  const [processNote, setProcessNote] = useState('');
-  const [extensionDate, setExtensionDate] = useState('');
-  const [extensionReason, setExtensionReason] = useState('');
 
   // Form States for Edit Task
   const [showEditModal, setShowEditModal] = useState<string | null>(null); // Task ID
-  const [editTaskForm, setEditTaskForm] = useState<Partial<Task>>({});
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const [tasksPerPage, setTasksPerPage] = useState(20);
 
   const isAdmin = currentUser.role === 'ADMIN';
 
@@ -71,6 +72,11 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     fetchUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
+
+  // Reset page to 1 when filters or activeTab changes to avoid getting stranded
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, searchTerm, searchDateFrom, searchDateTo, selectedMemberId]);
 
   const fetchUsers = async () => {
     try {
@@ -110,17 +116,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     return !!task.completionDate || (task.status || '').toUpperCase() === 'COMPLETED';
   };
 
-  // --- File Upload Handler ---
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      try {
-        const base64 = await convertFileToBase64(e.target.files[0]);
-        setAttachment(base64);
-      } catch (err) {
-        addNotification('System Error', 'Failed to upload task attachment. Please try again.', 'SYSTEM', String(currentUser.id));
-      }
-    }
-  };
+
 
   // --- Fetch tasks from server for current user (admin fetches all) ---
   const fetchTasks = async () => {
@@ -233,45 +229,41 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   // --- Actions ---
 
-  const createTask = async () => {
-    // Require a selected user from the Assign dropdown (we use newAssignedUserId)
-    if (!(newTask.title && (newAssignedUserId !== '' && newAssignedUserId != null) && newTask.dueDate)) {
-      setError('Please provide title, assignee and due date');
-      return;
-    }
+  // --- Actions ---
+
+  const createTask = async (payload: {
+    title: string;
+    description: string;
+    assignedTo: string;
+    assigned_to: number | null;
+    dueDate: string;
+    priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    attachment: string | null;
+    externalLink: string | null;
+    createdDate: string;
+  }) => {
     setIsLoading(true);
     setError(null);
     try {
-      // selected assignee is an employee ID (string)
-      const selectedEmployeeId = String(newAssignedUserId || '');
-      // Try to resolve numeric user id (assigned_to) from usersList using employeeId matching
-      const matchedUser = usersList.find(u => String(u.employeeId) === selectedEmployeeId);
-      const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
-
-      // Keep local task state consistent: assignedTo should be employee id
-      setNewTask(prev => ({ ...prev, assignedTo: selectedEmployeeId }));
-
-      const payload: any = {
-        title: newTask.title,
-        description: newTask.description || '',
-        // server accepts either employee-id (assignedTo) or numeric user id (assigned_to). Provide both when available.
-        assignedTo: selectedEmployeeId,
-        assigned_to: assigned_to_numeric || null,
+      const serverPayload: any = {
+        title: payload.title,
+        description: payload.description || '',
+        assignedTo: payload.assignedTo,
+        assigned_to: payload.assigned_to,
         assigned_by: Number(currentUser.id),
-        dueDate: newTask.dueDate,
-        priority: newTask.priority || 'MEDIUM',
-        attachment: attachment || null,
-        externalLink: newTask.externalLink || null
+        dueDate: payload.dueDate,
+        priority: payload.priority || 'MEDIUM',
+        attachment: payload.attachment || null,
+        externalLink: payload.externalLink || null,
+        createdDate: payload.createdDate
       };
-      console.log('TaskManager.createTask -> POST /tasks payload:', payload);
-      const r = await api.post('/tasks', payload);
-      console.log('TaskManager.createTask -> POST /tasks response:', r && r.data ? r.data : r);
-      // Use returned task to update local state immediately so DB writes are not lost
+
+      const r = await api.post('/tasks', serverPayload);
+
       let newId = '';
       try {
         const created = extractPayload(r);
         if (created) {
-          // If API returned created resource (object or array), add to local list
           const createdTask = Array.isArray(created) ? created[0] : (created.task || created);
           if (createdTask && createdTask.id) newId = createdTask.id;
           setTasks(prev => [createdTask as Task, ...prev]);
@@ -279,29 +271,20 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       } catch (e) {
         console.warn('Could not extract created task, continuing to refresh', e && (e.stack || e.message || e));
       }
-      // Refresh tasks view (admin fetches all, employees fetch self). If this fails, keep local optimistic copy.
       try { await fetchTasks(); } catch (e) { console.warn('Refresh after create failed, keeping optimistic state', e && (e.stack || e.message || e)); }
       setShowAssignModal(false);
-      setNewTask({ priority: 'MEDIUM' });
-      setAttachment(null);
-      // Clear selected assignee
-      setNewAssignedUserId('');
-      // Notify using the employee id if available, otherwise numeric id
       addNotification('New Task', `Task ${newId ? newId : ''} "${payload.title}" assigned successfully.`, 'TASK', String(payload.assignedTo || payload.assigned_to));
     } catch (err: any) {
       console.error('Create task failed', err);
       const message = err && err.response && (err.response.data?.message || err.response.data?.error) ? (err.response.data.message || err.response.data.error) : (err && err.message) || 'Failed to create task';
       setError(message);
+      throw err;
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleCompleteTask = async (taskId: string) => {
-    if (!processNote.trim()) {
-      setError('Please provide a process description of how you completed this task.');
-      return;
-    }
+  const handleCompleteTask = async (taskId: string, processNote: string, attachment: string | null) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -312,12 +295,9 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         completionAttachment: attachment || null
       };
       await api.put(`/tasks/${taskId}`, payload);
-      // Optimistic UI update
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'COMPLETED', completionDate: payload.completionDate, completionProcess: payload.completionProcess, completionAttachment: payload.completionAttachment } : t));
       await fetchTasks();
       setShowCompleteModal(null);
-      setProcessNote('');
-      setAttachment(null);
       addNotification('Task Completed', `Task ${taskId} marked as completed by ${currentUser.name}.`, 'TASK', String('ADMIN'));
     } catch (e) {
       console.error('Complete task failed', e);
@@ -365,15 +345,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   };
 
 
-  const handleRaiseObjection = async (taskId: string) => {
-    if (!extensionDate.trim()) {
-      setError('Please provide a proposed new deadline date.');
-      return;
-    }
-    if (!extensionReason.trim()) {
-      setError('Please provide a reason for the extension request.');
-      return;
-    }
+  const handleRaiseObjection = async (taskId: string, extensionDate: string, extensionReason: string) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -393,8 +365,6 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       await api.put(`/tasks/${taskId}`, { status: 'EXTENSION_REQUESTED', extensionRequest: newReq, extensionHistory: newHistory });
       await fetchTasks();
       setShowObjectionModal(null);
-      setExtensionDate('');
-      setExtensionReason('');
       addNotification('Task Alert', `Extension requested for Task ${taskId} by ${currentUser.name}.`, 'TASK', String('ADMIN'));
     } catch (e) {
       console.error('Raise objection failed', e);
@@ -406,37 +376,22 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   const handleOpenEditModal = (task: Task) => {
     setShowEditModal(task.id);
-    setEditTaskForm({
-      ...task,
-      assignedTo: task.assignedTo || (task as any).assignedToEmployeeId || ''
-    });
-    setAttachment(task.attachment || null);
   };
 
-  const handleUpdateTask = async () => {
+  const handleUpdateTask = async (payload: {
+    title: string;
+    description: string;
+    assignedTo: string;
+    assigned_to: number | null;
+    dueDate: string;
+    priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    attachment: string | null;
+    externalLink: string | null;
+  }) => {
     if (!showEditModal) return;
-    if (!(editTaskForm.title && editTaskForm.assignedTo && editTaskForm.dueDate)) {
-      setError('Please provide title, assignee and due date');
-      return;
-    }
     setIsLoading(true);
     setError(null);
     try {
-      const selectedEmployeeId = String(editTaskForm.assignedTo || '');
-      const matchedUser = usersList.find(u => String(u.employeeId) === selectedEmployeeId);
-      const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
-
-      const payload: any = {
-        title: editTaskForm.title,
-        description: editTaskForm.description || '',
-        assignedTo: selectedEmployeeId,
-        assigned_to: assigned_to_numeric || null,
-        dueDate: editTaskForm.dueDate,
-        priority: editTaskForm.priority || 'MEDIUM',
-        attachment: attachment || null,
-        externalLink: editTaskForm.externalLink || null
-      };
-
       await api.put(`/tasks/${showEditModal}`, payload);
 
       // Optimistic update
@@ -444,15 +399,13 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
       await fetchTasks();
       setShowEditModal(null);
-      setEditTaskForm({});
-      setAttachment(null);
 
       // Notification
       const oldTask = tasks.find(t => t.id === showEditModal);
-      if (oldTask && oldTask.assignedTo !== selectedEmployeeId) {
-        addNotification('Task Transferred', `Task ${showEditModal} has been transferred.`, 'TASK', selectedEmployeeId);
+      if (oldTask && oldTask.assignedTo !== payload.assignedTo) {
+        addNotification('Task Transferred', `Task ${showEditModal} has been transferred.`, 'TASK', payload.assignedTo);
       } else {
-        addNotification('Task Updated', `Task ${showEditModal} has been updated.`, 'TASK', selectedEmployeeId);
+        addNotification('Task Updated', `Task ${showEditModal} has been updated.`, 'TASK', payload.assignedTo);
       }
     } catch (err: any) {
       console.error('Update task failed', err);
@@ -465,17 +418,12 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
   const initiateAdminAction = (taskId: string, type: 'HOLD' | 'TERMINATE' | 'DELETE') => {
     setActionPrompt({ taskId, type });
-    setActionReason('');
   };
 
-  const confirmAdminAction = async () => {
+  const confirmAdminAction = async (actionReason: string) => {
     if (!actionPrompt) return;
     
     const { taskId, type } = actionPrompt;
-    if (!actionReason.trim()) {
-      setError(`Please provide a reason before performing the ${type.toLowerCase()} action.`);
-      return;
-    }
     setIsLoading(true);
     setError(null);
     try {
@@ -526,7 +474,6 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
     } finally {
       setIsLoading(false);
       setActionPrompt(null);
-      setActionReason('');
     }
   };
 
@@ -551,7 +498,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
   const handleExtensionResponse = async (taskId: string, approved: boolean) => {
     setIsLoading(true);
     setError(null);
-    console.log('handleExtensionResponse start', { taskId, approved });
+
     try {
       // Fetch existing task to update its history
       const res = await safeGet('/tasks');
@@ -572,7 +519,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
       if (approved && t.extensionRequest) {
         // Approving: move due date forward and set back to pending
         await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: '' });
-        console.log('handleExtensionResponse: approved put completed', { taskId, newDate: t.extensionRequest.requestedDate });
+
 
         // Optimistic UI update
         setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: '' } : task));
@@ -583,7 +530,7 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
         const updatedReq = { ...t.extensionRequest, status: 'REJECTED', adminResponse: rejectionNote };
 
         await api.put(`/tasks/${taskId}`, { status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote });
-        console.log('handleExtensionResponse: rejected put completed', { taskId, note: rejectionNote });
+
 
         // Optimistic UI update
         setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote } : task));
@@ -803,6 +750,43 @@ export const TaskManager: React.FC<TaskManagerProps> = ({ tasks, setTasks, curre
 
 const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } = counts;
 
+  // Memoize sorted tasks list (newest first)
+  const sortedTasks = React.useMemo(() => {
+    return [...filteredTasks].sort((a, b) => {
+      const bTime = b.createdDate ? new Date(b.createdDate).getTime() : 0;
+      const aTime = a.createdDate ? new Date(a.createdDate).getTime() : 0;
+      return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+    });
+  }, [filteredTasks]);
+
+  // Slice sorted tasks based on pagination
+  const paginatedTasks = React.useMemo(() => {
+    const startIndex = (currentPage - 1) * tasksPerPage;
+    return sortedTasks.slice(startIndex, startIndex + tasksPerPage);
+  }, [sortedTasks, currentPage, tasksPerPage]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredTasks.length / tasksPerPage));
+
+  // Helper for generating paginated page numbers with truncation
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    const maxVisible = 5;
+    if (totalPages <= maxVisible) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (currentPage > 3) pages.push('...');
+      const start = Math.max(2, currentPage - 1);
+      const end = Math.min(totalPages - 1, currentPage + 1);
+      for (let i = start; i <= end; i++) {
+        pages.push(i);
+      }
+      if (currentPage < totalPages - 2) pages.push('...');
+      pages.push(totalPages);
+    }
+    return pages;
+  };
+
   const getPriorityColor = (p: string) => {
     switch (p) {
       case 'HIGH': return 'bg-red-100 text-red-700 border-red-200';
@@ -970,7 +954,11 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
           {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS', 'TERMINATE', 'REJECT'].map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab as any)}
+              onClick={() => {
+                startTabTransition(() => {
+                  setActiveTab(tab as any);
+                });
+              }}
               className={`px-3 md:px-5 py-1.5 md:py-2.5 rounded-lg md:rounded-xl text-xs md:text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab
                   ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
                   : 'text-slate-500 hover:bg-white hover:text-indigo-600'
@@ -989,8 +977,8 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
             <input
               type="text"
               placeholder="Search ID, title, name..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={searchTermInput}
+              onChange={(e) => setSearchTermInput(e.target.value)}
               className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm"
             />
           </div>
@@ -1001,7 +989,13 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
               <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
               <select
                 value={selectedMemberId}
-                onChange={e => { setSelectedMemberId(e.target.value); setActiveTab('ALL'); }}
+                onChange={e => {
+                  const val = e.target.value;
+                  startTabTransition(() => {
+                    setSelectedMemberId(val);
+                    setActiveTab('ALL');
+                  });
+                }}
                 className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm font-semibold text-slate-700 appearance-none"
               >
                 <option value="ALL">All Members ({relevantTasks.length})</option>
@@ -1088,12 +1082,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
             <p className="font-medium">No tasks found matching your criteria.</p>
           </div>
         ) : (
-          filteredTasks
-            .sort((a, b) => {
-              const bTime = b.createdDate ? new Date(b.createdDate).getTime() : 0;
-              const aTime = a.createdDate ? new Date(a.createdDate).getTime() : 0;
-              return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
-            }) // Sort by Newest First
+          paginatedTasks
             .map(task => {
               const displayStatus = getDisplayStatus(task);
               const isTaskOverdue = displayStatus === 'OVERDUE';
@@ -1301,429 +1290,868 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
         )}
       </div>
 
-      {/* --- MODALS --- */}
-
-      {/* 1. Create Task Modal */}
-      {showAssignModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-extrabold text-slate-800">Assign New Task</h3>
-              <button onClick={() => setShowAssignModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+      {/* Premium Pagination Controls */}
+      {filteredTasks.length > 0 && (
+        <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mt-6 bg-white/60 p-4 rounded-2xl border border-slate-100 backdrop-blur-sm shadow-sm animate-fade-in-up">
+          <div className="flex items-center gap-3 text-xs md:text-sm font-semibold text-slate-500">
+            <span>
+              Showing <span className="text-slate-800 font-extrabold">{Math.min(filteredTasks.length, (currentPage - 1) * tasksPerPage + 1)}</span> to{' '}
+              <span className="text-slate-800 font-extrabold">
+                {Math.min(filteredTasks.length, currentPage * tasksPerPage)}
+              </span>{' '}
+              of <span className="text-slate-800 font-extrabold">{filteredTasks.length}</span> tasks
+            </span>
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+            <div className="flex items-center gap-1.5">
+              <span>Show</span>
+              <select
+                value={tasksPerPage}
+                onChange={(e) => {
+                  setTasksPerPage(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-700 text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all cursor-pointer"
+              >
+                {[10, 20, 50, 100].map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
             </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
-              {/* Inline error display for validation/server errors */}
-              {error && (
-                <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
-                  <strong className="font-bold">Error: </strong>
-                  <span>{error}</span>
-                </div>
-              )}
+          </div>
 
-              <div className="relative">
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={newTask.title || ''}
-                    onChange={e => { setNewTask({ ...newTask, title: e.target.value }); setError(null); }}
-                    placeholder="e.g. Inspect HVAC Unit B"
-                  />
-                  <AITextEnhancer
-                    text={newTask.title || ''}
-                    onUpdate={(text) => { setNewTask({ ...newTask, title: text }); setError(null); }}
-                    context="concise"
-                    mini={true}
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To</label>
-                  <select
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    value={newAssignedUserId}
-                    onChange={e => { setNewAssignedUserId(e.target.value || ''); setError(null); }}
+          <div className="flex items-center gap-1">
+            {/* Previous Page */}
+            <button
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+              disabled={currentPage === 1}
+              className={`p-2 rounded-xl border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer ${
+                currentPage === 1 ? 'cursor-not-allowed' : 'active:scale-95'
+              }`}
+              title="Previous Page"
+            >
+              <ChevronLeft size={16} />
+            </button>
+
+            {/* Page Numbers */}
+            {getPageNumbers().map((page, index) => {
+              if (page === '...') {
+                return (
+                  <span
+                    key={`trunc-${index}`}
+                    className="w-9 h-9 flex items-center justify-center text-slate-400 font-bold select-none"
                   >
-                    <option value="">Select Team Member</option>
-                    {employees.filter(emp => !(emp as any).is_archived).map(emp => (
-                      <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
-                  <select
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    value={newTask.priority || 'MEDIUM'}
-                    onChange={e => setNewTask({ ...newTask, priority: e.target.value as any })}
-                  >
-                    <option value="LOW">Low</option>
-                    <option value="MEDIUM">Medium</option>
-                    <option value="HIGH">High</option>
-                  </select>
-                </div>
-              </div>
+                    ...
+                  </span>
+                );
+              }
+              const isCurrent = page === currentPage;
+              return (
+                <button
+                  key={`page-${page}`}
+                  onClick={() => setCurrentPage(page as number)}
+                  className={`w-9 h-9 rounded-xl text-xs font-black transition-all cursor-pointer shadow-sm hover:scale-105 active:scale-95 ${
+                    isCurrent
+                      ? 'bg-indigo-600 text-white shadow-indigo-100 shadow-lg'
+                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-indigo-600'
+                  }`}
+                >
+                  {page}
+                </button>
+              );
+            })}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assigned Date</label>
-                  <input
-                    type="date"
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={newTask.createdDate || format(new Date(), 'yyyy-MM-dd')}
-                    onChange={e => setNewTask({ ...newTask, createdDate: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
-                  <input
-                    type="date"
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={newTask.dueDate || ''}
-                    onChange={e => setNewTask({ ...newTask, dueDate: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
-                </div>
-                <textarea
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
-                  value={newTask.description || ''}
-                  onChange={e => setNewTask({ ...newTask, description: e.target.value })}
-                  placeholder="Detailed instructions..."
-                />
-                <AITextEnhancer
-                  text={newTask.description || ''}
-                  onUpdate={(text) => setNewTask({ ...newTask, description: text })}
-                />
-              </div>
-
-              {/* External Link Input */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
-                <div className="relative">
-                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input
-                    type="url"
-                    className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={newTask.externalLink || ''}
-                    onChange={e => setNewTask({ ...newTask, externalLink: e.target.value })}
-                    placeholder="https://docs.google.com/spreadsheets/..."
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
-                <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
-                  <input type="file" className="hidden" onChange={handleFileChange} />
-                  {attachment ? (
-                    <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
-                      <FileText size={20} />
-                      File Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                      <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
-                    </div>
-                  ) : (
-                    <div className="text-slate-400 text-sm">
-                      <Upload size={20} className="mx-auto mb-2" />
-                      Click to upload file (PDF, JPG, PNG)
-                    </div>
-                  )}
-                </label>
-              </div>
-            </div>
-            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-              <button onClick={() => setShowAssignModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button
-                type="button"
-                onClick={createTask}
-                className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
-                {isLoading ? 'Assigning...' : 'Assign Task'}
-              </button>
-            </div>
+            {/* Next Page */}
+            <button
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={currentPage === totalPages}
+              className={`p-2 rounded-xl border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer ${
+                currentPage === totalPages ? 'cursor-not-allowed' : 'active:scale-95'
+              }`}
+              title="Next Page"
+            >
+              <ChevronRight size={16} />
+            </button>
           </div>
         </div>
       )}
 
+      {/* --- MODALS --- */}
+
+      {/* 1. Create Task Modal */}
+      <AssignTaskModal
+        isOpen={showAssignModal}
+        onClose={() => setShowAssignModal(false)}
+        employees={employees}
+        usersList={usersList}
+        currentUser={currentUser}
+        onSubmit={createTask}
+        isLoading={isLoading}
+        serverError={error}
+        setServerError={setError}
+      />
+
       {/* 2. Complete Task Modal */}
       {showCompleteModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-extrabold text-slate-800">Submit Completion Report</h3>
-              <button onClick={() => setShowCompleteModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
-            </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
-              <div className="bg-indigo-50 p-4 rounded-xl text-indigo-800 text-sm font-medium mb-4">
-                Please describe the steps taken to complete this task and attach any necessary proof (photos/documents).
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Process Description (How to?)</label>
-                <textarea
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
-                  value={processNote}
-                  onChange={e => setProcessNote(e.target.value)}
-                  placeholder="I have completed the task by..."
-                />
-                <AITextEnhancer
-                  text={processNote}
-                  onUpdate={setProcessNote}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proof Attachment</label>
-                <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
-                  <input type="file" className="hidden" onChange={handleFileChange} />
-                  {attachment ? (
-                    <div className="flex items-center justify-center gap-2 text-green-600 font-bold">
-                      <CheckCircle2 size={20} />
-                      Proof Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                      <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
-                    </div>
-                  ) : (
-                    <div className="text-slate-400 text-sm">
-                      <Upload size={20} className="mx-auto mb-2" />
-                      Upload Completion Proof (JPG, PDF)
-                    </div>
-                  )}
-                </label>
-              </div>
-            </div>
-            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-              <button onClick={() => setShowCompleteModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button onClick={() => handleCompleteTask(showCompleteModal)} className="px-5 py-2.5 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-600/20">Mark as Completed</button>
-            </div>
-          </div>
-        </div>
+        <CompleteTaskModal
+          isOpen={!!showCompleteModal}
+          onClose={() => setShowCompleteModal(null)}
+          onSubmit={(processNote, attachment) => handleCompleteTask(showCompleteModal, processNote, attachment)}
+          isLoading={isLoading}
+        />
       )}
 
       {/* 3. Objection Modal */}
       {showObjectionModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-extrabold text-red-800">Raise Objection / Request Extension</h3>
-              <button onClick={() => setShowObjectionModal(null)} className="p-2 hover:bg-red-100 rounded-full text-red-500"><X size={20} /></button>
-            </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
-              <div className="flex items-start gap-3 bg-red-50 p-4 rounded-xl text-red-800 text-sm font-medium">
-                <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
-                <p>Use this form if the task cannot be completed by the deadline or if there are blockers. This will alert the Assignee.</p>
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proposed New Deadline</label>
-                <input
-                  type="date"
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-red-500 outline-none"
-                  value={extensionDate || ''}
-                  onChange={e => setExtensionDate(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Reason / Note</label>
-                <textarea
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-red-500 outline-none h-32 resize-none"
-                  value={extensionReason}
-                  onChange={e => setExtensionReason(e.target.value)}
-                  placeholder="I cannot complete this because..."
-                />
-                <AITextEnhancer
-                  text={extensionReason}
-                  onUpdate={setExtensionReason}
-                />
-              </div>
-            </div>
-            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-              <button onClick={() => setShowObjectionModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button onClick={() => handleRaiseObjection(showObjectionModal)} className="px-5 py-2.5 bg-red-600 text-white rounded-xl font-bold shadow-lg shadow-red-600/20">Submit Request</button>
-            </div>
-          </div>
-        </div>
+        <ObjectionModal
+          isOpen={!!showObjectionModal}
+          onClose={() => setShowObjectionModal(null)}
+          onSubmit={(extensionDate, extensionReason) => handleRaiseObjection(showObjectionModal, extensionDate, extensionReason)}
+          isLoading={isLoading}
+        />
       )}
 
       {/* 4. Admin Action Reason Modal */}
       {actionPrompt && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
-            <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-              <h3 className="text-xl font-extrabold text-slate-800 capitalize">{actionPrompt.type === 'DELETE' ? 'Delete Task' : `${actionPrompt.type.toLowerCase()} Task`}</h3>
-              <button onClick={() => setActionPrompt(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-sm text-slate-600 font-medium">
-                {actionPrompt.type === 'DELETE'
-                  ? "Are you sure you want to delete this task? Please provide a reason for the deletion record."
-                  : `Please specify the reason for ${actionPrompt.type === 'HOLD' ? 'putting this task on hold' : 'terminating this task'}.`
-                }
-              </p>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Reason / Note <span className="text-red-500">*</span></label>
-                <textarea
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
-                  value={actionReason}
-                  onChange={e => setActionReason(e.target.value)}
-                  placeholder="Enter reason here..."
-                  autoFocus
-                />
-                <AITextEnhancer
-                  text={actionReason}
-                  onUpdate={setActionReason}
-                />
-              </div>
-            </div>
-            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100">
-              <button onClick={() => setActionPrompt(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button
-                onClick={confirmAdminAction}
-                className={`px-5 py-2.5 text-white rounded-xl font-bold shadow-lg ${actionPrompt.type === 'DELETE' || actionPrompt.type === 'TERMINATE' ? 'bg-red-600 shadow-red-600/20' : 'bg-yellow-500 shadow-yellow-500/20'
-                  }`}
-              >
-                Confirm {actionPrompt.type === 'DELETE' ? 'Delete' : (actionPrompt.type === 'HOLD' ? 'Hold' : 'Terminate')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ActionPromptModal
+          isOpen={!!actionPrompt}
+          onClose={() => setActionPrompt(null)}
+          type={actionPrompt.type}
+          onSubmit={confirmAdminAction}
+          isLoading={isLoading}
+        />
       )}
 
       {/* 5. Edit Task Modal */}
-      {showEditModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-extrabold text-slate-800">Edit Task</h3>
-              <button onClick={() => setShowEditModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
-            </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
-              {error && (
-                <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
-                  <strong className="font-bold">Error: </strong>
-                  <span>{error}</span>
-                </div>
-              )}
-
-              <div className="relative">
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={editTaskForm.title || ''}
-                    onChange={e => { setEditTaskForm({ ...editTaskForm, title: e.target.value }); setError(null); }}
-                  />
-                  <AITextEnhancer
-                    text={editTaskForm.title || ''}
-                    onUpdate={(text) => { setEditTaskForm({ ...editTaskForm, title: text }); setError(null); }}
-                    context="concise"
-                    mini={true}
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To / Transfer</label>
-                  <select
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    value={editTaskForm.assignedTo || ''}
-                    onChange={e => { setEditTaskForm({ ...editTaskForm, assignedTo: e.target.value }); setError(null); }}
-                  >
-                    <option value="">Select Team Member</option>
-                    {employees.filter(emp => !(emp as any).is_archived).map(emp => (
-                      <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
-                  <select
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    value={editTaskForm.priority || 'MEDIUM'}
-                    onChange={e => setEditTaskForm({ ...editTaskForm, priority: e.target.value as any })}
-                  >
-                    <option value="LOW">Low</option>
-                    <option value="MEDIUM">Medium</option>
-                    <option value="HIGH">High</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
-                  <input
-                    type="date"
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={editTaskForm.dueDate || ''}
-                    onChange={e => setEditTaskForm({ ...editTaskForm, dueDate: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
-                </div>
-                <textarea
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
-                  value={editTaskForm.description || ''}
-                  onChange={e => setEditTaskForm({ ...editTaskForm, description: e.target.value })}
-                />
-                <AITextEnhancer
-                  text={editTaskForm.description || ''}
-                  onUpdate={(text) => setEditTaskForm({ ...editTaskForm, description: text })}
-                />
-              </div>
-
-              {/* External Link Input */}
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
-                <div className="relative">
-                  <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                  <input
-                    type="url"
-                    className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    value={editTaskForm.externalLink || ''}
-                    onChange={e => setEditTaskForm({ ...editTaskForm, externalLink: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
-                <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
-                  <input type="file" className="hidden" onChange={handleFileChange} />
-                  {attachment ? (
-                    <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
-                      <FileText size={20} />
-                      File Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                      <button onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
-                    </div>
-                  ) : (
-                    <div className="text-slate-400 text-sm">
-                      <Upload size={20} className="mx-auto mb-2" />
-                      Click to upload new file (PDF, JPG, PNG)
-                    </div>
-                  )}
-                </label>
-              </div>
-            </div>
-            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-              <button onClick={() => setShowEditModal(null)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button
-                type="button"
-                onClick={handleUpdateTask}
-                className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
-                {isLoading ? 'Updating...' : 'Save Changes'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {showEditModal && (() => {
+        const taskToEdit = tasks.find(t => t.id === showEditModal);
+        return taskToEdit ? (
+          <EditTaskModal
+            isOpen={!!showEditModal}
+            onClose={() => setShowEditModal(null)}
+            task={taskToEdit}
+            employees={employees}
+            usersList={usersList}
+            onSubmit={handleUpdateTask}
+            isLoading={isLoading}
+            serverError={error}
+            setServerError={setError}
+          />
+        ) : null;
+      })()}
 
     </div>
   );
 };
+
+export const TaskManager = React.memo(TaskManagerComponent);
+
+// ==========================================
+// OPTIMIZED MEMOIZED MODAL SUB-COMPONENTS
+// ==========================================
+
+interface AssignTaskModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  employees: Employee[];
+  usersList: User[];
+  currentUser: User;
+  onSubmit: (payload: {
+    title: string;
+    description: string;
+    assignedTo: string;
+    assigned_to: number | null;
+    dueDate: string;
+    priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    attachment: string | null;
+    externalLink: string | null;
+    createdDate: string;
+  }) => Promise<void>;
+  isLoading: boolean;
+  serverError: string | null;
+  setServerError: (err: string | null) => void;
+}
+
+const AssignTaskModal: React.FC<AssignTaskModalProps> = React.memo(({
+  isOpen,
+  onClose,
+  employees,
+  usersList,
+  currentUser,
+  onSubmit,
+  isLoading,
+  serverError,
+  setServerError
+}) => {
+  const [title, setTitle] = useState('');
+  const [assignedTo, setAssignedTo] = useState('');
+  const [priority, setPriority] = useState<'LOW' | 'MEDIUM' | 'HIGH'>('MEDIUM');
+  const [createdDate, setCreatedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [dueDate, setDueDate] = useState('');
+  const [description, setDescription] = useState('');
+  const [externalLink, setExternalLink] = useState('');
+  const [attachment, setAttachment] = useState<string | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      try {
+        const base64 = await convertFileToBase64(e.target.files[0]);
+        setAttachment(base64);
+      } catch (err) {
+        setServerError('Failed to upload task attachment. Please try again.');
+      }
+    }
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title || !assignedTo || !dueDate) {
+      setServerError('Please provide title, assignee and due date');
+      return;
+    }
+    setServerError(null);
+
+    const matchedUser = usersList.find(u => String(u.employeeId) === String(assignedTo));
+    const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
+
+    try {
+      await onSubmit({
+        title,
+        description,
+        assignedTo,
+        assigned_to: assigned_to_numeric,
+        dueDate,
+        priority,
+        attachment,
+        externalLink,
+        createdDate
+      });
+      // Clear form on success
+      setTitle('');
+      setAssignedTo('');
+      setPriority('MEDIUM');
+      setCreatedDate(format(new Date(), 'yyyy-MM-dd'));
+      setDueDate('');
+      setDescription('');
+      setExternalLink('');
+      setAttachment(null);
+    } catch (e) {
+      // Keep state so user can retry
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-extrabold text-slate-800">Assign New Task</h3>
+          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4 overflow-y-auto">
+          {serverError && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+              <strong className="font-bold">Error: </strong>
+              <span>{serverError}</span>
+            </div>
+          )}
+
+          <div className="relative">
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
+            <div className="relative">
+              <input
+                type="text"
+                className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={title}
+                onChange={e => { setTitle(e.target.value); setServerError(null); }}
+                placeholder="e.g. Inspect HVAC Unit B"
+              />
+
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To</label>
+              <select
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                value={assignedTo}
+                onChange={e => { setAssignedTo(e.target.value || ''); setServerError(null); }}
+              >
+                <option value="">Select Team Member</option>
+                {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
+              <select
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                value={priority}
+                onChange={e => setPriority(e.target.value as any)}
+              >
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assigned Date</label>
+              <input
+                type="date"
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={createdDate}
+                onChange={e => setCreatedDate(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
+              <input
+                type="date"
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={dueDate}
+                onChange={e => setDueDate(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
+            </div>
+            <textarea
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Detailed instructions..."
+            />
+
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
+            <div className="relative">
+              <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input
+                type="url"
+                className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={externalLink}
+                onChange={e => setExternalLink(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/..."
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
+            <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
+              <input type="file" className="hidden" onChange={handleFileChange} />
+              {attachment ? (
+                <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
+                  <FileText size={20} />
+                  File Attached ({(attachment.length / 1024).toFixed(0)} KB)
+                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                </div>
+              ) : (
+                <div className="text-slate-400 text-sm">
+                  <Upload size={20} className="mx-auto mb-2" />
+                  Click to upload file (PDF, JPG, PNG)
+                </div>
+              )}
+            </label>
+          </div>
+        </div>
+        <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button
+            type="submit"
+            disabled={isLoading}
+            className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
+            {isLoading ? 'Assigning...' : 'Assign Task'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+});
+
+AssignTaskModal.displayName = 'AssignTaskModal';
+
+interface EditTaskModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  task: Task;
+  employees: Employee[];
+  usersList: User[];
+  onSubmit: (payload: {
+    title: string;
+    description: string;
+    assignedTo: string;
+    assigned_to: number | null;
+    dueDate: string;
+    priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    attachment: string | null;
+    externalLink: string | null;
+  }) => Promise<void>;
+  isLoading: boolean;
+  serverError: string | null;
+  setServerError: (err: string | null) => void;
+}
+
+const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
+  isOpen,
+  onClose,
+  task,
+  employees,
+  usersList,
+  onSubmit,
+  isLoading,
+  serverError,
+  setServerError
+}) => {
+  const [title, setTitle] = useState(task.title || '');
+  const [assignedTo, setAssignedTo] = useState(task.assignedTo || (task as any).assignedToEmployeeId || '');
+  const [priority, setPriority] = useState<'LOW' | 'MEDIUM' | 'HIGH'>(task.priority || 'MEDIUM');
+  const [dueDate, setDueDate] = useState(task.dueDate || '');
+  const [description, setDescription] = useState(task.description || '');
+  const [externalLink, setExternalLink] = useState(task.externalLink || '');
+  const [attachment, setAttachment] = useState<string | null>(task.attachment || null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      try {
+        const base64 = await convertFileToBase64(e.target.files[0]);
+        setAttachment(base64);
+      } catch (err) {
+        setServerError('Failed to upload task attachment. Please try again.');
+      }
+    }
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title || !assignedTo || !dueDate) {
+      setServerError('Please provide title, assignee and due date');
+      return;
+    }
+    setServerError(null);
+
+    const matchedUser = usersList.find(u => String(u.employeeId) === String(assignedTo));
+    const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
+
+    try {
+      await onSubmit({
+        title,
+        description,
+        assignedTo,
+        assigned_to: assigned_to_numeric,
+        dueDate,
+        priority,
+        attachment,
+        externalLink
+      });
+    } catch (e) {
+      // Error is handled in parent
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-extrabold text-slate-800">Edit Task</h3>
+          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4 overflow-y-auto">
+          {serverError && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+              <strong className="font-bold">Error: </strong>
+              <span>{serverError}</span>
+            </div>
+          )}
+
+          <div className="relative">
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Task Title</label>
+            <div className="relative">
+              <input
+                type="text"
+                className="w-full border border-slate-200 rounded-xl p-3 pr-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={title}
+                onChange={e => { setTitle(e.target.value); setServerError(null); }}
+              />
+
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To / Transfer</label>
+              <select
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                value={assignedTo}
+                onChange={e => { setAssignedTo(e.target.value); setServerError(null); }}
+              >
+                <option value="">Select Team Member</option>
+                {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
+              <select
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                value={priority}
+                onChange={e => setPriority(e.target.value as any)}
+              >
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
+              <input
+                type="date"
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={dueDate}
+                onChange={e => setDueDate(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase">Description</label>
+            </div>
+            <textarea
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-24 resize-none"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+            />
+
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">External Link / Sheet URL (Optional)</label>
+            <div className="relative">
+              <Link className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input
+                type="url"
+                className="w-full border border-slate-200 rounded-xl p-3 pl-10 focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={externalLink}
+                onChange={e => setExternalLink(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Attachment (Optional)</label>
+            <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
+              <input type="file" className="hidden" onChange={handleFileChange} />
+              {attachment ? (
+                <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
+                  <FileText size={20} />
+                  File Attached ({(attachment.length / 1024).toFixed(0)} KB)
+                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                </div>
+              ) : (
+                <div className="text-slate-400 text-sm">
+                  <Upload size={20} className="mx-auto mb-2" />
+                  Click to upload new file (PDF, JPG, PNG)
+                </div>
+              )}
+            </label>
+          </div>
+        </div>
+        <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button
+            type="submit"
+            disabled={isLoading}
+            className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
+            {isLoading ? 'Updating...' : 'Save Changes'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+});
+
+EditTaskModal.displayName = 'EditTaskModal';
+
+interface CompleteTaskModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (processNote: string, attachment: string | null) => Promise<void>;
+  isLoading: boolean;
+}
+
+const CompleteTaskModal: React.FC<CompleteTaskModalProps> = React.memo(({
+  isOpen,
+  onClose,
+  onSubmit,
+  isLoading
+}) => {
+  const [processNote, setProcessNote] = useState('');
+  const [attachment, setAttachment] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      try {
+        const base64 = await convertFileToBase64(e.target.files[0]);
+        setAttachment(base64);
+      } catch (err) {
+        setError('Failed to upload task attachment. Please try again.');
+      }
+    }
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!processNote.trim()) {
+      setError('Please provide a process description of how you completed this task.');
+      return;
+    }
+    setError(null);
+    await onSubmit(processNote, attachment);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-extrabold text-slate-800">Submit Completion Report</h3>
+          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4 overflow-y-auto">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+              <strong className="font-bold">Error: </strong>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div className="bg-indigo-50 p-4 rounded-xl text-indigo-800 text-sm font-medium mb-4">
+            Please describe the steps taken to complete this task and attach any necessary proof (photos/documents).
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Process Description (How to?)</label>
+            <textarea
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
+              value={processNote}
+              onChange={e => { setProcessNote(e.target.value); setError(null); }}
+              placeholder="I have completed the task by..."
+            />
+
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proof Attachment</label>
+            <label className="border-2 border-dashed border-slate-200 rounded-xl p-4 text-center hover:bg-slate-50 cursor-pointer transition-colors block">
+              <input type="file" className="hidden" onChange={handleFileChange} />
+              {attachment ? (
+                <div className="flex items-center justify-center gap-2 text-green-600 font-bold">
+                  <CheckCircle2 size={20} />
+                  Proof Attached ({(attachment.length / 1024).toFixed(0)} KB)
+                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                </div>
+              ) : (
+                <div className="text-slate-400 text-sm">
+                  <Upload size={20} className="mx-auto mb-2" />
+                  Upload Completion Proof (JPG, PDF)
+                </div>
+              )}
+            </label>
+          </div>
+        </div>
+        <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button type="submit" disabled={isLoading} className="px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg shadow-green-600/20 disabled:opacity-60">
+            {isLoading ? 'Submitting...' : 'Mark as Completed'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+});
+
+CompleteTaskModal.displayName = 'CompleteTaskModal';
+
+interface ObjectionModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (extensionDate: string, extensionReason: string) => Promise<void>;
+  isLoading: boolean;
+}
+
+const ObjectionModal: React.FC<ObjectionModalProps> = React.memo(({
+  isOpen,
+  onClose,
+  onSubmit,
+  isLoading
+}) => {
+  const [extensionDate, setExtensionDate] = useState('');
+  const [extensionReason, setExtensionReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!extensionDate.trim()) {
+      setError('Please provide a proposed new deadline date.');
+      return;
+    }
+    if (!extensionReason.trim()) {
+      setError('Please provide a reason for the extension request.');
+      return;
+    }
+    setError(null);
+    await onSubmit(extensionDate, extensionReason);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-extrabold text-red-800">Raise Objection / Request Extension</h3>
+          <button type="button" onClick={onClose} className="p-2 hover:bg-red-100 rounded-full text-red-500"><X size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4 overflow-y-auto">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+              <strong className="font-bold">Error: </strong>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div className="flex items-start gap-3 bg-red-50 p-4 rounded-xl text-red-800 text-sm font-medium">
+            <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
+            <p>Use this form if the task cannot be completed by the deadline or if there are blockers. This will alert the Assignee.</p>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Proposed New Deadline</label>
+            <input
+              type="date"
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-red-500 outline-none"
+              value={extensionDate}
+              onChange={e => { setExtensionDate(e.target.value); setError(null); }}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Reason / Note</label>
+            <textarea
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-red-500 outline-none h-32 resize-none"
+              value={extensionReason}
+              onChange={e => { setExtensionReason(e.target.value); setError(null); }}
+              placeholder="I cannot complete this because..."
+            />
+
+          </div>
+        </div>
+        <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button type="submit" disabled={isLoading} className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg shadow-red-600/20 disabled:opacity-60">
+            {isLoading ? 'Submitting...' : 'Submit Request'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+});
+
+ObjectionModal.displayName = 'ObjectionModal';
+
+interface ActionPromptModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  type: 'HOLD' | 'TERMINATE' | 'DELETE';
+  onSubmit: (actionReason: string) => Promise<void>;
+  isLoading: boolean;
+}
+
+const ActionPromptModal: React.FC<ActionPromptModalProps> = React.memo(({
+  isOpen,
+  onClose,
+  type,
+  onSubmit,
+  isLoading
+}) => {
+  const [actionReason, setActionReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!actionReason.trim()) {
+      setError(`Please provide a reason before performing the ${type.toLowerCase()} action.`);
+      return;
+    }
+    setError(null);
+    await onSubmit(actionReason);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+        <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+          <h3 className="text-xl font-extrabold text-slate-800 capitalize">{type === 'DELETE' ? 'Delete Task' : `${type.toLowerCase()} Task`}</h3>
+          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-xl text-sm">
+              <strong className="font-bold">Error: </strong>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <p className="text-sm text-slate-600 font-medium">
+            {type === 'DELETE'
+              ? "Are you sure you want to delete this task? Please provide a reason for the deletion record."
+              : `Please specify the reason for ${type === 'HOLD' ? 'putting this task on hold' : 'terminating this task'}.`
+            }
+          </p>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Reason / Note <span className="text-red-500">*</span></label>
+            <textarea
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
+              value={actionReason}
+              onChange={e => { setActionReason(e.target.value); setError(null); }}
+              placeholder="Enter reason here..."
+              autoFocus
+            />
+
+          </div>
+        </div>
+        <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100">
+          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button
+            type="submit"
+            disabled={isLoading}
+            className={`px-5 py-2.5 text-white rounded-xl font-bold shadow-lg disabled:opacity-60 ${type === 'DELETE' || type === 'TERMINATE' ? 'bg-red-600 hover:bg-red-700 shadow-red-600/20' : 'bg-yellow-500 hover:bg-yellow-600 shadow-yellow-500/20'
+              }`}
+          >
+            {isLoading ? 'Confirming...' : `Confirm ${type === 'DELETE' ? 'Delete' : (type === 'HOLD' ? 'Hold' : 'Terminate')}`}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+});
+
+ActionPromptModal.displayName = 'ActionPromptModal';
+

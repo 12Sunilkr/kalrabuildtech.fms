@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
 import { Employee, User, Role, ViewMode } from '../types';
 import { DEPARTMENT_ROLES } from '../constants';
-import { Users, ShieldCheck, UserPlus, Search, Mail, Phone, LogIn, FileText, Edit2, Archive, X, Lock, Trash2, AlertTriangle } from 'lucide-react';
+import { Users, ShieldCheck, UserPlus, Search, Mail, Phone, LogIn, FileText, Edit2, Archive, X, Lock, Trash2, AlertTriangle, Plus, LayoutGrid, List as ListIcon, Filter, ExternalLink, Shield, CheckSquare, Clock, Briefcase, ArrowLeft } from 'lucide-react';
 
 interface EmployeeMasterProps {
   employees: Employee[];
@@ -28,6 +28,8 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   currentUser
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const rowsPerPage = 20;
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDocsModal, setShowDocsModal] = useState(false);
@@ -50,7 +52,37 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   const [loginTarget, setLoginTarget] = useState<User | null>(null);
   const [loginPass, setLoginPass] = useState('');
 
-  const departments = Object.keys(DEPARTMENT_ROLES);
+  // View States
+  const [activeTab, setActiveTab] = useState('All');
+  const [viewLayout, setViewLayout] = useState<'grid' | 'list'>('grid');
+  const [selectedEmpDetail, setSelectedEmpDetail] = useState<Employee | null>(null);
+
+  const openEmployeeDetail = async (emp: Employee) => {
+    setSelectedEmpDetail(emp);
+    if (emp.documents) return;
+    try {
+      const res = await safeGet(`/employees/${encodeURIComponent(emp.id)}`, { cacheTtlMs: 30000 });
+      const full = extractPayload(res) as Employee | null;
+      if (full) setSelectedEmpDetail({ ...emp, ...full });
+    } catch (e) {
+      console.warn('Could not load full employee profile', e);
+    }
+  };
+
+  // Custom Dept/Role states
+  const [isNewDept, setIsNewDept] = useState(false);
+  const [isNewDesig, setIsNewDesig] = useState(false);
+
+  const allDepartments = Array.from(new Set([
+    ...Object.keys(DEPARTMENT_ROLES),
+    ...employees.map(e => e.department)
+  ])).filter(Boolean).sort();
+
+  const getDesignationsForDept = (dept: string) => {
+    const predefined = DEPARTMENT_ROLES[dept] || [];
+    const existing = employees.filter(e => e.department === dept && e.designation).map(e => e.designation);
+    return Array.from(new Set([...predefined, ...existing])).filter(Boolean).sort();
+  };
 
   // --- Helpers ---
 
@@ -70,11 +102,14 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   };
 
   const handleOpenAddModal = () => {
+    setIsNewDept(false);
+    setIsNewDesig(false);
     setCurrentEmp({
       status: 'Active',
       id: generateNextId(), // Auto-generate ID
-      department: departments[0], // Default dept
-      hideAttendance: false
+      department: allDepartments[0] || '', // Default dept
+      hideAttendance: false,
+      employmentType: 'Full Time' // Default tenure
     });
     setPassword('');
     setRole('EMPLOYEE');
@@ -82,11 +117,19 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   };
 
   const handleDepartmentChange = (dept: string) => {
-    setCurrentEmp(prev => ({
-      ...prev,
-      department: dept,
-      designation: '' // Reset designation when dept changes
-    }));
+    if (dept === '__NEW__') {
+      setIsNewDept(true);
+      setCurrentEmp(prev => ({ ...prev, department: '', designation: '' }));
+      setIsNewDesig(true);
+    } else {
+      setIsNewDept(false);
+      setIsNewDesig(false);
+      setCurrentEmp(prev => ({
+        ...prev,
+        department: dept,
+        designation: '' // Reset designation when dept changes
+      }));
+    }
   };
 
   const handleAddEmployee = async () => {
@@ -107,8 +150,9 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
         status: currentEmp.status as 'Active' | 'Inactive',
         designation: finalDesignation,
         email: currentEmp.email,
-        phone: currentEmp.phone
-        , hideAttendance: !!currentEmp.hideAttendance
+        phone: currentEmp.phone,
+        hideAttendance: !!currentEmp.hideAttendance,
+        employmentType: currentEmp.employmentType || 'Full Time'
       };
 
       setEmployees([...employees, newEmployee]);
@@ -159,17 +203,24 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     }
   };
 
-  const openEditModal = (emp: Employee) => {
-    setCurrentEmp(emp);
+  const openEditModal = async (emp: Employee) => {
+    setIsNewDept(false);
+    setIsNewDesig(false);
+    let target = emp;
+    if (!emp.documents) {
+      try {
+        const res = await safeGet(`/employees/${encodeURIComponent(emp.id)}`, { cacheTtlMs: 30000 });
+        const full = extractPayload(res) as Employee | null;
+        if (full) target = { ...emp, ...full };
+      } catch (e) {
+        console.warn('Could not load full employee for edit', e);
+      }
+    }
+    setCurrentEmp(target);
     setPassword('');
 
-    // Find linked user to pre-fill role
     const linkedUser = users.find(u => u.employeeId === emp.id);
-    if (linkedUser) {
-      setRole(linkedUser.role);
-    } else {
-      setRole('EMPLOYEE');
-    }
+    setRole(linkedUser ? linkedUser.role : 'EMPLOYEE');
 
     setShowEditModal(true);
   };
@@ -334,201 +385,445 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     }
   };
 
-  const filteredEmployees = employees.filter(e =>
-    e.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    e.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    e.department.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredEmployees = employees.filter(e => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = e.name.toLowerCase().includes(term) ||
+      e.id.toLowerCase().includes(term) ||
+      e.department.toLowerCase().includes(term);
+    
+    if (!matchesSearch) return false;
+
+    if (activeTab === 'Active') return e.status === 'Active';
+    if (activeTab === 'Full Time') return e.employmentType === 'Full Time' || e.employmentType === 'Probation';
+    if (activeTab === 'Part Time') return e.employmentType === 'Part Time' || e.employmentType === 'Internship' || e.employmentType === 'Contractual';
+    return true;
+  });
+
+  const totalPages = Math.ceil(filteredEmployees.length / rowsPerPage);
+  const paginatedEmployees = filteredEmployees.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+
+  // Reset page when search changes
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm]);
 
   return (
-    <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 gap-4">
-        <div>
-          <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
-            <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center shadow-lg shadow-slate-900/20 shrink-0">
-              <Users size={20} />
+    <div className="p-4 md:p-8 bg-slate-50 h-full overflow-y-auto custom-scrollbar">
+      
+      {selectedEmpDetail ? (
+        <div className="animate-in fade-in slide-in-from-right-4 duration-300 max-w-5xl mx-auto">
+          {/* Header for detail view */}
+          <div className="flex items-center justify-between mb-6">
+            <button onClick={() => setSelectedEmpDetail(null)} className="px-4 py-2 bg-white border border-slate-200 rounded-xl shadow-sm hover:bg-slate-50 text-slate-700 flex items-center gap-2 font-bold text-sm transition-colors">
+              <ArrowLeft size={18} /> Back to Team
+            </button>
+            <div className="flex gap-2">
+              <button onClick={() => { openEditModal(selectedEmpDetail); }} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-sm font-bold text-sm flex items-center gap-2 transition-colors">
+                <Edit2 size={16} /> Edit Profile
+              </button>
             </div>
-            Team Master
-          </h2>
-          <p className="text-slate-500 mt-2 font-medium md:ml-14">Active Team Records: <span className="font-bold text-slate-800">{employees.length}</span></p>
-        </div>
-        <div className="flex gap-2 w-full md:w-auto">
-          <button
-            onClick={() => setShowAdminModal(true)}
-            className="flex-1 md:flex-none bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-5 py-3 rounded-xl flex items-center justify-center gap-2 font-bold shadow-sm"
-          >
-            <ShieldCheck size={18} /> Admin Access
-          </button>
-          <button
-            onClick={handleOpenAddModal}
-            className="flex-1 md:flex-none bg-slate-900 hover:bg-slate-800 text-white px-5 py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-slate-900/20 transition-all active:scale-95 font-bold"
-          >
-            <UserPlus size={18} />
-            Add Member
-          </button>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-3xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)] border border-slate-100 overflow-hidden mb-8">
-        <div className="p-6 border-b border-slate-100 flex gap-4 bg-white/50">
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-            <input
-              type="text"
-              placeholder="Search by Name, ID, or Dept..."
-              className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
+          </div>
+          
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden mb-8">
+            <div className="h-28 bg-gradient-to-r from-slate-800 to-slate-900 relative">
+              <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] mix-blend-overlay"></div>
+            </div>
+            
+            <div className="px-6 md:px-10 pb-10 relative">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8 relative z-10">
+                <div className="flex flex-col md:flex-row items-center md:items-end gap-6 text-center md:text-left">
+                  <div className="w-32 h-32 bg-white rounded-3xl p-1.5 shadow-lg border border-slate-100 shrink-0 -mt-16">
+                    {selectedEmpDetail.avatar ? (
+                      <img src={selectedEmpDetail.avatar} alt={selectedEmpDetail.name} className="w-full h-full rounded-2xl object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center font-black text-4xl shadow-inner">
+                        {selectedEmpDetail.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                  <div className="mb-2">
+                    <div className="bg-slate-100 border border-slate-200 text-slate-700 px-3 py-1 rounded-lg font-mono text-xs font-bold w-max mx-auto md:mx-0 mb-3 shadow-sm flex items-center gap-2">
+                      <Shield size={12} className="text-slate-400" /> ID: {selectedEmpDetail.id}
+                    </div>
+                    <h2 className="text-3xl font-black text-slate-900 leading-tight">{selectedEmpDetail.name}</h2>
+                    <p className="text-slate-500 font-bold text-lg mt-1">{selectedEmpDetail.designation || 'Team Member'}</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center justify-center gap-3">
+                  <span className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm border ${selectedEmpDetail.status === 'Active' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                    <div className={`w-2 h-2 rounded-full ${selectedEmpDetail.status === 'Active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                    {selectedEmpDetail.status}
+                  </span>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left Column - Contact & Basic Info */}
+                <div className="space-y-6">
+                  <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100">
+                    <h3 className="text-xs font-bold text-slate-400 tracking-wider uppercase mb-5 flex items-center gap-3">
+                      Contact Info <div className="h-px bg-slate-200 flex-1"></div>
+                    </h3>
+                    <div className="space-y-5">
+                      <div className="flex items-start gap-4">
+                        <div className="p-2.5 bg-white rounded-xl shadow-sm text-slate-500 border border-slate-100"><Mail size={18} /></div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">Email Address</p>
+                          <p className="text-sm font-bold text-slate-800 truncate">{selectedEmpDetail.email || <span className="italic text-slate-400 font-normal">Not provided</span>}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-4">
+                        <div className="p-2.5 bg-white rounded-xl shadow-sm text-slate-500 border border-slate-100"><Phone size={18} /></div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">Phone Number</p>
+                          <p className="text-sm font-bold text-slate-800">{selectedEmpDetail.phone || <span className="italic text-slate-400 font-normal">Not provided</span>}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100">
+                    <h3 className="text-xs font-bold text-slate-400 tracking-wider uppercase mb-5 flex items-center gap-3">
+                      Quick Actions <div className="h-px bg-slate-200 flex-1"></div>
+                    </h3>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button onClick={() => { openDocsModal(selectedEmpDetail); }} className="p-4 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-bold hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-all flex flex-col items-center justify-center gap-2.5 shadow-sm group">
+                        <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-blue-100 transition-colors"><FileText size={20}/></div>
+                        Documents
+                      </button>
+                      <button onClick={() => alert('Role & Permissions management is handled via the Admin Access panel.')} className="p-4 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-bold hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-all flex flex-col items-center justify-center gap-2.5 shadow-sm group">
+                        <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-blue-100 transition-colors"><Shield size={20}/></div>
+                        Permissions
+                      </button>
+                      <button onClick={() => { setDeleteTarget(selectedEmpDetail); setShowDeleteModal(true); }} className="p-4 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-bold hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-all flex flex-col items-center justify-center gap-2.5 shadow-sm group col-span-2">
+                        <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-red-100 transition-colors"><Trash2 size={20} className="group-hover:text-red-600"/></div>
+                        Delete Account
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Right Column - Work & Documents Summary */}
+                <div className="lg:col-span-2 space-y-6">
+                  <div className="bg-white rounded-3xl p-6 md:p-8 border border-slate-200 shadow-sm h-full flex flex-col">
+                    <h3 className="text-xs font-bold text-slate-400 tracking-wider uppercase mb-6 flex items-center gap-4">Employment Details <div className="h-px bg-slate-100 flex-1"></div></h3>
+                    <div className="grid grid-cols-2 gap-y-8 gap-x-6">
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Department</p>
+                        <p className="text-sm font-bold text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100 inline-block">{selectedEmpDetail.department}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Tenure Type</p>
+                        <div className="flex items-center gap-2 text-sm font-bold text-purple-700 bg-purple-50 border border-purple-100 px-3 py-1.5 rounded-lg inline-flex">
+                          <div className="w-1.5 h-1.5 rounded-full bg-purple-500"></div>
+                          {selectedEmpDetail.employmentType || 'Full Time'}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Joining Date</p>
+                        <p className="text-base font-bold text-slate-800 flex items-center gap-2">
+                          <Clock size={16} className="text-slate-400" />
+                          {selectedEmpDetail.joiningDate ? new Date(selectedEmpDetail.joiningDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">System Added On</p>
+                        <p className="text-base font-bold text-slate-800 flex items-center gap-2">
+                          <Clock size={16} className="text-slate-400" />
+                          {selectedEmpDetail.createdAt ? new Date(selectedEmpDetail.createdAt).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <h3 className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-10 mb-6 flex items-center gap-4">Documents Overview <div className="h-px bg-slate-100 flex-1"></div></h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-auto">
+                      {['Aadhar Front', 'Aadhar Back', 'PAN Front', 'PAN Back'].map((doc, i) => {
+                        const hasDoc = [
+                          selectedEmpDetail.documents?.aadharFront,
+                          selectedEmpDetail.documents?.aadharBack,
+                          selectedEmpDetail.documents?.panFront,
+                          selectedEmpDetail.documents?.panBack
+                        ][i];
+                        return (
+                          <div key={doc} className={`p-4 rounded-2xl border flex flex-col items-center justify-center gap-3 text-center transition-all ${hasDoc ? 'bg-green-50 border-green-200 text-green-700 shadow-sm' : 'bg-slate-50 border-dashed border-slate-200 text-slate-400'}`}>
+                            {hasDoc ? <CheckSquare size={24} className="text-green-500"/> : <FileText size={24} className="opacity-50"/>}
+                            <div>
+                              <p className="text-[10px] font-bold uppercase">{doc}</p>
+                              <p className={`text-[10px] mt-1 ${hasDoc ? 'font-bold bg-green-100 px-2 py-0.5 rounded-full' : 'italic font-medium'}`}>{hasDoc ? 'Uploaded' : 'Missing'}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[1000px]">
-            <thead className="bg-slate-50/50 border-b border-slate-200">
-              <tr>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">ID</th>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Team Member Details</th>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Contact</th>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Department</th>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Designation</th>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Status</th>
-                <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredEmployees.map((emp) => (
-                <tr key={emp.id} className="hover:bg-slate-50/80 transition-colors group">
-                  <td className="p-5 font-mono text-sm font-bold text-slate-600">{emp.id}</td>
-                  <td className="p-5">
-                    <div className="font-bold text-slate-800">{emp.name}</div>
-                    <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
-                      <Mail size={10} className="text-slate-400" /> {emp.email || 'No Email'}
-                    </div>
-                  </td>
-                  <td className="p-5">
-                    {emp.phone ? (
-                      <div className="flex items-center gap-1 text-slate-600 font-medium">
-                        <Phone size={12} className="text-slate-400" /> {emp.phone}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-400 italic">No Phone</span>
-                    )}
-                  </td>
-                  <td className="p-5">
-                    <span className="bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-xs font-bold border border-blue-100">
-                      {emp.department}
-                    </span>
-                  </td>
-                  <td className="p-5 text-slate-600 text-sm font-medium">{emp.designation || '-'}</td>
-                  <td className="p-5">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold border ${emp.status === 'Active'
-                        ? 'bg-green-50 text-green-700 border-green-100'
-                        : 'bg-red-50 text-red-700 border-red-100'
-                      }`}>
-                      {emp.status}
-                    </span>
-                  </td>
-                  <td className="p-5 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => {
-                          const u = users.find(u => u.employeeId === emp.id);
-                          if (u) {
-                            setLoginTarget(u);
-                            setLoginPass('');
-                          } else {
-                            alert("No user account linked to this member.");
-                          }
-                        }}
-                        className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                        title="Login as User"
-                      >
-                        <LogIn size={16} />
-                      </button>
-                      <button
-                        onClick={() => openDocsModal(emp)}
-                        className="p-2 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                        title="View Documents"
-                      >
-                        <FileText size={16} />
-                      </button>
-                      <button
-                        onClick={() => openEditModal(emp)}
-                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                        title="Edit Profile"
-                      >
-                        <Edit2 size={16} />
-                      </button>
-
-                      {/* Promote / Revoke Admin (admin-only) */}
-                      {currentUser && currentUser.role === 'ADMIN' ? (() => {
-                        const linkedUser = users.find(u => u.employeeId === emp.id);
-                        const isAdmin = !!linkedUser && linkedUser.role === 'ADMIN';
-                        return (
-                          <button
-                            onClick={async () => {
-                              if (!linkedUser || !(linkedUser as any).id) return alert('No user account linked to this member');
-                              const confirmMsg = isAdmin ? 'Revoke admin rights from this user?' : 'Grant admin rights to this user?';
-                              if (!window.confirm(confirmMsg)) return;
-                              try {
-                                const newRole = isAdmin ? 'EMPLOYEE' : 'ADMIN';
-                                await api.put(`/users/${(linkedUser as any).id}`, { role: newRole }, { withCredentials: true });
-                                const ures = await safeGet('/users');
-                                setUsers(ensureArray(extractPayload(ures)));
-                                alert(isAdmin ? 'Admin rights revoked.' : 'Admin rights granted.');
-                              } catch (e) {
-                                console.error('Failed to update user role', e && (e.stack || e.message || e));
-                                alert('Failed to update user role. See console for details.');
-                              }
-                            }}
-                            className={`p-2 ${isAdmin ? 'text-yellow-700 hover:bg-yellow-50' : 'text-slate-600 hover:bg-slate-50'} rounded-lg transition-colors`} title={isAdmin ? 'Revoke Admin' : 'Make Admin'}>
-                            <ShieldCheck size={16} />
-                          </button>
-                        );
-                      })() : null}
-
-                      <button
-                        onClick={() => handleArchive(emp.id)}
-                        className="p-2 text-slate-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
-                        title="Archive Member"
-                      >
-                        <Archive size={16} />
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setDeleteTarget(emp);
-                          setReassignToId('');
-                          setShowDeleteModal(true);
-                        }}
-                        className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                        title="Permanently Delete"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {filteredEmployees.length === 0 && (
-            <div className="p-12 text-center text-slate-400 flex flex-col items-center">
-              <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
-                <Search size={24} className="text-slate-300" />
-              </div>
-              <div className="mt-3">
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={!!currentEmp.hideAttendance} onChange={e => setCurrentEmp({ ...currentEmp, hideAttendance: e.target.checked })} />
-                  <span className="text-xs font-bold text-slate-600">Hide attendance from Admins</span>
-                </label>
-              </div>
-              <p>No team members found matching your search.</p>
-            </div>
-          )}
+      ) : (
+        <>
+      {/* HEADER SECTION */}
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center shadow-sm">
+            <Users size={24} />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900 leading-tight">Team Master</h2>
+            <p className="text-slate-500 text-sm">Manage and monitor all team members across departments</p>
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button className="px-4 py-2.5 bg-white border border-slate-200 text-slate-700 font-semibold rounded-xl shadow-sm text-sm hover:bg-slate-50 transition-colors">
+            + Import
+          </button>
+          <button onClick={() => setShowAdminModal(true)} className="px-4 py-2.5 bg-white border border-slate-200 text-slate-700 font-semibold rounded-xl shadow-sm text-sm flex items-center gap-2 hover:bg-slate-50 transition-colors">
+            <ShieldCheck size={16} /> Admin Access
+          </button>
+          <button onClick={handleOpenAddModal} className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm text-sm flex items-center gap-2 transition-colors">
+            <Plus size={16} /> Add Member
+          </button>
         </div>
       </div>
+
+      {/* STATS CARDS */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 border-t-4 border-t-blue-500 flex flex-col justify-between">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-2 bg-slate-50 rounded-lg text-slate-600"><Users size={18} /></div>
+            <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs font-bold rounded-full">↑ 2 new</span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-black text-slate-800">{employees.length}</h3>
+            <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Total Members</p>
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 border-t-4 border-t-green-500 flex flex-col justify-between">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-2 bg-slate-50 rounded-lg text-green-600"><CheckSquare size={18} /></div>
+            <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs font-bold rounded-full">{Math.round((employees.filter(e => e.status === 'Active').length / (employees.length || 1)) * 100)}%</span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-black text-slate-800">{employees.filter(e => e.status === 'Active').length}</h3>
+            <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Active Members</p>
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 border-t-4 border-t-purple-500 flex flex-col justify-between">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-2 bg-slate-50 rounded-lg text-purple-600"><Clock size={18} /></div>
+            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-full">{Math.round((employees.filter(e => e.employmentType === 'Full Time').length / (employees.length || 1)) * 100)}%</span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-black text-slate-800">{employees.filter(e => e.employmentType === 'Full Time').length}</h3>
+            <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Full Time</p>
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 border-t-4 border-t-orange-400 flex flex-col justify-between">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-2 bg-slate-50 rounded-lg text-orange-500"><Briefcase size={18} /></div>
+            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-full">Active</span>
+          </div>
+          <div>
+            <h3 className="text-3xl font-black text-slate-800">{allDepartments.length}</h3>
+            <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Departments</p>
+          </div>
+        </div>
+      </div>
+
+      {/* TOOLBAR */}
+      <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6">
+        <div className="relative w-full md:w-[400px]">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input 
+            type="text" 
+            placeholder="Search by Name, ID, or Department..." 
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all shadow-sm" 
+            value={searchTerm} 
+            onChange={e => setSearchTerm(e.target.value)} 
+          />
+        </div>
+        
+        <div className="flex items-center justify-between md:justify-end gap-6 w-full md:w-auto">
+          <div className="flex gap-4 md:gap-5 text-sm font-semibold overflow-x-auto pb-2 md:pb-0 hide-scrollbar">
+            <button onClick={() => setActiveTab('All')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'All' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>All <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'All' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.length}</span></button>
+            <button onClick={() => setActiveTab('Active')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Active' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Active <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Active' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.filter(e => e.status === 'Active').length}</span></button>
+            <button onClick={() => setActiveTab('Full Time')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Full Time' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Full Time <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Full Time' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.filter(e => e.employmentType === 'Full Time' || e.employmentType === 'Probation').length}</span></button>
+            <button onClick={() => setActiveTab('Part Time')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Part Time' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Part Time <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Part Time' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.filter(e => e.employmentType === 'Part Time' || e.employmentType === 'Internship' || e.employmentType === 'Contractual').length}</span></button>
+          </div>
+          
+          <div className="flex items-center gap-3 shrink-0 hidden md:flex">
+            <div className="flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
+              <button onClick={() => setViewLayout('grid')} className={`p-1.5 rounded-lg transition-colors ${viewLayout === 'grid' ? 'bg-blue-50 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}><LayoutGrid size={16} /></button>
+              <button onClick={() => setViewLayout('list')} className={`p-1.5 rounded-lg transition-colors ${viewLayout === 'list' ? 'bg-blue-50 text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}><ListIcon size={16} /></button>
+            </div>
+            <button className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 font-semibold rounded-xl text-sm hover:bg-slate-50 shadow-sm transition-colors">
+              <Filter size={16} /> Filter
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* CONTENT AREA */}
+      {paginatedEmployees.length === 0 ? (
+        <div className="bg-white rounded-3xl p-12 text-center border border-slate-100 shadow-sm flex flex-col items-center">
+          <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4 border border-slate-100">
+            <Search size={24} className="text-slate-300" />
+          </div>
+          <p className="text-slate-500 font-medium">No team members found matching your search.</p>
+        </div>
+      ) : viewLayout === 'list' ? (
+        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden mb-8">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left min-w-[1000px]">
+              <thead className="bg-slate-50/80 border-b border-slate-100">
+                <tr>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">ID</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Team Member Details</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Contact</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Department</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Designation</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Tenure</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500">Status</th>
+                  <th className="p-5 text-xs font-bold uppercase tracking-wider text-slate-500 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {paginatedEmployees.map((emp) => (
+                  <tr key={emp.id} className="hover:bg-slate-50/50 transition-colors group">
+                    <td className="p-5 font-mono text-sm font-bold text-slate-600">{emp.id}</td>
+                    <td className="p-5">
+                      <div className="font-bold text-slate-800">{emp.name}</div>
+                      <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                        <Mail size={10} className="text-slate-400" /> {emp.email || 'No Email'}
+                      </div>
+                    </td>
+                    <td className="p-5">
+                      {emp.phone ? (
+                        <div className="flex items-center gap-1 text-slate-600 font-medium">
+                          <Phone size={12} className="text-slate-400" /> {emp.phone}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400 italic">No Phone</span>
+                      )}
+                    </td>
+                    <td className="p-5">
+                      <span className="bg-blue-50 text-blue-700 px-3 py-1 rounded-lg text-xs font-bold">
+                        {emp.department}
+                      </span>
+                    </td>
+                    <td className="p-5 text-slate-600 text-sm font-medium">{emp.designation || '-'}</td>
+                    <td className="p-5">
+                      <span className="bg-purple-50 text-purple-700 px-3 py-1 rounded-lg text-xs font-bold">
+                        {emp.employmentType || 'Full Time'}
+                      </span>
+                    </td>
+                    <td className="p-5">
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold flex w-max items-center gap-1.5 ${emp.status === 'Active' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${emp.status === 'Active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                        {emp.status}
+                      </span>
+                    </td>
+                    <td className="p-5 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => openEmployeeDetail(emp)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="View Details"><ExternalLink size={16}/></button>
+                        <button onClick={() => openEditModal(emp)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Edit Profile"><Edit2 size={16} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-8">
+          {paginatedEmployees.map((emp, i) => {
+            const tints = ['from-blue-50/80', 'from-green-50/80', 'from-orange-50/80', 'from-purple-50/80', 'from-pink-50/80'];
+            const tint = tints[i % tints.length];
+            return (
+              <div key={emp.id} className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all flex flex-col relative overflow-hidden">
+                <div className={`h-24 bg-gradient-to-b ${tint} to-transparent absolute top-0 left-0 right-0 pointer-events-none`}></div>
+                
+                <div className="p-6 flex-1 z-10 relative">
+                  <div className="flex justify-between items-start mb-5">
+                    <div className="w-14 h-14 bg-white text-blue-600 rounded-2xl flex items-center justify-center font-bold text-xl shadow-sm border border-slate-100">
+                      {emp.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
+                    </div>
+                    <div className={`px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 bg-white shadow-sm border border-slate-100 ${emp.status === 'Active' ? 'text-green-600' : 'text-red-600'}`}>
+                      <div className={`w-1.5 h-1.5 rounded-full ${emp.status === 'Active' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                      {emp.status}
+                    </div>
+                  </div>
+                  
+                  <h3 className="font-bold text-lg text-slate-900 leading-tight mb-1">{emp.name}</h3>
+                  <p className="text-sm text-slate-500 mb-5 font-medium">{emp.designation || 'Team Member'}</p>
+                  
+                  <div className="space-y-2.5 mb-6">
+                    <div className="flex items-center gap-2.5 text-sm text-slate-600">
+                      <Mail size={14} className="text-slate-400" />
+                      <span className="truncate">{emp.email || <span className="italic text-slate-400">No email on record</span>}</span>
+                    </div>
+                    <div className="flex items-center gap-2.5 text-sm text-slate-600">
+                      <Phone size={14} className="text-slate-400" />
+                      <span>{emp.phone || <span className="italic text-slate-400">No phone on record</span>}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex flex-wrap gap-2">
+                    <span className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg text-xs font-bold">{emp.department}</span>
+                    <span className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-lg text-xs font-bold flex items-center gap-1.5">
+                      <div className="w-1.5 h-1.5 rounded-full bg-purple-400"></div>
+                      {emp.employmentType || 'Full Time'}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="px-4 py-3 border-t border-slate-50 flex items-center justify-between">
+                  <div className="flex gap-1">
+                    <button onClick={() => openEditModal(emp)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors" title="Edit Profile"><Edit2 size={15}/></button>
+                    <button onClick={() => {}} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors" title="Permissions"><Shield size={15}/></button>
+                    <button onClick={() => { setDeleteTarget(emp); setShowDeleteModal(true); }} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors" title="Delete"><Trash2 size={15}/></button>
+                  </div>
+                  <button onClick={() => openEmployeeDetail(emp)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold text-xs rounded-xl transition-colors">
+                    View Details <ExternalLink size={14} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-6 py-4 bg-white border border-slate-100 rounded-2xl shadow-sm mb-8">
+          <span className="text-sm text-slate-500 font-medium">
+            Showing {(currentPage - 1) * rowsPerPage + 1} to {Math.min(currentPage * rowsPerPage, filteredEmployees.length)} of {filteredEmployees.length} entries
+          </span>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+              disabled={currentPage === 1}
+              className="px-4 py-2 text-sm font-bold rounded-xl border border-slate-200 bg-white text-slate-600 disabled:opacity-50 hover:bg-slate-50 transition-colors"
+            >
+              Previous
+            </button>
+            <button 
+              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+              disabled={currentPage === totalPages}
+              className="px-4 py-2 text-sm font-bold rounded-xl border border-slate-200 bg-white text-slate-600 disabled:opacity-50 hover:bg-slate-50 transition-colors"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
+        </>
+      )}
+
+
 
       {/* ADD MODAL */}
       {showAddModal && (
@@ -577,38 +872,87 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Department</label>
-                <select
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
-                  value={currentEmp.department || ''}
-                  onChange={e => handleDepartmentChange(e.target.value)}
-                >
-                  {departments.map(dept => (
-                    <option key={dept} value={dept}>{dept}</option>
-                  ))}
-                </select>
+                {isNewDept ? (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      placeholder="Enter new department"
+                      value={currentEmp.department || ''}
+                      onChange={e => setCurrentEmp({ ...currentEmp, department: e.target.value })}
+                      autoFocus
+                    />
+                    <button type="button" onClick={() => { setIsNewDept(false); setIsNewDesig(false); setCurrentEmp({...currentEmp, department: allDepartments[0] || '', designation: ''}); }} className="px-3 text-slate-400 hover:text-slate-600 bg-slate-100 rounded-xl">
+                      <X size={20} />
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
+                    value={currentEmp.department || ''}
+                    onChange={e => handleDepartmentChange(e.target.value)}
+                  >
+                    {allDepartments.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                    <option value="__NEW__" className="font-bold text-blue-600">+ Add New Department...</option>
+                  </select>
+                )}
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Designation / Role</label>
-                {currentEmp.department && DEPARTMENT_ROLES[currentEmp.department]?.length > 0 ? (
+                {isNewDesig || isNewDept ? (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      placeholder="Enter designation / role"
+                      value={currentEmp.designation || ''}
+                      onChange={e => setCurrentEmp({ ...currentEmp, designation: e.target.value })}
+                      autoFocus={!isNewDept}
+                    />
+                    {!isNewDept && (
+                      <button type="button" onClick={() => { setIsNewDesig(false); setCurrentEmp({...currentEmp, designation: ''}); }} className="px-3 text-slate-400 hover:text-slate-600 bg-slate-100 rounded-xl">
+                        <X size={20} />
+                      </button>
+                    )}
+                  </div>
+                ) : (
                   <select
                     className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
                     value={currentEmp.designation || ''}
-                    onChange={e => setCurrentEmp({ ...currentEmp, designation: e.target.value })}
+                    onChange={e => {
+                      if (e.target.value === '__NEW__') {
+                        setIsNewDesig(true);
+                        setCurrentEmp({ ...currentEmp, designation: '' });
+                      } else {
+                        setCurrentEmp({ ...currentEmp, designation: e.target.value });
+                      }
+                    }}
                   >
                     <option value="">Select Designation</option>
-                    {DEPARTMENT_ROLES[currentEmp.department].map(role => (
+                    {getDesignationsForDept(currentEmp.department || '').map(role => (
                       <option key={role} value={role}>{role}</option>
                     ))}
+                    <option value="__NEW__" className="font-bold text-blue-600">+ Add New Designation...</option>
                   </select>
-                ) : (
-                  <input
-                    type="text"
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-slate-50 text-slate-500"
-                    value={currentEmp.department || ''} // Auto-fill with Dept Name
-                    readOnly
-                  />
                 )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tenure / Employment Type</label>
+                <select
+                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
+                  value={currentEmp.employmentType || 'Full Time'}
+                  onChange={e => setCurrentEmp({ ...currentEmp, employmentType: e.target.value })}
+                >
+                  <option value="Full Time">Full Time</option>
+                  <option value="Probation">Probation</option>
+                  <option value="Contractual">Contractual</option>
+                  <option value="Internship">Internship</option>
+                  <option value="Part Time">Part Time</option>
+                </select>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -700,37 +1044,86 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Department</label>
-                <select
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
-                  value={currentEmp.department || ''}
-                  onChange={e => handleDepartmentChange(e.target.value)}
-                >
-                  {departments.map(dept => (
-                    <option key={dept} value={dept}>{dept}</option>
-                  ))}
-                </select>
+                {isNewDept ? (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      placeholder="Enter new department"
+                      value={currentEmp.department || ''}
+                      onChange={e => setCurrentEmp({ ...currentEmp, department: e.target.value })}
+                      autoFocus
+                    />
+                    <button type="button" onClick={() => { setIsNewDept(false); setIsNewDesig(false); setCurrentEmp({...currentEmp, department: allDepartments[0] || '', designation: ''}); }} className="px-3 text-slate-400 hover:text-slate-600 bg-slate-100 rounded-xl">
+                      <X size={20} />
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
+                    value={currentEmp.department || ''}
+                    onChange={e => handleDepartmentChange(e.target.value)}
+                  >
+                    {allDepartments.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                    <option value="__NEW__" className="font-bold text-blue-600">+ Add New Department...</option>
+                  </select>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Designation / Role</label>
-                {currentEmp.department && DEPARTMENT_ROLES[currentEmp.department]?.length > 0 ? (
+                {isNewDesig || isNewDept ? (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                      placeholder="Enter designation / role"
+                      value={currentEmp.designation || ''}
+                      onChange={e => setCurrentEmp({ ...currentEmp, designation: e.target.value })}
+                      autoFocus={!isNewDept}
+                    />
+                    {!isNewDept && (
+                      <button type="button" onClick={() => { setIsNewDesig(false); setCurrentEmp({...currentEmp, designation: ''}); }} className="px-3 text-slate-400 hover:text-slate-600 bg-slate-100 rounded-xl">
+                        <X size={20} />
+                      </button>
+                    )}
+                  </div>
+                ) : (
                   <select
                     className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
                     value={currentEmp.designation || ''}
-                    onChange={e => setCurrentEmp({ ...currentEmp, designation: e.target.value })}
+                    onChange={e => {
+                      if (e.target.value === '__NEW__') {
+                        setIsNewDesig(true);
+                        setCurrentEmp({ ...currentEmp, designation: '' });
+                      } else {
+                        setCurrentEmp({ ...currentEmp, designation: e.target.value });
+                      }
+                    }}
                   >
                     <option value="">Select Designation</option>
-                    {DEPARTMENT_ROLES[currentEmp.department].map(role => (
+                    {getDesignationsForDept(currentEmp.department || '').map(role => (
                       <option key={role} value={role}>{role}</option>
                     ))}
+                    <option value="__NEW__" className="font-bold text-blue-600">+ Add New Designation...</option>
                   </select>
-                ) : (
-                  <input
-                    type="text"
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-slate-50 text-slate-500"
-                    value={currentEmp.department || ''}
-                    readOnly
-                  />
                 )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tenure / Employment Type</label>
+                <select
+                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white transition-all"
+                  value={currentEmp.employmentType || 'Full Time'}
+                  onChange={e => setCurrentEmp({ ...currentEmp, employmentType: e.target.value })}
+                >
+                  <option value="Full Time">Full Time</option>
+                  <option value="Probation">Probation</option>
+                  <option value="Contractual">Contractual</option>
+                  <option value="Internship">Internship</option>
+                  <option value="Part Time">Part Time</option>
+                </select>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

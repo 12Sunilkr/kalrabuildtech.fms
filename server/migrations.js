@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 
 // Simple, idempotent migrations helper for the embedded sql.js DB
 // Exports runMigrations({ db, dbFile }) which ensures tables and columns exist and writes the DB file when changes occur.
@@ -71,6 +72,28 @@ export async function runMigrations({ db, dbFile }) {
     createdAt TEXT
   )`, [`CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)`]);
 
+  ensureColumns('tasks', {
+    assignedBy: 'TEXT',
+    assigned_by: 'INTEGER',
+    assignedTo: 'TEXT',
+    assigned_to: 'INTEGER',
+    status: 'TEXT',
+    dueDate: 'TEXT',
+    due_date: 'TEXT',
+    createdAt: 'TEXT',
+    created_at: 'TEXT',
+    priority: 'TEXT',
+    description: 'TEXT',
+    extensionHistory: 'TEXT',
+    extensionRequest: 'TEXT',
+    completionDate: 'TEXT',
+    completionProcess: 'TEXT',
+    completionAttachment: 'TEXT',
+    statusNote: 'TEXT',
+    attachment: 'TEXT',
+    externalLink: 'TEXT'
+  });
+
   ensureTable('calendar', `CREATE TABLE calendar (
     id TEXT PRIMARY KEY,
     title TEXT,
@@ -133,7 +156,10 @@ export async function runMigrations({ db, dbFile }) {
     done INTEGER DEFAULT 0,
     createdBy TEXT,
     createdAt TEXT
-  )`, [`CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)`]);
+  )`, [
+    `CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)`,
+    `CREATE INDEX IF NOT EXISTS idx_checklists_ref_created ON checklists(refId, createdAt)`
+  ]);
 
   ensureTable('notepad', `CREATE TABLE notepad (
     id TEXT PRIMARY KEY,
@@ -253,7 +279,18 @@ export async function runMigrations({ db, dbFile }) {
 
   ensureColumns('employees', {
     is_archived: 'INTEGER DEFAULT 0',
-    archived_at: 'TEXT'
+    archived_at: 'TEXT',
+    status: 'TEXT',
+    joiningDate: 'TEXT',
+    createdAt: 'TEXT',
+    designation: 'TEXT',
+    email: 'TEXT',
+    phone: 'TEXT',
+    birthDate: 'TEXT',
+    address: 'TEXT',
+    documents: 'TEXT',
+    hideAttendance: 'INTEGER DEFAULT 0',
+    compOffBalance: 'REAL DEFAULT 0'
   });
 
   // Add leave-specific columns
@@ -289,8 +326,18 @@ export async function runMigrations({ db, dbFile }) {
   // Persist DB if we changed schema
   if (changed) {
     try {
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      const buff = Buffer.from(db.export());
+      fs.writeFileSync(dbFile, buff);
       console.log('Migration: DB file persisted with changes');
+      
+      // Keep root database file in sync if it exists
+      try {
+        const rootDbFile = path.resolve(path.dirname(dbFile), '..', 'database.sqlite');
+        if (fs.existsSync(rootDbFile)) {
+          fs.writeFileSync(rootDbFile, buff);
+          console.log('Migration: Root DB file synchronized');
+        }
+      } catch (err) { /* ignore */ }
     } catch (e) {
       console.error('Migration: failed to persist DB file', e && (e.stack || e.message || e));
     }

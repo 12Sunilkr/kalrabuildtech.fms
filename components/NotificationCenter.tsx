@@ -28,6 +28,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
   const isOverlay = !!onCloseOverlay;
 
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const notificationsPerPage = isOverlay ? 8 : 15;
+
   const safeNotifications = ensureArray(notifications);
 
   const myNotifications = safeNotifications.filter(n => {
@@ -39,6 +43,14 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
     const matchesFilter = filter === 'ALL' ? true : !n.read;
     return isForMe && matchesSearch && matchesFilter;
   });
+
+  // Memoize sliced subset for the current page
+  const paginatedNotifications = React.useMemo(() => {
+    const startIndex = (currentPage - 1) * notificationsPerPage;
+    return myNotifications.slice(startIndex, startIndex + notificationsPerPage);
+  }, [myNotifications, currentPage, notificationsPerPage]);
+
+  const totalPages = Math.max(1, Math.ceil(myNotifications.length / notificationsPerPage));
 
   // Fetch notifications for current user from server and update state
   const fetchNotifications = async () => {
@@ -80,6 +92,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
     // Re-run when currentUser changes so we fetch as soon as user is known
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
+
+  // Reset page to 1 when filter or search changes to prevent page mismatch
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, searchTerm]);
 
   const markAllRead = async () => {
     try {
@@ -241,7 +258,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
               <p className="text-sm">No notifications found.</p>
             </div>
           ) : (
-            myNotifications.map(note => (
+            paginatedNotifications.map(note => (
               <div key={note && note.id ? note.id : Math.random().toString(36).slice(2)} className={`p-5 flex items-start gap-4 hover:bg-slate-50 transition-all border-l-4 ${!note?.read ? 'border-l-blue-500 bg-blue-50/10' : 'border-l-transparent'}`}>
                  <div className="shrink-0 mt-1">{getIcon((note && note.type) as Notification['type'])}</div>
                  <div className="flex-1 min-w-0">
@@ -267,6 +284,41 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
             ))
           )}
         </div>
+
+        {/* Dynamic Compact Pagination Controls */}
+        {myNotifications.length > 0 && (
+          <div className="p-4 border-t border-slate-100 flex flex-col sm:flex-row gap-3 items-center justify-between bg-slate-50/50 shrink-0">
+            <span className="text-xs font-semibold text-slate-500">
+              Showing <span className="text-slate-800 font-extrabold">{Math.min(myNotifications.length, (currentPage - 1) * notificationsPerPage + 1)}</span> to{' '}
+              <span className="text-slate-800 font-extrabold">{Math.min(myNotifications.length, currentPage * notificationsPerPage)}</span> of{' '}
+              <span className="text-slate-800 font-extrabold">{myNotifications.length}</span> entries
+            </span>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer active:scale-95 disabled:active:scale-100 text-xs font-bold shadow-sm"
+                >
+                  Prev
+                </button>
+                
+                <span className="text-xs font-black text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-lg shadow-sm font-mono">
+                  {currentPage} / {totalPages}
+                </span>
+
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer active:scale-95 disabled:active:scale-100 text-xs font-bold shadow-sm"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -7,12 +7,69 @@ import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
+import compression from 'compression';
 import { runMigrations } from './migrations.js';
 import { success, failure } from './utils/respond.js';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
+import { startPeriodicSync, syncToGoogleSheets } from './googleSheetsSync.js';
+import { createDebouncedPersist } from './utils/dbPersist.js';
+import { cacheGet, cacheSet, cacheInvalidate, withCache } from './utils/apiCache.js';
 
 const app = express();
+app.use(compression());
+
+// Global API Cache Invalidation Middleware for state-changing requests
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    try {
+      const url = req.originalUrl || req.url || '';
+      if (url.includes('/api/users') || url.includes('/api/admin/cleanup-demo-users') || url.includes('/api/admin/archive-demo-users')) {
+        cacheInvalidate('users');
+      }
+      if (url.includes('/api/employees') || url.includes('/api/employee/profile') || url.includes('/api/employee/documents')) {
+        cacheInvalidate('employees');
+      }
+      if (url.includes('/api/attendance')) {
+        cacheInvalidate('attendance');
+      }
+      if (url.includes('/api/timelogs')) {
+        cacheInvalidate('timelogs');
+      }
+      if (url.includes('/api/tasks')) {
+        cacheInvalidate('tasks');
+      }
+      if (url.includes('/api/finance')) {
+        cacheInvalidate('finance');
+      }
+      if (url.includes('/api/checklist-templates') || url.includes('/api/checklists')) {
+        cacheInvalidate('checklist-templates');
+        cacheInvalidate('checklists:');
+      }
+      if (url.includes('/api/o2d')) {
+        cacheInvalidate('o2d');
+      }
+      if (url.includes('/api/notepad')) {
+        cacheInvalidate('notepad');
+      }
+      if (url.includes('/api/queries')) {
+        cacheInvalidate('queries');
+      }
+      if (url.includes('/api/reminders')) {
+        cacheInvalidate('reminders');
+      }
+      if (url.includes('/api/leave') || url.includes('/api/leaves')) {
+        cacheInvalidate('leave');
+      }
+      if (url.includes('/api/holidays')) {
+        cacheInvalidate('holidays');
+      }
+    } catch (e) {
+      console.warn('Cache invalidation middleware warning:', e);
+    }
+  }
+  next();
+});
 
 // Mount legacy/auxiliary PMS router if present (DISABLED to avoid conflict with new consolidated routes)
 /*
@@ -52,9 +109,34 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Server is only allowed to write this single DB file inside the server directory.
 const DB_FILENAME = process.env.DB_FILE || 'database.sqlite';
 const dbFile = path.resolve(__dirname, DB_FILENAME);
+let isWritingRootDb = false;
 // Prevent accidental writes outside the server directory (avoid path traversal or absolute paths elsewhere)
 if (!dbFile.startsWith(__dirname + path.sep) && dbFile !== path.join(__dirname, DB_FILENAME)) {
   throw new Error(`DB file must be inside server directory: ${dbFile}`);
+}
+
+// --- Database Sync Logic: automatically synchronize root and server database files ---
+try {
+  const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+  if (fs.existsSync(rootDbFile)) {
+    const rootStats = fs.statSync(rootDbFile);
+    let copyRoot = false;
+    if (fs.existsSync(dbFile)) {
+      const serverStats = fs.statSync(dbFile);
+      // If root database has a different size or is newer, copy it over!
+      if (rootStats.size !== serverStats.size || rootStats.mtimeMs > serverStats.mtimeMs) {
+        copyRoot = true;
+      }
+    } else {
+      copyRoot = true;
+    }
+    if (copyRoot && rootStats.size > 0) {
+      console.log(`[Database Sync] Found different/newer root database.sqlite (${(rootStats.size / 1024 / 1024).toFixed(2)} MB). Syncing to ${dbFile}...`);
+      fs.copyFileSync(rootDbFile, dbFile);
+    }
+  }
+} catch (err) {
+  console.warn('[Database Sync] Failed to sync root database.sqlite to server directory:', err);
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret_change_me';
@@ -67,6 +149,8 @@ if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !String
 // Initialize sql.js (WASM-based SQLite)
 let SQL;
 let db;
+let dbPersistCtl = null;
+let ensureSchemaAndIndexes;
 try {
   SQL = await initSqlJs();
   console.log('sql.js initialized');
@@ -162,324 +246,504 @@ try {
     insert.free && insert.free();
 
     // Persist
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     console.log('Created', dbFile, 'and seeded default admin user');
   }
 
-  // Enable foreign keys for referential integrity where possible
-  try {
-    db.run('PRAGMA foreign_keys = ON');
-  } catch (e) {
-    console.warn('Could not enable foreign_keys PRAGMA', e && (e.message || e));
-  }
-
-  // Ensure additional feature tables exist (calendar, finance, notifications, projects, checklists, o2d, chat, queries, notepad, leave, holidays)
-  try {
-    // Calendar events
-    const tblCal = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='calendar'");
-    const hasCal = tblCal.step(); tblCal.free();
-    if (!hasCal) {
-      db.run(`CREATE TABLE calendar (
-        id TEXT PRIMARY KEY,
-        title TEXT,
-        description TEXT,
-        startTime TEXT,
-        endTime TEXT,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-    }
-
-    // Finance
-    const tblFin = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='finance'");
-    const hasFin = tblFin.step(); tblFin.free();
-    if (!hasFin) {
-      db.run(`CREATE TABLE finance (
-        id TEXT PRIMARY KEY,
-        amount REAL,
-        currency TEXT,
-        type TEXT,
-        description TEXT,
-        date TEXT,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-    }
-
-    // Notifications
-    const tblNot = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notifications'");
-    const hasNot = tblNot.step(); tblNot.free();
-    if (!hasNot) {
-      db.run(`CREATE TABLE notifications (
-        id TEXT PRIMARY KEY,
-        userId TEXT,
-        message TEXT,
-        meta TEXT,
-        isRead INTEGER DEFAULT 0,
-        createdAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_notifications_userId ON notifications(userId)`);
-    }
-
-    // Projects
-    const tblProj = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'");
-    const hasProj = tblProj.step(); tblProj.free();
-    if (!hasProj) {
-      db.run(`CREATE TABLE projects (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        address TEXT,
-        status TEXT,
-        data TEXT,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-    }
-
-    // Site photos table (store metadata and server path)
-    const tblSite = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='site_photos'");
-    const hasSite = tblSite.step(); tblSite.free();
-    if (!hasSite) {
-      db.run(`CREATE TABLE site_photos (
-        id TEXT PRIMARY KEY,
-        projectId TEXT,
-        uploadedBy TEXT,
-        filename TEXT,
-        filepath TEXT,
-        imageUrl TEXT,
-        gps TEXT,
-        date TEXT,
-        timestamp TEXT,
-        createdAt TEXT
-      )`);
-    }
-
-    // Employee profiles (optional table for storing extended profile info)
-    const tblProf = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employees_profile'");
-    const hasProf = tblProf.step(); tblProf.free();
-    if (!hasProf) {
-      db.run(`CREATE TABLE employees_profile (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER UNIQUE,
-        full_name TEXT,
-        designation TEXT,
-        phone TEXT,
-        profile_image TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON employees_profile(user_id)`);
-    }
-
-    // Employee documents
-    const tblDoc = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employee_documents'");
-    const hasDoc = tblDoc.step(); tblDoc.free();
-    if (!hasDoc) {
-      db.run(`CREATE TABLE employee_documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        document_name TEXT,
-        file_path TEXT,
-        file_type TEXT,
-        uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_documents_user_id ON employee_documents(user_id)`);
-    }
-
-    // Checklists
-    const tblChk = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='checklists'");
-    const hasChk = tblChk.step(); tblChk.free();
-    if (!hasChk) {
-      db.run(`CREATE TABLE checklists (
-        id TEXT PRIMARY KEY,
-        refId TEXT,
-        refType TEXT,
-        item TEXT,
-        done INTEGER DEFAULT 0,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)`);
-    }
-
-    // Checklist templates (metadata for templates)
-    const tblChkTpl = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='checklist_templates'");
-    const hasChkTpl = tblChkTpl.step(); tblChkTpl.free();
-    if (!hasChkTpl) {
-      db.run(`CREATE TABLE checklist_templates (
-        id TEXT PRIMARY KEY,
-        data TEXT,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_checklist_templates_created ON checklist_templates(createdAt)`);
-    }
-
-    // O2D
-    const tblO2d = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='o2d'");
-    const hasO2d = tblO2d.step(); tblO2d.free();
-    if (!hasO2d) {
-      db.run(`CREATE TABLE o2d (
-        id TEXT PRIMARY KEY,
-        data TEXT,
-        status TEXT,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-    }
-
-    // Chat
-    const tblChat = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat'");
-    const hasChat = tblChat.step(); tblChat.free();
-    if (!hasChat) {
-      db.run(`CREATE TABLE chat (
-        id TEXT PRIMARY KEY,
-        teamId TEXT,
-        senderId TEXT,
-        message TEXT,
-        meta TEXT,
-        createdAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_chat_teamId ON chat(teamId)`);
-    }
-
-    // Ensure chat schema has optional columns for edits/pins/deletes/replies
+  ensureSchemaAndIndexes = async function() {
+    // Guarantee that core tables (users, employees, tasks) exist immediately before indexes or migrations run
     try {
-      const cols = [];
-      const pragma = db.prepare("PRAGMA table_info('chat')");
-      while (pragma.step()) { cols.push(pragma.getAsObject().name); }
-      pragma.free();
-      const needToAdd = (col) => cols.indexOf(col) === -1;
-      if (needToAdd('updatedAt')) db.run("ALTER TABLE chat ADD COLUMN updatedAt TEXT");
-      if (needToAdd('is_deleted')) db.run("ALTER TABLE chat ADD COLUMN is_deleted INTEGER DEFAULT 0");
-      if (needToAdd('is_pinned')) db.run("ALTER TABLE chat ADD COLUMN is_pinned INTEGER DEFAULT 0");
-      if (needToAdd('edited')) db.run("ALTER TABLE chat ADD COLUMN edited INTEGER DEFAULT 0");
-      if (needToAdd('replyTo')) db.run("ALTER TABLE chat ADD COLUMN replyTo TEXT");
-    } catch (e) { console.warn('Chat schema migration warning', e && (e.message || e)); }
+      const tblUsers = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'");
+      const hasUsers = tblUsers.step();
+      tblUsers.free();
+      if (!hasUsers) {
+        db.run(`CREATE TABLE users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          email TEXT UNIQUE,
+          password TEXT,
+          role TEXT,
+          employeeId TEXT
+        )`);
+        const insert = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
+        insert.run(['Admin User', 'admin@example.com', bcrypt.hashSync('admin123', 10), 'ADMIN', null]);
+        insert.run(['Administrator', 'admin@fms.com', bcrypt.hashSync('admin', 10), 'ADMIN', null]);
+        insert.free && insert.free();
+        persistDB();
+        console.log('Ensure Users: created users table and seeded default admin users');
+      }
+    } catch (err) {
+      console.warn('Users table check failed', err);
+    }
 
-    // Ensure chat_reads table exists for read receipts
     try {
-      const tblReads = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_reads'");
-      const hasReads = tblReads.step(); tblReads.free();
-      if (!hasReads) {
-        db.run(`CREATE TABLE chat_reads (
-          teamId TEXT,
-          userId TEXT,
-          lastReadAt TEXT,
-          PRIMARY KEY(teamId, userId)
+      const tblEmps = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
+      const hasEmps = tblEmps.step();
+      tblEmps.free();
+      if (!hasEmps) {
+        db.run(`CREATE TABLE employees (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          department TEXT,
+          joiningDate TEXT,
+          createdAt TEXT,
+          avatar TEXT,
+          designation TEXT,
+          panNumber TEXT,
+          bankAccount TEXT,
+          bankName TEXT,
+          ifscCode TEXT,
+          aadhaarNumber TEXT,
+          uanNumber TEXT,
+          esiNumber TEXT,
+          hideAttendance INTEGER DEFAULT 0
+        )`);
+        persistDB();
+        console.log('Ensure Employees: created employees table');
+      }
+    } catch (err) {
+      console.warn('Employees table check failed', err);
+    }
+
+    try {
+      const tblTasks = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'");
+      const hasTasks = tblTasks.step();
+      tblTasks.free();
+      if (!hasTasks) {
+        db.run(`CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT,
+          description TEXT,
+          assignedTo TEXT,
+          assignedBy TEXT,
+          createdDate TEXT,
+          dueDate TEXT,
+          status TEXT,
+          priority TEXT,
+          attachment TEXT,
+          externalLink TEXT,
+          statusNote TEXT,
+          completionDate TEXT,
+          completionProcess TEXT,
+          completionAttachment TEXT,
+          extensionRequest TEXT,
+          extensionHistory TEXT
+        )`);
+        persistDB();
+        console.log('Ensure Tasks: created tasks table');
+      }
+    } catch (err) {
+      console.warn('Tasks table check failed', err);
+    }
+
+    // Enable foreign keys for referential integrity where possible
+    try {
+      db.run('PRAGMA foreign_keys = ON');
+    } catch (e) {
+      console.warn('Could not enable foreign_keys PRAGMA', e && (e.message || e));
+    }
+
+    // Ensure additional feature tables exist (calendar, finance, notifications, projects, checklists, o2d, chat, queries, notepad, leave, holidays)
+    try {
+      // Calendar events
+      const tblCal = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='calendar'");
+      const hasCal = tblCal.step(); tblCal.free();
+      if (!hasCal) {
+        db.run(`CREATE TABLE calendar (
+          id TEXT PRIMARY KEY,
+          title TEXT,
+          description TEXT,
+          startTime TEXT,
+          endTime TEXT,
+          createdBy TEXT,
+          createdAt TEXT
         )`);
       }
-    } catch (e) { console.warn('Chat reads migration warning', e && (e.message || e)); }
 
-    // Queries
-    const tblQuery = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='queries'");
-    const hasQuery = tblQuery.step(); tblQuery.free();
-    if (!hasQuery) {
-      db.run(`CREATE TABLE queries (
-        id TEXT PRIMARY KEY,
-        userId TEXT,
-        senderId TEXT,
-        receiverId TEXT,
-        subject TEXT,
-        message TEXT,
-        response TEXT,
-        status TEXT,
-        createdAt TEXT,
-        updatedAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_queries_userId ON queries(userId)`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_queries_sender ON queries(senderId)`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_queries_receiver ON queries(receiverId)`);
-    }
+      // Finance
+      const tblFin = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='finance'");
+      const hasFin = tblFin.step(); tblFin.free();
+      if (!hasFin) {
+        db.run(`CREATE TABLE finance (
+          id TEXT PRIMARY KEY,
+          amount REAL,
+          currency TEXT,
+          type TEXT,
+          description TEXT,
+          date TEXT,
+          createdBy TEXT,
+          createdAt TEXT
+        )`);
+      }
 
-    // Notepad
-    const tblNote = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notepad'");
-    const hasNote = tblNote.step(); tblNote.free();
-    if (!hasNote) {
-      db.run(`CREATE TABLE notepad (
-        id TEXT PRIMARY KEY,
-        userId TEXT,
-        content TEXT,
-        createdAt TEXT,
-        updatedAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_notepad_userId ON notepad(userId)`);
-    }
+      // Notifications
+      const tblNot = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notifications'");
+      const hasNot = tblNot.step(); tblNot.free();
+      if (!hasNot) {
+        db.run(`CREATE TABLE notifications (
+          id TEXT PRIMARY KEY,
+          userId TEXT,
+          message TEXT,
+          meta TEXT,
+          isRead INTEGER DEFAULT 0,
+          createdAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_notifications_userId ON notifications(userId)`);
+      }
 
-    // Leave
-    const tblLeave = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='leaves'");
-    const hasLeave = tblLeave.step(); tblLeave.free();
-    if (!hasLeave) {
-      db.run(`CREATE TABLE leaves (
-        id TEXT PRIMARY KEY,
-        userId TEXT,
-        startDate TEXT,
-        endDate TEXT,
-        days REAL,
-        status TEXT,
-        reason TEXT,
-        createdAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_leaves_userId ON leaves(userId)`);
-    }
+      // Projects
+      const tblProj = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='projects'");
+      const hasProj = tblProj.step(); tblProj.free();
+      if (!hasProj) {
+        db.run(`CREATE TABLE projects (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          address TEXT,
+          status TEXT,
+          data TEXT,
+          createdBy TEXT,
+          createdAt TEXT
+        )`);
+      }
 
-    // Holidays
-    const tblHol = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='holidays'");
-    const hasHol = tblHol.step(); tblHol.free();
-    if (!hasHol) {
-      db.run(`CREATE TABLE holidays (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        date TEXT,
-        recurring INTEGER DEFAULT 0,
-        createdAt TEXT
-      )`);
-    }
+      // Site photos table (store metadata and server path)
+      const tblSite = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='site_photos'");
+      const hasSite = tblSite.step(); tblSite.free();
+      if (!hasSite) {
+        db.run(`CREATE TABLE site_photos (
+          id TEXT PRIMARY KEY,
+          projectId TEXT,
+          uploadedBy TEXT,
+          filename TEXT,
+          filepath TEXT,
+          imageUrl TEXT,
+          gps TEXT,
+          date TEXT,
+          timestamp TEXT,
+          createdAt TEXT
+        )`);
+      }
 
-    // Reminders (personal reminders migrated from client localStorage)
-    const tblRem = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reminders'");
-    const hasRem = tblRem.step(); tblRem.free();
-    if (!hasRem) {
-      db.run(`CREATE TABLE reminders (
-        id TEXT PRIMARY KEY,
-        userId TEXT,
-        date TEXT,
-        title TEXT,
-        createdBy TEXT,
-        createdAt TEXT
-      )`);
-      db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)`);
-    }
+      // Employee profiles (optional table for storing extended profile info)
+      const tblProf = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employees_profile'");
+      const hasProf = tblProf.step(); tblProf.free();
+      if (!hasProf) {
+        db.run(`CREATE TABLE employees_profile (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER UNIQUE,
+          full_name TEXT,
+          designation TEXT,
+          phone TEXT,
+          profile_image TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON employees_profile(user_id)`);
+      }
 
-    // Helpful indexes
-    db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)`);
+      // Employee documents
+      const tblDoc = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employee_documents'");
+      const hasDoc = tblDoc.step(); tblDoc.free();
+      if (!hasDoc) {
+        db.run(`CREATE TABLE employee_documents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER,
+          document_name TEXT,
+          file_path TEXT,
+          file_type TEXT,
+          uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_documents_user_id ON employee_documents(user_id)`);
+      }
 
-    // Generic key/value table for client-side storage migration
-    const tblKV = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='kv'");
-    const hasKV = tblKV.step(); tblKV.free();
-    if (!hasKV) {
-      db.run(`CREATE TABLE kv (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        updatedAt TEXT
-      )`);
-    }
+      // Checklists
+      const tblChk = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='checklists'");
+      const hasChk = tblChk.step(); tblChk.free();
+      if (!hasChk) {
+        db.run(`CREATE TABLE checklists (
+          id TEXT PRIMARY KEY,
+          refId TEXT,
+          refType TEXT,
+          item TEXT,
+          done INTEGER DEFAULT 0,
+          createdBy TEXT,
+          createdAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_checklists_ref ON checklists(refId)`);
+      }
 
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
-    console.log('Additional feature tables ensured');
+      // Checklist templates (metadata for templates)
+      const tblChkTpl = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='checklist_templates'");
+      const hasChkTpl = tblChkTpl.step(); tblChkTpl.free();
+      if (!hasChkTpl) {
+        db.run(`CREATE TABLE checklist_templates (
+          id TEXT PRIMARY KEY,
+          data TEXT,
+          createdBy TEXT,
+          createdAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_checklist_templates_created ON checklist_templates(createdAt)`);
+      }
 
-    // Run idempotent migrations that ensure standard columns/indexes for modules
-    try {
-      await runMigrations({ db, dbFile });
+      // O2D
+      const tblO2d = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='o2d'");
+      const hasO2d = tblO2d.step(); tblO2d.free();
+      if (!hasO2d) {
+        db.run(`CREATE TABLE o2d (
+          id TEXT PRIMARY KEY,
+          data TEXT,
+          status TEXT,
+          createdBy TEXT,
+          createdAt TEXT
+        )`);
+      }
+
+      // Chat
+      const tblChat = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat'");
+      const hasChat = tblChat.step(); tblChat.free();
+      if (!hasChat) {
+        db.run(`CREATE TABLE chat (
+          id TEXT PRIMARY KEY,
+          teamId TEXT,
+          senderId TEXT,
+          message TEXT,
+          meta TEXT,
+          createdAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_chat_teamId ON chat(teamId)`);
+      }
+
+      // Ensure chat schema has optional columns for edits/pins/deletes/replies
+      try {
+        const cols = [];
+        const pragma = db.prepare("PRAGMA table_info('chat')");
+        while (pragma.step()) { cols.push(pragma.getAsObject().name); }
+        pragma.free();
+        const needToAdd = (col) => cols.indexOf(col) === -1;
+        if (needToAdd('updatedAt')) db.run("ALTER TABLE chat ADD COLUMN updatedAt TEXT");
+        if (needToAdd('is_deleted')) db.run("ALTER TABLE chat ADD COLUMN is_deleted INTEGER DEFAULT 0");
+        if (needToAdd('is_pinned')) db.run("ALTER TABLE chat ADD COLUMN is_pinned INTEGER DEFAULT 0");
+        if (needToAdd('edited')) db.run("ALTER TABLE chat ADD COLUMN edited INTEGER DEFAULT 0");
+        if (needToAdd('replyTo')) db.run("ALTER TABLE chat ADD COLUMN replyTo TEXT");
+      } catch (e) { console.warn('Chat schema migration warning', e && (e.message || e)); }
+
+      // Ensure chat_reads table exists for read receipts
+      try {
+        const tblReads = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_reads'");
+        const hasReads = tblReads.step(); tblReads.free();
+        if (!hasReads) {
+          db.run(`CREATE TABLE chat_reads (
+            teamId TEXT,
+            userId TEXT,
+            lastReadAt TEXT,
+            PRIMARY KEY(teamId, userId)
+          )`);
+        }
+      } catch (e) { console.warn('Chat reads migration warning', e && (e.message || e)); }
+
+      // Queries
+      const tblQuery = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='queries'");
+      const hasQuery = tblQuery.step(); tblQuery.free();
+      if (!hasQuery) {
+        db.run(`CREATE TABLE queries (
+          id TEXT PRIMARY KEY,
+          userId TEXT,
+          senderId TEXT,
+          receiverId TEXT,
+          subject TEXT,
+          message TEXT,
+          response TEXT,
+          status TEXT,
+          createdAt TEXT,
+          updatedAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_queries_userId ON queries(userId)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_queries_sender ON queries(senderId)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_queries_receiver ON queries(receiverId)`);
+      }
+
+      // Notepad
+      const tblNote = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notepad'");
+      const hasNote = tblNote.step(); tblNote.free();
+      if (!hasNote) {
+        db.run(`CREATE TABLE notepad (
+          id TEXT PRIMARY KEY,
+          userId TEXT,
+          content TEXT,
+          createdAt TEXT,
+          updatedAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_notepad_userId ON notepad(userId)`);
+      }
+
+      // Leave
+      const tblLeave = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='leaves'");
+      const hasLeave = tblLeave.step(); tblLeave.free();
+      if (!hasLeave) {
+        db.run(`CREATE TABLE leaves (
+          id TEXT PRIMARY KEY,
+          userId TEXT,
+          startDate TEXT,
+          endDate TEXT,
+          days REAL,
+          status TEXT,
+          reason TEXT,
+          createdAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_leaves_userId ON leaves(userId)`);
+      }
+
+      // Holidays
+      const tblHol = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='holidays'");
+      const hasHol = tblHol.step(); tblHol.free();
+      if (!hasHol) {
+        db.run(`CREATE TABLE holidays (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          date TEXT,
+          recurring INTEGER DEFAULT 0,
+          createdAt TEXT
+        )`);
+      }
+
+      // Reminders (personal reminders migrated from client localStorage)
+      const tblRem = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reminders'");
+      const hasRem = tblRem.step(); tblRem.free();
+      if (!hasRem) {
+        db.run(`CREATE TABLE reminders (
+          id TEXT PRIMARY KEY,
+          userId TEXT,
+          date TEXT,
+          title TEXT,
+          createdBy TEXT,
+          createdAt TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)`);
+      }
+
+      // Run idempotent migrations that ensure standard columns/indexes for modules
+      try {
+        await runMigrations({ db, dbFile });
+      } catch (e) {
+        console.warn('runMigrations failed', e && (e.message || e));
+      }
+
+      // Helpful indexes for performance optimization
+      const tryCreateIndex = (name, sql) => {
+        try {
+          db.run(sql);
+        } catch (e) {
+          console.warn(`Failed to create index ${name}:`, e && (e.message || e));
+        }
+      };
+      tryCreateIndex('idx_tasks_assignedTo', `CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)`);
+      tryCreateIndex('idx_tasks_assignedBy', `CREATE INDEX IF NOT EXISTS idx_tasks_assignedBy ON tasks(assignedBy)`);
+      tryCreateIndex('idx_tasks_status', `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
+      tryCreateIndex('idx_tasks_createdAt', `CREATE INDEX IF NOT EXISTS idx_tasks_createdAt ON tasks(createdAt)`);
+      tryCreateIndex('idx_attendance_userId', `CREATE INDEX IF NOT EXISTS idx_attendance_userId ON attendance(userId)`);
+      tryCreateIndex('idx_attendance_date', `CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)`);
+      tryCreateIndex('idx_timelogs_userId', `CREATE INDEX IF NOT EXISTS idx_timelogs_userId ON timelogs(userId)`);
+      tryCreateIndex('idx_timelogs_startTime', `CREATE INDEX IF NOT EXISTS idx_timelogs_startTime ON timelogs(startTime)`);
+      tryCreateIndex('idx_calendar_createdBy', `CREATE INDEX IF NOT EXISTS idx_calendar_createdBy ON calendar(createdBy)`);
+      tryCreateIndex('idx_calendar_startTime', `CREATE INDEX IF NOT EXISTS idx_calendar_startTime ON calendar(startTime)`);
+      tryCreateIndex('idx_projects_status', `CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)`);
+      tryCreateIndex('idx_employees_status', `CREATE INDEX IF NOT EXISTS idx_employees_status ON employees(status)`);
+      tryCreateIndex('idx_employees_department', `CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department)`);
+      tryCreateIndex('idx_checklists_ref_created', `CREATE INDEX IF NOT EXISTS idx_checklists_ref_created ON checklists(refId, createdAt)`);
+
+      // Generic key/value table for client-side storage migration
+      const tblKV = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='kv'");
+      const hasKV = tblKV.step(); tblKV.free();
+      if (!hasKV) {
+        db.run(`CREATE TABLE kv (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          updatedAt TEXT
+        )`);
+      }
+
+      persistDB();
+      console.log('Additional feature tables ensured');
     } catch (e) {
-      console.warn('runMigrations failed', e && (e.message || e));
+      console.warn('Failed to ensure additional tables', e && (e.message || e));
     }
-  } catch (e) {
-    console.warn('Failed to ensure additional tables', e && (e.message || e));
   }
+
+  // Run initialization
+  await ensureSchemaAndIndexes();
 
   // Mark the app as ready for embedded hosts
   app.set('ready', true);
   console.log('Server initialization complete, DB ready');
+
+  dbPersistCtl = createDebouncedPersist(
+    () => Buffer.from(db.export()),
+    (buff) => {
+      isWritingRootDb = true;
+      fs.writeFile(dbFile, buff, (err) => {
+        if (err) {
+          console.error('Failed to write database file asynchronously:', err);
+          isWritingRootDb = false;
+        } else {
+          // If successful, also update the root database file to stay in sync
+          try {
+            const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+            fs.writeFile(rootDbFile, buff, (rootErr) => {
+              if (rootErr) console.warn('[Database Sync] Failed to update root database.sqlite:', rootErr);
+              setTimeout(() => { isWritingRootDb = false; }, 500);
+            });
+          } catch (e) {
+            isWritingRootDb = false;
+          }
+        }
+      });
+    }
+  );
+
+  // Start syncing to Google Sheets webhook (interval configurable via env)
+  const sheetsInterval = Number(process.env.GOOGLE_SHEETS_SYNC_MS || 300000);
+  startPeriodicSync(() => db, sheetsInterval);
+
+  // Watch root database.sqlite for external changes (e.g. user overrides/pastes a live database.sqlite)
+  try {
+    const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+    if (fs.existsSync(rootDbFile)) {
+      console.log(`[Database Sync] Setting up filesystem watcher on root database.sqlite...`);
+      let watchTimeout = null;
+      fs.watch(rootDbFile, (eventType) => {
+        if (eventType === 'change') {
+          if (isWritingRootDb) return;
+          
+          // Debounce watcher triggering to let copy complete completely
+          if (watchTimeout) clearTimeout(watchTimeout);
+          watchTimeout = setTimeout(async () => {
+            try {
+              if (!fs.existsSync(rootDbFile)) return;
+              const stats = fs.statSync(rootDbFile);
+              if (stats.size === 0) return;
+              
+              const activeStats = fs.existsSync(dbFile) ? fs.statSync(dbFile) : null;
+              if (activeStats && stats.size === activeStats.size && stats.mtimeMs <= activeStats.mtimeMs) {
+                // If it is the same size or older than active DB, skip to avoid duplicate reloads
+                return;
+              }
+              
+              console.log(`[Database Sync] External modification detected on root database.sqlite (${(stats.size / 1024 / 1024).toFixed(2)} MB). Syncing and hot-reloading DB...`);
+              fs.copyFileSync(rootDbFile, dbFile);
+              const success = await reloadDatabaseFromDisk();
+              if (success) {
+                console.log(`[Database Sync] SQLite hot-reload completed successfully.`);
+              }
+            } catch (watchErr) {
+              console.warn('[Database Sync] Failed to hot-reload database from watched file:', watchErr);
+            }
+          }, 300);
+        }
+      });
+    }
+  } catch (watcherErr) {
+    console.warn('[Database Sync] Failed to initialize root database file watcher:', watcherErr);
+  }
+
 } catch (err) {
   console.error('Failed to initialize SQL.js or DB:', err && (err.stack || err.message || err));
   // When embedded into another process (e.g., Vite dev server) we should not terminate the host process.
@@ -487,21 +751,121 @@ try {
   throw err;
 }
 
-// Helper to persist DB file and surface errors
+// Global helper to safely hot-reload active SQLite references and clear API caches
+async function reloadDatabaseFromDisk() {
+  try {
+    if (!fs.existsSync(dbFile)) {
+      console.warn('[Database Sync] Active database.sqlite file does not exist on disk during reload.');
+      return false;
+    }
+    
+    // Read the database bytes from the active disk file
+    const buff = fs.readFileSync(dbFile);
+    let testDb;
+    try {
+      testDb = new SQL.Database(new Uint8Array(buff));
+      testDb.exec("SELECT name FROM sqlite_master WHERE type='table'");
+    } catch (e) {
+      if (testDb) { try { testDb.close(); } catch {} }
+      console.error('[Database Sync] Failed to parse or verify reloaded database file structure:', e);
+      return false;
+    }
+    
+    // Close the old database reference
+    try {
+      if (db) db.close();
+    } catch (e) {
+      console.warn('[Database Sync] Error closing old database reference:', e);
+    }
+    
+    db = testDb;
+    await ensureSchemaAndIndexes();
+    
+    // Invalidate API caches
+    try {
+      cacheInvalidate('users');
+      cacheInvalidate('employees');
+      cacheInvalidate('attendance');
+      cacheInvalidate('timelogs');
+      cacheInvalidate('tasks');
+      cacheInvalidate('finance');
+      cacheInvalidate('checklist-templates');
+      cacheInvalidate('o2d');
+      cacheInvalidate('notepad');
+      cacheInvalidate('queries');
+      cacheInvalidate('reminders');
+      cacheInvalidate('leave');
+      cacheInvalidate('holidays');
+      cacheInvalidate('checklists');
+      cacheInvalidate('checklists:ref:');
+    } catch (e) {
+      console.warn('[Database Sync] Cache invalidation warning after DB reload:', e);
+    }
+    
+    console.log('[Database Sync] Database successfully reloaded and memory/disk sync complete.');
+    return true;
+  } catch (err) {
+    console.error('[Database Sync] Reload database from disk failed:', err);
+    return false;
+  }
+}
+
+// Helper to persist DB file (debounced to avoid blocking on burst writes)
 function persistDB() {
   try {
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    if (!db) return false;
+    if (dbPersistCtl) {
+      dbPersistCtl.schedule();
+    } else {
+      const buff = Buffer.from(db.export());
+      isWritingRootDb = true;
+      fs.writeFileSync(dbFile, buff);
+      try {
+        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+        fs.writeFileSync(rootDbFile, buff);
+      } catch (e) { /* ignore */ }
+      setTimeout(() => { isWritingRootDb = false; }, 500);
+    }
     return true;
   } catch (e) {
+    isWritingRootDb = false;
     console.error('Failed to persist DB file', e && (e.stack || e.message || e));
     return false;
   }
 }
 
+function persistDBNow() {
+  try {
+    if (!db) return false;
+    if (dbPersistCtl) {
+      dbPersistCtl.flushNow();
+    } else {
+      const buff = Buffer.from(db.export());
+      isWritingRootDb = true;
+      fs.writeFileSync(dbFile, buff);
+      try {
+        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+        fs.writeFileSync(rootDbFile, buff);
+      } catch (e) { /* ignore */ }
+      setTimeout(() => { isWritingRootDb = false; }, 500);
+    }
+    return true;
+  } catch (e) {
+    isWritingRootDb = false;
+    console.error('Failed to persist DB file (immediate)', e && (e.stack || e.message || e));
+    return false;
+  }
+}
+
+process.on('SIGINT', () => { try { persistDBNow(); } catch { /* ignore */ } });
+process.on('SIGTERM', () => { try { persistDBNow(); } catch { /* ignore */ } });
+
 // Backwards-compatible alias used by some handlers
 function saveToDB() {
   return persistDB();
 }
+
+// Core tables are ensured to exist early in database initialization
 
 // --- Migration: Hash any existing plaintext passwords ---
 try {
@@ -521,7 +885,7 @@ try {
     upd.free && upd.free();
   });
   if (toUpdate.length > 0) {
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     console.log('Migration: hashed existing plaintext passwords for', toUpdate.length, 'users');
   }
 } catch (err) {
@@ -586,7 +950,7 @@ try {
       dueDate TEXT,
       createdAt TEXT
     )`);
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     console.log('Tasks table created with minimal schema');
   } else {
     // If table exists, ensure required columns exist; add them if missing
@@ -598,7 +962,7 @@ try {
     }
     colsStmt.free();
 
-    const required = ['id', 'title', 'description', 'assignedTo', 'priority', 'dueDate', 'createdAt'];
+    const required = ['id', 'title', 'description', 'assignedTo', 'assignedBy', 'assigned_by', 'priority', 'dueDate', 'createdAt'];
     let altered = false;
     for (const col of required) {
       if (!existingCols.has(col)) {
@@ -623,14 +987,14 @@ try {
       }
     }
 
-    if (altered) fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    if (altered) persistDB();
   }
 } catch (err) {
   console.error('Tasks table check failed', err && (err.stack || err.message || err));
 }
 
 // Persist DB in case we created/altered tables
-fs.writeFileSync(dbFile, Buffer.from(db.export()));
+persistDB();
 
 // Migrate old 'T-*' tasks to 'KBT-*' format to maintain UI consistency
 try {
@@ -658,7 +1022,7 @@ try {
       }
     }
     if (altered) {
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log(`Migrated ${oldIds.length} tasks from T-* to KBT-* format`);
     }
   }
@@ -694,7 +1058,7 @@ try {
       }
     }
     if (altered) {
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log(`Migrated ${oldCTIds.length} checklist templates from CT-* to KCT-* format`);
     }
   }
@@ -729,7 +1093,7 @@ try {
       db.run(`UPDATE queries SET message = question WHERE (message IS NULL OR message = '') AND question IS NOT NULL`); // fallback
       console.log('Queries: data migration (columns -> columns) completed');
     } catch (e) { console.warn('Queries: data migration failed', e); }
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
   }
 } catch (e) { console.warn('Queries table check failed', e); }
 
@@ -742,7 +1106,7 @@ try {
     const ins = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
     ins.run(['Administrator', 'admin@fms.com', bcrypt.hashSync('admin', 10), 'ADMIN', null]);
     ins.free && ins.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     console.log('Added legacy default admin user admin@fms.com');
   } else {
     chk.free();
@@ -819,8 +1183,11 @@ const storagePMS = multer.diskStorage({
 });
 const uploadPMS = multer({ storage: storagePMS, fileFilter, limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Serve uploaded files
-app.use('/uploads', express.static(uploadsRoot));
+// Serve uploaded files with cache-control
+app.use('/uploads', express.static(uploadsRoot, {
+  maxAge: '1y',
+  immutable: true
+}));
 
 // Production-only API request logging (safe: do NOT print tokens)
 if (process.env.NODE_ENV === 'production') {
@@ -935,7 +1302,7 @@ app.post('/api/storage/:key', requireAuth, (req, res) => {
       const ins = db.prepare('INSERT INTO kv (key, value, updatedAt) VALUES (?,?,?)');
       ins.run([key, value, now]); ins.free && ins.free();
     }
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Stored', 201);
   } catch (err) { console.error('KV POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
@@ -1177,7 +1544,7 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // Users CRUD API
-app.get('/api/users', requireAuth, (req, res) => {
+app.get('/api/users', requireAuth, withCache('users', 15000), (req, res) => {
   try {
     console.log('GET /api/users from', req.headers.origin || 'no-origin');
     // Default: return only non-archived users unless explicitly requested
@@ -1274,7 +1641,7 @@ app.post('/api/users', requireAuth, (req, res) => {
     }
     insert.free && insert.free();
 
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Users POST error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -1301,7 +1668,7 @@ app.put('/api/users/:id', requireAuth, (req, res) => {
     const update = db.prepare('UPDATE users SET name = coalesce(?, name), email = coalesce(?, email), password = coalesce(?, password), role = coalesce(?, role), employeeId = coalesce(?, employeeId), is_archived = coalesce(?, is_archived), archived_at = coalesce(?, archived_at) WHERE id = ?');
     update.run([name || null, sanitizedEmail, hashed || null, role || null, employeeId || null, is_archived == null ? null : (is_archived ? 1 : 0), archivedAt, id]);
     update.free && update.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Updated');
   } catch (err) {
     console.error('Users PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -1321,11 +1688,157 @@ app.delete('/api/users/:id', requireAuth, (req, res) => {
     const upd = db.prepare('UPDATE users SET is_archived = ?, archived_at = ? WHERE id = ?');
     upd.run([1, archivedAt, id]);
     upd.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Archived');
   } catch (err) {
     console.error('Users DELETE (archive) error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
+  }
+});
+
+// Multer configuration for database file upload
+const storageDb = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsRoot);
+  },
+  filename: function (req, file, cb) {
+    cb(null, 'temp_db.sqlite');
+  }
+});
+const uploadDb = multer({ 
+  storage: storageDb,
+  fileFilter: (req, file, cb) => {
+    cb(null, true);
+  }
+});
+
+// ADMIN: Reload the database from server/database.sqlite disk file
+app.post('/api/admin/reload-db', requireAuth, async (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    console.log('Admin triggered SQLite database reload from disk...');
+
+    // Sync from root database.sqlite if it exists and is different/newer
+    try {
+      const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+      if (fs.existsSync(rootDbFile)) {
+        const rootStats = fs.statSync(rootDbFile);
+        let copyRoot = false;
+        if (fs.existsSync(dbFile)) {
+          const serverStats = fs.statSync(dbFile);
+          if (rootStats.size !== serverStats.size || rootStats.mtimeMs > serverStats.mtimeMs) {
+            copyRoot = true;
+          }
+        } else {
+          copyRoot = true;
+        }
+        if (copyRoot && rootStats.size > 0) {
+          console.log(`[Database Sync] Reload-db found different/newer root database.sqlite (${(rootStats.size / 1024 / 1024).toFixed(2)} MB). Syncing to ${dbFile}...`);
+          fs.copyFileSync(rootDbFile, dbFile);
+        }
+      }
+    } catch (syncErr) {
+      console.warn('[Database Sync] Reload-db failed to sync root database.sqlite:', syncErr);
+    }
+
+    if (!fs.existsSync(dbFile)) {
+      return failure(res, 'Database file not found on disk', 404);
+    }
+
+    // Flush any pending write first
+    if (dbPersistCtl) {
+      dbPersistCtl.flushNow();
+    }
+
+    const successReload = await reloadDatabaseFromDisk();
+    if (!successReload) {
+      return failure(res, 'Invalid database file structure or corrupt file', 400);
+    }
+
+    console.log('Database successfully reloaded from disk and verified.');
+    return success(res, null, 'Database reloaded and synchronized successfully');
+  } catch (err) {
+    console.error('Reload DB error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error during DB reload', 500);
+  }
+});
+
+// ADMIN: Upload a new SQLite database file and swap it in
+app.post('/api/admin/upload-db', requireAuth, uploadDb.single('dbFile'), async (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (!req.file) return failure(res, 'No database file provided', 400);
+
+    const tempFilePath = req.file.path;
+    console.log('Admin uploaded new database file. Verifying...', tempFilePath);
+
+    const buff = fs.readFileSync(tempFilePath);
+    let testDb;
+    try {
+      testDb = new SQL.Database(new Uint8Array(buff));
+      testDb.exec("SELECT name FROM sqlite_master WHERE type='table'");
+    } catch (e) {
+      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+      if (testDb) { try { testDb.close(); } catch {} }
+      return failure(res, 'Invalid SQLite database file format', 400);
+    }
+
+    // Flush old DB just in case
+    if (dbPersistCtl) {
+      dbPersistCtl.flushNow();
+    }
+
+    // Close old database
+    try {
+      if (db) db.close();
+    } catch (e) {
+      console.warn('Error closing old database:', e);
+    }
+
+    // Overwrite the primary database file with the uploaded one
+    try {
+      fs.copyFileSync(tempFilePath, dbFile);
+      // Keep root database file in sync if it exists or in parent directory
+      try {
+        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+        fs.copyFileSync(tempFilePath, rootDbFile);
+      } catch (rootErr) { /* ignore */ }
+      fs.unlinkSync(tempFilePath);
+    } catch (fsErr) {
+      console.error('Failed to swap database files on disk', fsErr);
+      return failure(res, 'Failed to replace database file on disk', 500);
+    }
+
+    db = testDb;
+    await ensureSchemaAndIndexes();
+
+    // Invalidate API caches
+    try {
+      cacheInvalidate('users');
+      cacheInvalidate('employees');
+      cacheInvalidate('attendance');
+      cacheInvalidate('timelogs');
+      cacheInvalidate('tasks');
+      cacheInvalidate('finance');
+      cacheInvalidate('checklist-templates');
+      cacheInvalidate('o2d');
+      cacheInvalidate('notepad');
+      cacheInvalidate('queries');
+      cacheInvalidate('reminders');
+      cacheInvalidate('leave');
+      cacheInvalidate('holidays');
+    } catch (e) {
+      console.warn('Cache invalidation warning after DB upload:', e);
+    }
+
+    console.log('Uploaded database successfully applied and schema verified.');
+    return success(res, null, 'Database file uploaded and applied successfully');
+  } catch (err) {
+    console.error('Upload DB error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error during DB upload', 500);
   }
 });
 
@@ -1371,7 +1884,7 @@ app.post('/api/admin/cleanup-demo-users', requireAuth, (req, res) => {
       delUsers.run([demoIds[0], demoIds[1]]); delUsers.free();
 
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
 
       // Log remaining users for validation
       const out = [];
@@ -1411,7 +1924,7 @@ app.post('/api/admin/archive-demo-users', requireAuth, (req, res) => {
         try { const ue = db.prepare('UPDATE employees SET is_archived = ?, archived_at = ? WHERE id = ?'); ue.run([1, archivedAt, eid]); ue.free(); } catch (e) { /* ignore */ }
       }
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { archived: true }, 'Demo users archived');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { /* ignore */ }
@@ -1449,7 +1962,7 @@ function ensureEmployeesTable() {
         hideAttendance INTEGER DEFAULT 0,
         compOffBalance REAL
       )`);
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log('Employees table created');
     }
   } catch (err) {
@@ -1468,13 +1981,13 @@ try {
   if (!cols.has('hideAttendance')) {
     try {
       db.run("ALTER TABLE employees ADD COLUMN hideAttendance INTEGER DEFAULT 0");
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log('Migration: added employees.hideAttendance column');
     } catch (e) { console.warn('Failed to add employees.hideAttendance column', e && (e.message || e)); }
   }
 } catch (e) { /* ignore */ }
 
-app.get('/api/employees', requireAuth, (req, res) => {
+app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res) => {
   try {
     ensureEmployeesTable();
     const archived = req.query.archived === '1' || req.query.archived === 'true';
@@ -1485,15 +1998,21 @@ app.get('/api/employees', requireAuth, (req, res) => {
 
     if (isAdmin) {
       console.log('GET /api/employees from', req.headers.origin || 'no-origin');
-      const q = archived ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, archived_at FROM employees WHERE coalesce(is_archived, 0) = 1' : 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
+      const fullDocs = req.query.full === '1' || req.query.full === 'true';
+      const q = archived
+        ? (fullDocs
+          ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, archived_at FROM employees WHERE coalesce(is_archived, 0) = 1'
+          : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, archived_at, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 1")
+        : (fullDocs
+          ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0'
+          : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0");
       const stmt = db.prepare(q);
       const out = [];
       while (stmt.step()) {
         const row = stmt.getAsObject();
-        if (row.documents) {
+        if (fullDocs && row.documents) {
           try {
             const docs = JSON.parse(row.documents);
-            // Surface avatar as a top-level field for frontend compatibility
             if (docs && docs.avatar) row.avatar = docs.avatar;
             row.documents = docs;
           } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
@@ -1506,20 +2025,11 @@ app.get('/api/employees', requireAuth, (req, res) => {
     } else if (req.user && req.user.employeeId) {
       // Allow non-admin authenticated users to fetch the list of active employees
       // so features like team chat can display colleagues.
-      const q = 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0';
+      const q = "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0";
       const stmt = db.prepare(q);
       const out = [];
       while (stmt.step()) {
-        const row = stmt.getAsObject();
-        if (row.documents) {
-          try {
-            const docs = JSON.parse(row.documents);
-            // Surface avatar as a top-level field for frontend compatibility
-            if (docs && docs.avatar) row.avatar = docs.avatar;
-            row.documents = docs;
-          } catch (e) { console.warn('Failed to parse documents JSON for employee', row.id, e); }
-        }
-        out.push(row);
+        out.push(stmt.getAsObject());
       }
       stmt.free();
       console.log('GET /api/employees -> returning', out.length, 'rows for non-admin user', req.user && req.user.employeeId);
@@ -1576,7 +2086,7 @@ app.post('/api/employees', requireAuth, (req, res) => {
     const insert = db.prepare('INSERT INTO employees (id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     insert.run([id, name, department || null, joiningDate || null, createdAt || new Date().toISOString(), status || 'Active', designation || null, email || null, phone || null, birthDate || null, address || null, docs, hideAttendance ? 1 : 0, compOffBalance || 0]);
     insert.free && insert.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Employees POST error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -1619,7 +2129,7 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), is_archived = coalesce(?, is_archived), archived_at = coalesce(?, archived_at) WHERE id = ?');
     update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, is_archived == null ? null : (is_archived ? 1 : 0), archivedAt, id]);
     update.free && update.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Updated');
   } catch (err) {
     console.error('Employees PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -1640,7 +2150,7 @@ app.delete('/api/employees/:id', requireAuth, (req, res) => {
     const upd = db.prepare('UPDATE employees SET is_archived = ?, archived_at = ? WHERE id = ?');
     upd.run([1, archivedAt, id]);
     upd.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Archived');
   } catch (err) {
     console.error('Employees DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -1808,7 +2318,7 @@ app.put('/api/employee/profile/:userId', requireAuth, uploadProfile.single('prof
       update.run([full_name || null, designation || null, phone || null, profileImagePath || null, userId]);
       update.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log('Tasks POST: created task', { id: row && row.id, assigned_to, assignedToEmp, assigned_by: Number(req.user.id) });
       return success(res, null, 'Updated');
     } catch (e) {
@@ -1845,7 +2355,7 @@ app.post('/api/employee/documents', requireAuth, uploadDocument.single('file'), 
       insert.run([userId, document_name || req.file.originalname, filePath, fileType, new Date().toISOString()]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, null, 'Created', 201);
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { /* ignore */ }
@@ -1901,7 +2411,7 @@ app.delete('/api/employee/documents/:id', requireAuth, (req, res) => {
       db.run('COMMIT');
       // Remove file from disk (best-effort)
       try { if (doc.file_path) fs.unlinkSync(path.join(__dirname, '..', doc.file_path)); } catch (e) { /* ignore */ }
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, null, 'Deleted');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { /* ignore */ }
@@ -2032,7 +2542,7 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
     ]);
     stmt.free();
 
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     console.log(`[ATTENDANCE] PUT success: ${exists ? 'Updated' : 'Created'}`);
     return success(res, null, exists ? 'Updated' : 'Created');
   } catch (err) {
@@ -2041,7 +2551,7 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
   }
 });
 
-app.get('/api/attendance', requireAuth, (req, res) => {
+app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, res) => {
   try {
     // Optional query: ?userId= or ?date=
     const userId = req.query.userId;
@@ -2078,7 +2588,7 @@ app.post('/api/attendance', requireAuth, (req, res) => {
     const insert = db.prepare('INSERT INTO attendance (id, userId, date, clockIn, clockOut, value, location, notes, createdAt) VALUES (?,?,?,?,?,?,?,?,?)');
     insert.run([id, userId, date, clockIn || null, clockOut || null, value == null ? null : value, location || null, notes || null, new Date().toISOString()]);
     insert.free && insert.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Attendance POST error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -2093,7 +2603,7 @@ app.delete('/api/attendance/:id', requireAuth, (req, res) => {
     const del = db.prepare('DELETE FROM attendance WHERE id = ?');
     del.run([id]);
     del.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Deleted');
   } catch (err) {
     console.error('Attendance DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -2102,7 +2612,7 @@ app.delete('/api/attendance/:id', requireAuth, (req, res) => {
 });
 
 // Time logs endpoints
-app.get('/api/timelogs', requireAuth, (req, res) => {
+app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) => {
   try {
     const userId = req.query.userId;
     let q = 'SELECT id, userId, startTime, endTime, task, notes, createdAt FROM timelogs';
@@ -2149,7 +2659,7 @@ try {
         status TEXT DEFAULT 'pending',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`);
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
   }
 
   // Run migrations: add missing compatibility columns without altering existing primary key type
@@ -2159,7 +2669,7 @@ try {
   colsStmt2.free();
   const addIfMissing = (name, sql) => {
     if (!colsSet.has(name)) {
-      try { db.run(sql); console.log('Added tasks column (migration):', name); fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Failed to add tasks column', name, e && (e.message || e)); }
+      try { db.run(sql); console.log('Added tasks column (migration):', name); persistDB(); } catch (e) { console.warn('Failed to add tasks column', name, e && (e.message || e)); }
     }
   };
   addIfMissing('assigned_to', 'ALTER TABLE tasks ADD COLUMN assigned_to INTEGER');
@@ -2285,7 +2795,7 @@ app.post('/api/tasks', requireAuth, (req, res) => {
       }
 
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
 
       row.extensionHistory = (() => { try { return JSON.parse(row.extensionHistory || '[]'); } catch (e) { return []; } })();
       row.extensionRequest = (() => { try { return row.extensionRequest ? JSON.parse(row.extensionRequest) : undefined; } catch (e) { return undefined; } })();
@@ -2303,7 +2813,7 @@ app.post('/api/tasks', requireAuth, (req, res) => {
 });
 
 // GET /api/tasks - get tasks for the logged-in user (admin returns all)
-app.get('/api/tasks', requireAuth, (req, res) => {
+app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
 
@@ -2665,7 +3175,7 @@ app.post('/api/calendar', requireAuth, (req, res) => {
       insert.run([id, title, description || null, startTime, endTime || null, req.user && (req.user.employeeId || req.user.id) || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) {
@@ -2697,13 +3207,13 @@ app.post('/api/finance', requireAuth, (req, res) => {
       insert.run([id, amount, currency || 'INR', type || 'PAYMENT', description || null, date || new Date().toISOString(), req.user && (req.user.employeeId || req.user.id) || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Finance POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
-app.get('/api/finance', requireAuth, (req, res) => {
+app.get('/api/finance', requireAuth, withCache('finance', 15000), (req, res) => {
   try {
     const stmt = db.prepare('SELECT id, amount, currency, type, description, date, createdBy, createdAt FROM finance ORDER BY date DESC');
     const out = [];
@@ -2777,7 +3287,7 @@ app.delete('/api/finance/client', requireAuth, (req, res) => {
       toDelete.forEach(tid => del.run([tid]));
       del.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
 
       // Try to fetch actor email for audit info
       let actorEmail = null;
@@ -2979,7 +3489,7 @@ app.post('/api/projects', requireAuth, (req, res) => {
       insert.run([id, name, address || null, status || 'ACTIVE', data ? JSON.stringify(data) : null, req.user && (req.user.employeeId || req.user.id) || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Projects POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
@@ -3012,7 +3522,8 @@ app.post('/api/checklists', requireAuth, (req, res) => {
       insert.run([id, refId, refType || null, item, 0, req.user && (req.user.employeeId || req.user.id) || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
+      cacheInvalidate('checklists');
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Checklists POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
@@ -3033,21 +3544,52 @@ app.post('/api/checklists/bulk', requireAuth, (req, res) => {
       }
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
+      cacheInvalidate('checklists');
       return success(res, { count: items.length }, 'Bulk created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Checklists bulk POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
+// Batch fetch all checklist instances (avoids N+1 per-template requests from dashboard)
+app.get('/api/checklists-instances/all', requireAuth, (req, res) => {
+  try {
+    const cacheKey = 'checklists:all';
+    const hit = cacheGet(cacheKey);
+    if (hit) return success(res, hit);
+
+    const stmt = db.prepare('SELECT id, refId, refType, item, done, createdBy, createdAt FROM checklists ORDER BY refId, createdAt ASC');
+    const grouped = {};
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const ref = String(row.refId);
+      if (!grouped[ref]) grouped[ref] = [];
+      grouped[ref].push(row);
+    }
+    stmt.free();
+    cacheSet(cacheKey, grouped, 15000);
+    cacheInvalidate('checklists:ref:');
+    return success(res, grouped);
+  } catch (err) {
+    console.error('Checklists all GET error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
 app.get('/api/checklists/:refId', requireAuth, (req, res) => {
   try {
     const refId = req.params.refId;
+    const cacheKey = `checklists:ref:${refId}`;
+    const hit = cacheGet(cacheKey);
+    if (hit) return success(res, hit);
     const stmt = db.prepare('SELECT id, refId, refType, item, done, createdBy, createdAt FROM checklists WHERE refId = ? ORDER BY createdAt ASC');
     stmt.bind([refId]);
     const out = [];
     while (stmt.step()) out.push(stmt.getAsObject());
     stmt.free();
-    return success(res, out || []);
+    const outArr = out || [];
+    cacheSet(cacheKey, outArr, 15000);
+    return success(res, outArr);
   } catch (err) { console.error('Checklists GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
@@ -3078,7 +3620,8 @@ app.put('/api/checklists/:id', requireAuth, (req, res) => {
         stmt.free();
       }
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
+      cacheInvalidate('checklists');
       return success(res, { id, message: 'Checklist item updated' });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3098,7 +3641,8 @@ app.delete('/api/checklists/:id', requireAuth, (req, res) => {
       del.run([id]);
       del.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
+      cacheInvalidate('checklists');
       return success(res, { message: 'Checklist item deleted' });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3131,13 +3675,13 @@ app.post('/api/checklist-templates', requireAuth, (req, res) => {
       insert.run([tplId, data, req.user && (req.user.employeeId || req.user.id) || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id: tplId }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Checklist templates POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
-app.get('/api/checklist-templates', requireAuth, (req, res) => {
+app.get('/api/checklist-templates', requireAuth, withCache('checklist-templates', 15000), (req, res) => {
   try {
     const stmt = db.prepare('SELECT id, data, createdBy, createdAt FROM checklist_templates ORDER BY createdAt DESC');
     const out = [];
@@ -3151,13 +3695,18 @@ app.get('/api/checklist-templates', requireAuth, (req, res) => {
 app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
-    const { taskName, doerId, department, startDate, config, active } = req.body || {};
+    const { taskName, doerId, department, startDate, config, active, transferEffectiveDate } = req.body || {};
 
     // Check if template exists
-    const check = db.prepare('SELECT id FROM checklist_templates WHERE id = ?');
+    const check = db.prepare('SELECT id, data FROM checklist_templates WHERE id = ?');
     check.bind([id]);
     if (!check.step()) { check.free(); return failure(res, 'Template not found', 404); }
+    const oldTpl = check.getAsObject();
     check.free();
+
+    let oldData = {};
+    try { oldData = JSON.parse(oldTpl.data); } catch (e) {}
+    const oldDoerId = oldData.doerId;
 
     try {
       db.run('BEGIN TRANSACTION');
@@ -3165,8 +3714,46 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
       const update = db.prepare('UPDATE checklist_templates SET data = ? WHERE id = ?');
       update.run([data, id]);
       update.free();
+
+      // If doerId changed and transferEffectiveDate is provided, update future pending instances
+      if (doerId && oldDoerId && doerId !== oldDoerId && transferEffectiveDate) {
+        // Find all checklists items referencing this template (refId = id)
+        const getItems = db.prepare('SELECT id, item, done FROM checklists WHERE refId = ?');
+        getItems.bind([id]);
+        const itemsToUpdate = [];
+        while (getItems.step()) {
+          const row = getItems.getAsObject();
+          try {
+            const parsed = JSON.parse(row.item);
+            // Update if it is PENDING and date is >= transferEffectiveDate
+            if (!row.done && parsed.status === 'PENDING' && parsed.date >= transferEffectiveDate) {
+              parsed.doerId = doerId;
+              parsed.department = department || parsed.department;
+              itemsToUpdate.push({ id: row.id, item: JSON.stringify(parsed) });
+            } else {
+              // Ensure older or completed/stopped instances lock in their original doerId explicitly in JSON
+              if (!parsed.doerId) {
+                parsed.doerId = oldDoerId;
+                parsed.department = oldData.department || parsed.department;
+                itemsToUpdate.push({ id: row.id, item: JSON.stringify(parsed) });
+              }
+            }
+          } catch (e) {}
+        }
+        getItems.free();
+
+        // Perform the updates
+        const updItem = db.prepare('UPDATE checklists SET item = ? WHERE id = ?');
+        for (const item of itemsToUpdate) {
+          updItem.run([item.item, item.id]);
+        }
+        updItem.free();
+        console.log(`[Transfer Task] Updated ${itemsToUpdate.length} checklist items to new doer ${doerId} from date ${transferEffectiveDate}`);
+      }
+
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
+      cacheInvalidate('checklists');
       return success(res, { id, message: 'Template updated' });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3192,7 +3779,7 @@ app.delete('/api/checklist-templates/:id', requireAuth, (req, res) => {
     delTemplate.free();
 
     // Persist to DB file
-    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('DB persist failed', e); }
+    try { persistDB(); } catch (e) { console.warn('DB persist failed', e); }
 
     console.log('DELETE checklist-template succeeded', { id });
     return success(res, { message: 'Template deleted successfully', id });
@@ -3216,13 +3803,13 @@ app.post('/api/o2d', requireAuth, (req, res) => {
       insert.run([id, JSON.stringify(data), status || 'NEW', req.user && (req.user.employeeId || req.user.id) || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('O2D POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
-app.get('/api/o2d', requireAuth, (req, res) => {
+app.get('/api/o2d', requireAuth, withCache('o2d', 15000), (req, res) => {
   try {
     const stmt = db.prepare('SELECT id, data, status, createdBy, createdAt FROM o2d ORDER BY createdAt DESC');
     const out = [];
@@ -3296,7 +3883,7 @@ function handleDeleteO2d(req, res) {
       del.run([id]); del.free();
       db.run('COMMIT');
       console.log('O2D DELETE success', { id, deletedBy: req.user && (req.user.employeeId || req.user.id) });
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after o2d delete', e && (e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after o2d delete', e && (e.message || e)); }
       return success(res, null, 'Deleted');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3349,7 +3936,7 @@ app.post('/api/sitephotos', requireAuth, (req, res) => {
       insert.run([id, projectId, uploadedBy, filename, filepath, imageUrl, gps ? JSON.stringify(gps) : null, date, timestamp, timestamp]);
       insert.free();
       db.run('COMMIT');
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after site photo insert', e && (e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after site photo insert', e && (e.message || e)); }
       return success(res, { id, projectId, imageUrl, filename, uploadedBy, date, timestamp });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3531,7 +4118,7 @@ app.post('/api/leaves', requireAuth, (req, res) => {
       ]);
       insert.free();
       db.run('COMMIT');
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave insert', e && (e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after leave insert', e && (e.message || e)); }
 
       const responseData = {
         id,
@@ -3624,7 +4211,7 @@ app.put('/api/leaves/:id', requireAuth, (req, res) => {
         stmt.free();
       }
       db.run('COMMIT');
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave update', e && (e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after leave update', e && (e.message || e)); }
       console.log('DEBUG: Leave updated successfully:', { id, status });
       return success(res, { id, message: 'Leave updated successfully' });
     } catch (e) {
@@ -3663,7 +4250,7 @@ app.delete('/api/leaves/:id', requireAuth, (req, res) => {
       del.run([id]);
       del.free();
       db.run('COMMIT');
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after leave delete', e && (e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after leave delete', e && (e.message || e)); }
       console.log('DEBUG: Leave deleted successfully:', id);
       return success(res, { message: 'Leave deleted successfully' });
     } catch (e) {
@@ -3730,7 +4317,7 @@ app.put('/api/projects/:id/close', requireAuth, (req, res) => {
       const upd = db.prepare("UPDATE projects SET status = ? WHERE id = ?");
       upd.run(['CLOSED', id]); upd.free && upd.free();
       db.run('COMMIT');
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after project close', e && (e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after project close', e && (e.message || e)); }
       return success(res, null, 'Project closed');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3753,7 +4340,7 @@ app.put('/api/o2d/:id', requireAuth, (req, res) => {
       upd.run([JSON.stringify(data), status || null, id]);
       upd.free();
       db.run('COMMIT');
-      try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after o2d update', e && (e.stack || e.message || e)); }
+      try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after o2d update', e && (e.stack || e.message || e)); }
 
       // If this update indicates a delivery proof was uploaded and is awaiting admin review,
       // create a notification for admins so they can review the proof promptly.
@@ -3766,7 +4353,7 @@ app.put('/api/o2d/:id', requireAuth, (req, res) => {
           const ins = db.prepare('INSERT INTO notifications (id, userId, message, meta, isRead, createdAt) VALUES (?,?,?,?,?,?)');
           ins.run([nid, 'ADMIN', message, meta, 0, createdAt]);
           ins.free && ins.free();
-          try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after notification insert', e && (e.stack || e.message || e)); }
+          try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after notification insert', e && (e.stack || e.message || e)); }
           console.log('O2D PUT: notification created for admin', { id, nid });
         }
       } catch (e) {
@@ -3811,7 +4398,7 @@ app.post('/api/chat', requireAuth, (req, res) => {
       insert.run([id, savedTeamId, req.user && (req.user.employeeId || req.user.id) || null, message != null ? String(message) : null, meta ? JSON.stringify(meta) : null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log('Chat POST: saved message', { id, teamId: savedTeamId, sender: req.user && req.user.employeeId });
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
@@ -4017,7 +4604,7 @@ app.post('/api/chat/:teamId/read', requireAuth, (req, res) => {
     const up = db.prepare('INSERT OR REPLACE INTO chat_reads (teamId, userId, lastReadAt) VALUES (?,?,?)');
     up.run([teamId, userId, lastReadAt]);
     up.free();
-    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after chat read', e && (e.message || e)); }
+    try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after chat read', e && (e.message || e)); }
 
     // For debugging: fetch last message in this team and print content so we can confirm which message was marked read
     try {
@@ -4055,7 +4642,7 @@ app.put('/api/chat/:id', requireAuth, (req, res) => {
     const upd = db.prepare('UPDATE chat SET message = coalesce(?, message), meta = coalesce(?, meta), edited = 1, updatedAt = ?, is_pinned = coalesce(?, is_pinned) WHERE id = ?');
     upd.run([message || null, meta ? JSON.stringify(meta) : null, updatedAt, isPinned == null ? null : (isPinned ? 1 : 0), id]);
     upd.free();
-    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after chat edit', e && (e.message || e)); }
+    try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after chat edit', e && (e.message || e)); }
     console.log('Chat PUT: edited', id, 'by', req.user && req.user.employeeId);
     return success(res, { id }, 'Updated');
   } catch (err) { console.error('Chat PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
@@ -4081,7 +4668,7 @@ app.delete('/api/chat/:id', requireAuth, (req, res) => {
     let deletedMeta = JSON.stringify({ deletedAt });
     upd.run([deletedMeta, id]);
     upd.free();
-    try { fs.writeFileSync(dbFile, Buffer.from(db.export())); } catch (e) { console.warn('Warning: failed to persist DB after chat delete', e && (e.message || e)); }
+    try { persistDB(); } catch (e) { console.warn('Warning: failed to persist DB after chat delete', e && (e.message || e)); }
     console.log('Chat DELETE: soft-deleted', id, 'by', req.user && req.user.employeeId);
     return success(res, { id }, 'Deleted');
   } catch (err) { console.error('Chat DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
@@ -4266,7 +4853,7 @@ app.post('/api/queries', requireAuth, (req, res) => {
       insert.free();
 
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id, status: 'OPEN', createdAt: now }, 'Query submitted successfully', 201);
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -4279,7 +4866,7 @@ app.post('/api/queries', requireAuth, (req, res) => {
   }
 });
 
-app.get('/api/queries', requireAuth, (req, res) => {
+app.get('/api/queries', requireAuth, withCache('queries', 15000), (req, res) => {
   // Provide additional logging when debugging query listing issues
   console.log('[API] GET /api/queries requested by', req.user && { id: req.user.id, employeeId: req.user.employeeId });
 
@@ -4329,7 +4916,7 @@ app.put('/api/queries/:id', requireAuth, (req, res) => {
     stmt.run([status || null, response || null, now, id]);
     stmt.free();
 
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Query updated');
   } catch (err) {
     console.error('Queries PUT error', err);
@@ -4346,7 +4933,7 @@ app.delete('/api/queries/:id', requireAuth, (req, res) => {
     const del = db.prepare('DELETE FROM queries WHERE id = ?');
     del.run([id]);
     del.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Deleted');
   } catch (err) {
     console.error('Queries DELETE error', err && (err.stack || err.message || err));
@@ -4488,7 +5075,7 @@ app.delete('/api/calendar/:id', requireAuth, (req, res) => {
 });
 
 // Reminders (personal reminders CRUD)
-app.get('/api/reminders', requireAuth, (req, res) => {
+app.get('/api/reminders', requireAuth, withCache('reminders', 30000), (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     const isAdmin = req.user.role === 'ADMIN';
@@ -4595,13 +5182,13 @@ app.post('/api/leave', requireAuth, (req, res) => {
       insert.run([id, userId, startDate, endDate, days, 'PENDING', reason || null, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Leave POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
-app.get('/api/leave', requireAuth, (req, res) => {
+app.get('/api/leave', requireAuth, withCache('leave', 15000), (req, res) => {
   try {
     const userId = req.query.userId;
     let q = 'SELECT id, userId, startDate, endDate, days, status, reason, createdAt FROM leaves';
@@ -4629,19 +5216,24 @@ app.post('/api/holidays', requireAuth, (req, res) => {
       insert.run([id, name, date, recurring ? 1 : 0, createdAt]);
       insert.free();
       db.run('COMMIT');
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       return success(res, { id }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Holidays POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
-app.get('/api/holidays', requireAuth, (req, res) => {
+app.get('/api/holidays', requireAuth, withCache('holidays', 30000), (req, res) => {
   try {
+    const cacheKey = 'holidays:all';
+    const hit = cacheGet(cacheKey);
+    if (hit) return success(res, hit);
     const stmt = db.prepare('SELECT id, name, date, recurring, createdAt FROM holidays ORDER BY date ASC');
     const out = [];
     while (stmt.step()) out.push(stmt.getAsObject());
     stmt.free();
-    return success(res, out || []);
+    const data = out || [];
+    cacheSet(cacheKey, data, 120000);
+    return success(res, data);
   } catch (err) { console.error('Holidays GET error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
@@ -4651,7 +5243,7 @@ app.delete('/api/holidays/:id', requireAuth, (req, res) => {
     const id = req.params.id;
     const del = db.prepare('DELETE FROM holidays WHERE id = ?');
     del.run([id]); del.free && del.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Deleted');
   } catch (err) { console.error('Holidays DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
@@ -4669,7 +5261,7 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
     insert.run([id, userId, startTime, endTime || null, task || null, notes || null, new Date().toISOString()]);
     insert.free && insert.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Timelogs POST error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -4688,7 +5280,7 @@ app.put('/api/timelogs/:id', requireAuth, (req, res) => {
     const update = db.prepare('UPDATE timelogs SET startTime = coalesce(?, startTime), endTime = coalesce(?, endTime), task = coalesce(?, task), notes = coalesce(?, notes) WHERE id = ?');
     update.run([startTime || null, endTime || null, task || null, notes || null, id]);
     update.free && update.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Updated');
   } catch (err) {
     console.error('Timelogs PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -4702,7 +5294,7 @@ app.delete('/api/timelogs/:id', requireAuth, (req, res) => {
     const del = db.prepare('DELETE FROM timelogs WHERE id = ?');
     del.run([id]);
     del.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Deleted');
   } catch (err) {
     console.error('Timelogs DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -4784,7 +5376,7 @@ if (process.env.NODE_ENV !== 'production') {
         const insert = db.prepare('INSERT OR IGNORE INTO o2d (id, data, status, createdBy, createdAt) VALUES (?,?,?,?,?)');
         insert.run([id, JSON.stringify(sample), sample.status, req.user && (req.user.employeeId || req.user.id) || null, new Date().toISOString()]);
         insert.free();
-        fs.writeFileSync(dbFile, Buffer.from(db.export()));
+        persistDB();
       } catch (e) { console.error('Seed o2d insert failed', e && (e.stack || e.message || e)); return failure(res, 'Seed failed', 500); }
       return success(res, { seededId: id }, 'Seeded');
     } catch (err) { console.error('Seed o2d error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
@@ -5488,7 +6080,7 @@ function ensureCrmLeadsTable() {
         created_at TEXT,
         updated_at TEXT
       )`);
-      fs.writeFileSync(dbFile, Buffer.from(db.export()));
+      persistDB();
       console.log('crm_leads table created');
     }
   } catch (err) {
@@ -5540,7 +6132,7 @@ app.post('/api/crm/leads', requireAuth, (req, res) => {
     const insert = db.prepare('INSERT INTO crm_leads (id, s_no, date, name, mobile, source, site_visit, status, priority, next_followup_date, deal_value, remarks, assigned_to, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     insert.run([id, s_no, date, name, mobile, source || 'Call', site_visit ? 1 : 0, status || 'New', priority || 'Warm', next_followup_date || null, deal_value || 0, remarks || null, assigned_to || null, now, now]);
     insert.free && insert.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, { id, s_no }, 'Lead created', 201);
   } catch (err) {
     console.error('POST /api/crm/leads error:', err);
@@ -5564,7 +6156,7 @@ app.put('/api/crm/leads/:id', requireAuth, (req, res) => {
     
     update.run([name || null, mobile || null, source || null, site_visit == null ? null : (site_visit ? 1 : 0), status || null, priority || null, next_followup_date !== undefined ? next_followup_date : null, deal_value !== undefined ? deal_value : null, remarks !== undefined ? remarks : null, assigned_to !== undefined ? assigned_to : null, now, id]);
     update.free && update.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Lead updated');
   } catch (err) {
     console.error('PUT /api/crm/leads/:id error:', err);
@@ -5589,7 +6181,7 @@ app.delete('/api/crm/leads/:id', requireAuth, (req, res) => {
     const del = db.prepare('DELETE FROM crm_leads WHERE id = ?');
     del.run([id]);
     del.free && del.free();
-    fs.writeFileSync(dbFile, Buffer.from(db.export()));
+    persistDB();
     return success(res, null, 'Lead deleted');
   } catch (err) {
     console.error('DELETE /api/crm/leads/:id error:', err);

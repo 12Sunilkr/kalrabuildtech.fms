@@ -1,9 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Note, User } from '../types';
 import { StickyNote, Plus, Search, X, Edit2, Trash2, Calendar, Tag } from 'lucide-react';
 import { format } from 'date-fns';
-import { AITextEnhancer } from './AITextEnhancer';
+
 import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
 
 interface NotepadProps {
@@ -20,7 +20,7 @@ const NOTE_COLORS = [
   { id: 'white', class: 'bg-white border-slate-200' },
 ];
 
-export const Notepad: React.FC<NotepadProps> = ({ notes, setNotes, currentUser }) => {
+const NotepadComponent: React.FC<NotepadProps> = ({ notes, setNotes, currentUser }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [currentNote, setCurrentNote] = useState<Partial<Note>>({
@@ -52,32 +52,28 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, setNotes, currentUser }
     .filter(n => n.title.toLowerCase().includes(searchTerm.toLowerCase()) || n.content.toLowerCase().includes(searchTerm.toLowerCase()))
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
-  const handleSaveNote = async () => {
-    if (currentNote.title && currentNote.content) {
-      try {
-        const payload = {
-          title: currentNote.title,
-          content: currentNote.content,
-          category: currentNote.category,
-          color: currentNote.color
-        };
+  const handleSaveNote = async (noteData: { title: string; content: string; category: string; color: string; id?: string }) => {
+    try {
+      const payload = {
+        title: noteData.title,
+        content: noteData.content,
+        category: noteData.category,
+        color: noteData.color
+      };
 
-        if (isEditing && currentNote.id) {
-          await api.put(`/notepad/${encodeURIComponent(currentNote.id)}`, payload);
-        } else {
-          await api.post('/notepad', payload);
-        }
-
-        // Refresh notes list from server
-        const res = await safeGet(`/notepad/${encodeURIComponent(userId)}`);
-        setNotes(ensureArray(extractPayload(res)));
-        closeModal();
-      } catch (e) {
-        console.error('Failed to save note', e);
-        alert('Failed to save note to server');
+      if (isEditing && noteData.id) {
+        await api.put(`/notepad/${encodeURIComponent(noteData.id)}`, payload);
+      } else {
+        await api.post('/notepad', payload);
       }
-    } else {
-      alert("Title and content are required.");
+
+      // Refresh notes list from server
+      const res = await safeGet(`/notepad/${encodeURIComponent(userId)}`);
+      setNotes(ensureArray(extractPayload(res)));
+      closeModal();
+    } catch (e) {
+      console.error('Failed to save note', e);
+      alert('Failed to save note to server');
     }
   };
 
@@ -188,75 +184,113 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, setNotes, currentUser }
       )}
 
       {/* ADD/EDIT MODAL */}
-      {showModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-extrabold text-slate-800">{isEditing ? 'Edit Note' : 'New Note'}</h3>
-              <button onClick={closeModal} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
-            </div>
-            <div className="p-6 space-y-4 overflow-y-auto">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Title</label>
-                <input
-                  type="text"
-                  className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-yellow-400 outline-none font-bold text-lg"
-                  value={currentNote.title || ''}
-                  onChange={e => setCurrentNote({ ...currentNote, title: e.target.value })}
-                  placeholder="Note Title"
-                  autoFocus
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Category</label>
-                  <select
-                    className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-yellow-400 outline-none bg-white"
-                    value={currentNote.category}
-                    onChange={e => setCurrentNote({ ...currentNote, category: e.target.value as any })}
-                  >
-                    <option value="Work">Work</option>
-                    <option value="Personal">Personal</option>
-                    <option value="Important">Important</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Color</label>
-                  <div className="flex gap-2">
-                    {NOTE_COLORS.map(c => (
-                      <button
-                        key={c.id}
-                        onClick={() => setCurrentNote({ ...currentNote, color: c.id as any })}
-                        className={`w-8 h-8 rounded-full border-2 ${c.class.split(' ')[0]} ${currentNote.color === c.id ? 'border-slate-600 scale-110 shadow-sm' : 'border-transparent hover:scale-105'}`}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Content</label>
-                <textarea
-                  className="w-full border border-slate-200 rounded-xl p-4 focus:ring-2 focus:ring-yellow-400 outline-none h-48 resize-none bg-slate-50 leading-relaxed"
-                  value={currentNote.content || ''}
-                  onChange={e => setCurrentNote({ ...currentNote, content: e.target.value })}
-                  placeholder="Write something..."
-                />
-                <AITextEnhancer
-                  text={currentNote.content || ''}
-                  onUpdate={(text) => setCurrentNote({ ...currentNote, content: text })}
-                  context="clear and concise"
-                />
-              </div>
-            </div>
-            <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-              <button onClick={closeModal} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-              <button onClick={handleSaveNote} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-900/20">Save Note</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <NoteEditorModal
+        isOpen={showModal}
+        onClose={closeModal}
+        onSave={handleSaveNote}
+        note={currentNote}
+        isEditing={isEditing}
+      />
     </div>
   );
 };
+
+interface NoteEditorModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: (noteData: { title: string; content: string; category: string; color: string; id?: string }) => void;
+  note?: Partial<Note>;
+  isEditing: boolean;
+}
+
+const NoteEditorModal: React.FC<NoteEditorModalProps> = React.memo(({ isOpen, onClose, onSave, note, isEditing }) => {
+  const [title, setTitle] = useState(note?.title || '');
+  const [content, setContent] = useState(note?.content || '');
+  const [category, setCategory] = useState(note?.category || 'Work');
+  const [color, setColor] = useState(note?.color || 'yellow');
+
+  useEffect(() => {
+    setTitle(note?.title || '');
+    setContent(note?.content || '');
+    setCategory(note?.category || 'Work');
+    setColor(note?.color || 'yellow');
+  }, [note, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSave = () => {
+    if (title.trim() && content.trim()) {
+      onSave({ title: title.trim(), content: content.trim(), category, color, id: note?.id });
+    } else {
+      alert("Title and content are required.");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+          <h3 className="text-xl font-extrabold text-slate-800">{isEditing ? 'Edit Note' : 'New Note'}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+        </div>
+        <div className="p-6 space-y-4 overflow-y-auto">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Title</label>
+            <input
+              type="text"
+              className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-yellow-400 outline-none font-bold text-lg"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Note Title"
+              autoFocus
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Category</label>
+              <select
+                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-yellow-400 outline-none bg-white"
+                value={category}
+                onChange={e => setCategory(e.target.value as any)}
+              >
+                <option value="Work">Work</option>
+                <option value="Personal">Personal</option>
+                <option value="Important">Important</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Color</label>
+              <div className="flex gap-2">
+                {NOTE_COLORS.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => setColor(c.id as any)}
+                    className={`w-8 h-8 rounded-full border-2 ${c.class.split(' ')[0]} ${color === c.id ? 'border-slate-600 scale-110 shadow-sm' : 'border-transparent hover:scale-105'}`}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Content</label>
+            <textarea
+              className="w-full border border-slate-200 rounded-xl p-4 focus:ring-2 focus:ring-yellow-400 outline-none h-48 resize-none bg-slate-50 leading-relaxed"
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              placeholder="Write something..."
+            />
+
+          </div>
+        </div>
+        <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
+          <button onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button onClick={handleSave} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-900/20">Save Note</button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+export const Notepad = React.memo(NotepadComponent);

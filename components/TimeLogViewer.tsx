@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { TimeLog, Employee, AttendanceRecord, AttendanceValue } from '../types';
-import { Clock, Search, Download, CalendarDays, User, Save, X, LogOut, BarChart3, AlertTriangle, TrendingUp } from 'lucide-react';
+import { Clock, Search, Download, CalendarDays, User, Save, X, LogOut, BarChart3, AlertTriangle, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { format, differenceInMinutes } from 'date-fns';
 import { formatDecimalHours } from '../utils/dateUtils';
 import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
@@ -14,10 +14,18 @@ interface TimeLogViewerProps {
     setAttendanceData: React.Dispatch<React.SetStateAction<Record<string, AttendanceRecord>>>;
 }
 
-export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
+const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
     timeLogs, setTimeLogs, employees, attendanceData, setAttendanceData
 }) => {
+    const [searchTermInput, setSearchTermInput] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
+
+    React.useEffect(() => {
+        const handler = setTimeout(() => {
+            setSearchTerm(searchTermInput);
+        }, 250);
+        return () => clearTimeout(handler);
+    }, [searchTermInput]);
     const [focusedEmployeeId, setFocusedEmployeeId] = useState('');
     const [showAnalysis, setShowAnalysis] = useState(false);
     const [analysisFilters, setAnalysisFilters] = useState({ empId: '', start: '', end: '' });
@@ -25,6 +33,15 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
     // Editing State
     const [editingKey, setEditingKey] = useState<string | null>(null);
     const [manualTime, setManualTime] = useState('');
+
+    // Pagination State
+    const [currentPage, setCurrentPage] = useState(1);
+    const datesPerPage = 10;
+
+    // Reset page to 1 on filter/search changes
+    React.useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm, focusedEmployeeId]);
 
     // 1. Flatten logs into a workable array
     const allLogs = useMemo(() => {
@@ -93,8 +110,8 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
             const checkInTime = l.clockIn ? new Date(l.clockIn) : null;
             const checkOutTime = l.clockOut ? new Date(l.clockOut) : null;
 
-            // Late: check-in after 10:00 AM (customizable threshold)
-            const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 0)) : false;
+            // Late: check-in after 10:15 AM (customizable threshold)
+            const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 15)) : false;
 
             // Early Departure: check-out before 5:00 PM
             const isEarlyOut = checkOutTime ? checkOutTime.getHours() < 17 : false;
@@ -162,6 +179,14 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
 
     // 4. Sort Dates Descending
     const sortedDates = Object.keys(logsByDate).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+
+    // Slice based on pagination
+    const paginatedDates = useMemo(() => {
+        const startIndex = (currentPage - 1) * datesPerPage;
+        return sortedDates.slice(startIndex, startIndex + datesPerPage);
+    }, [sortedDates, currentPage, datesPerPage]);
+
+    const totalPages = Math.max(1, Math.ceil(sortedDates.length / datesPerPage));
 
     const formatTime = (isoString?: string) => {
         if (!isoString) return '-';
@@ -376,8 +401,8 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
                             type="text"
                             placeholder="Live search by name or ID..."
                             className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm w-full font-bold"
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
+                            value={searchTermInput}
+                            onChange={(e) => setSearchTermInput(e.target.value)}
                         />
                     </div>
                 </div>
@@ -407,13 +432,13 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
                 )}
 
                 <div className="space-y-8 pb-20">
-                    {sortedDates.length === 0 ? (
+                    {paginatedDates.length === 0 ? (
                         <div className="p-12 text-center text-slate-400 bg-white rounded-3xl border border-slate-100">
                             <Clock size={48} className="mx-auto mb-4 opacity-20" />
                             <p>No time logs found matching your search.</p>
                         </div>
                     ) : (
-                        sortedDates.map(dateKey => {
+                        paginatedDates.map(dateKey => {
                             const dayLogs = logsByDate[dateKey];
                             const stats = calculateDailyStats(dayLogs);
                             const dateObj = new Date(dateKey);
@@ -521,6 +546,50 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
                             );
                         })
                     )}
+
+                    {/* Premium Pagination Controls */}
+                    {sortedDates.length > 0 && (
+                        <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mt-8 bg-white/60 p-4 rounded-3xl border border-slate-100 backdrop-blur-sm shadow-sm animate-fade-in-up">
+                            <span className="text-xs font-semibold text-slate-500">
+                                Showing dates <span className="text-slate-800 font-extrabold">{Math.min(sortedDates.length, (currentPage - 1) * datesPerPage + 1)}</span> to{' '}
+                                <span className="text-slate-800 font-extrabold">{Math.min(sortedDates.length, currentPage * datesPerPage)}</span> of{' '}
+                                <span className="text-slate-800 font-extrabold">{sortedDates.length}</span> working days
+                            </span>
+
+                            {totalPages > 1 && (
+                                <div className="flex items-center gap-1">
+                                    {/* Previous Page */}
+                                    <button
+                                        onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                                        disabled={currentPage === 1}
+                                        className={`p-2 rounded-xl border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer ${
+                                            currentPage === 1 ? 'cursor-not-allowed' : 'active:scale-95'
+                                        }`}
+                                        title="Previous Page"
+                                    >
+                                        <ChevronLeft size={16} />
+                                    </button>
+
+                                    {/* Page Info */}
+                                    <span className="text-xs font-black text-slate-600 bg-white border border-slate-200 px-4 py-2 rounded-xl shadow-sm font-mono">
+                                        {currentPage} / {totalPages}
+                                    </span>
+
+                                    {/* Next Page */}
+                                    <button
+                                        onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                                        disabled={currentPage === totalPages}
+                                        className={`p-2 rounded-xl border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer ${
+                                            currentPage === totalPages ? 'cursor-not-allowed' : 'active:scale-95'
+                                        }`}
+                                        title="Next Page"
+                                    >
+                                        <ChevronRight size={16} />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -609,7 +678,7 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
                                                 </div>
                                                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 relative z-10">Late Logins</div>
                                                 <div className="text-3xl font-black text-slate-800 relative z-10">{analysisReport.lateCount} <span className="text-sm text-slate-300 font-bold uppercase">Days</span></div>
-                                                <p className="text-[9px] font-bold text-slate-300 mt-2 relative z-10">LOGINS AFTER 10:00 AM</p>
+                                                <p className="text-[9px] font-bold text-slate-300 mt-2 relative z-10">LOGINS AFTER 10:15 AM</p>
                                             </div>
                                             <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm relative overflow-hidden group">
                                                 <div className={`absolute top-0 right-0 w-32 h-32 bg-${analysisReport.tierColor}-50/50 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110`}></div>
@@ -727,3 +796,5 @@ export const TimeLogViewer: React.FC<TimeLogViewerProps> = ({
         </>
     );
 };
+
+export const TimeLogViewer = React.memo(TimeLogViewerComponent);

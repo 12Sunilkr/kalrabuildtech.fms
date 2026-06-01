@@ -5,67 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kalra Buildtech FMS</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='gradLeft' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%231e293b' /%3E%3Cstop offset='100%25' stop-color='%230f172a' /%3E%3C/linearGradient%3E%3ClinearGradient id='gradRight' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%23334155' /%3E%3Cstop offset='100%25' stop-color='%231e293b' /%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M50 10 L15 90 L50 75 Z' fill='url(%23gradLeft)' /%3E%3Cpath d='M50 10 L85 90 L50 75 Z' fill='url(%23gradRight)' /%3E%3C/svg%3E">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            fontFamily: {
-              sans: ['"DM Sans"', 'sans-serif'],
-            },
-            animation: {
-              'blob': 'blob 7s infinite',
-              'fade-in-up': 'fadeInUp 0.5s ease-out forwards',
-              'scale-in': 'scaleIn 0.3s ease-out forwards',
-              'float': 'float 6s ease-in-out infinite',
-            },
-            keyframes: {
-              blob: {
-                '0%': { transform: 'translate(0px, 0px) scale(1)' },
-                '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
-                '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
-                '100%': { transform: 'translate(0px, 0px) scale(1)' },
-              },
-              fadeInUp: {
-                '0%': { opacity: '0', transform: 'translateY(20px)' },
-                '100%': { opacity: '1', transform: 'translateY(0)' },
-              },
-              scaleIn: {
-                '0%': { opacity: '0', transform: 'scale(0.9)' },
-                '100%': { opacity: '1', transform: 'scale(1)' },
-              },
-              float: {
-                '0%, 100%': { transform: 'translateY(0)' },
-                '50%': { transform: 'translateY(-10px)' },
-              },
-            }
-          }
-        }
-      }
-    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
-    <script type="importmap">
-{
-  "imports": {
-    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.0.0/client",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.0.0/",
-    "react/": "https://aistudiocdn.com/react@^19.0.0/",
-    "react": "https://aistudiocdn.com/react@^19.0.0",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
-    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
-    "date-fns": "https://aistudiocdn.com/date-fns@^4.1.0",
-    "vite": "https://aistudiocdn.com/vite@^7.2.6",
-    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
-    "path": "https://aistudiocdn.com/path@^0.12.7",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0"
-  }
-}
-</script>
+    <link rel="preload" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet"></noscript>
     <style>
       body {
-        font-family: 'DM Sans', sans-serif;
+        font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         background-color: #f1f5f9;
         color: #1e293b;
         overflow: hidden;
