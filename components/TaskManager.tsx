@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Task, TaskStatus, Employee, User, Notification, ExtensionRequest } from '../types';
 import { format, isPast, differenceInHours } from 'date-fns';
-import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronLeft, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw } from 'lucide-react';
+import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronLeft, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw, Users, ArrowRightLeft, XCircle, Layers } from 'lucide-react';
 
 import { convertFileToBase64 } from '../utils/fileHelper';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
@@ -17,10 +17,11 @@ interface TaskManagerProps {
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
   currentUser: User;
   employees: Employee[];
+  archivedEmployees?: Employee[];
   addNotification: (title: string, msg: string, type: Notification['type'], targetUser: string) => void;
 }
 
-const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, addNotification }) => {
+const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, archivedEmployees = [], addNotification }) => {
   const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS' | 'TERMINATE' | 'REJECT'>('ALL');
   const [, startTabTransition] = React.useTransition();
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -361,6 +362,12 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
       const payload = extractPayload(res);
       const allTasks = ensureArray(payload);
       const task = tasks.find(t => t.id === taskId) || allTasks.find((x: any) => x.id === taskId);
+      const currentCount = (task as any)?.objectionCount || (task?.extensionHistory || []).length;
+      if (currentCount >= 3) {
+        setError('Maximum limit of 3 objections reached for this task');
+        setIsLoading(false);
+        return;
+      }
       const newHistory = [...(task?.extensionHistory || []), newReq];
       await api.put(`/tasks/${taskId}`, { status: 'EXTENSION_REQUESTED', extensionRequest: newReq, extensionHistory: newHistory });
       await fetchTasks();
@@ -593,22 +600,31 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   // Employees see tasks assigned TO them OR tasks assigned BY them
   const safeTasks = React.useMemo(() => ensureArray(tasks), [tasks]);
   
+  const archivedEmpIdSet = React.useMemo(() => {
+    return new Set((archivedEmployees || []).map(e => String(e.id).trim()));
+  }, [archivedEmployees]);
+
   const { relevantTasks, filteredTasks, counts } = React.useMemo(() => {
     const relevant = safeTasks.filter(t => {
-    const assignedToId = (t.assignedTo || t.assignedToEmployeeId || '').toString();
-    const assignedByName = (t.assignedBy || t.assignedByName || '').toString();
+      const assignedToId = (t.assignedTo || t.assignedToEmployeeId || '').toString().trim();
+      const assignedByName = (t.assignedBy || t.assignedByName || '').toString().trim();
 
-    const matchesAssignedTo = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
-    const matchesAssignedBy = assignedByName && (
-      assignedByName === currentUser.employeeId?.toString() ||
-      assignedByName === currentUser.id?.toString() ||
-      assignedByName === currentUser.name
-    );
+      // Exclude tasks assigned to employees who are currently archived
+      if (assignedToId && archivedEmpIdSet.has(assignedToId)) {
+        return false;
+      }
 
-    // Admins should see all tasks; non-admins see tasks assigned TO them or assigned BY them
-    if (isAdmin) return true;
-    return Boolean(matchesAssignedTo || matchesAssignedBy);
-  });
+      const matchesAssignedTo = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
+      const matchesAssignedBy = assignedByName && (
+        assignedByName === currentUser.employeeId?.toString() ||
+        assignedByName === currentUser.id?.toString() ||
+        assignedByName === currentUser.name
+      );
+
+      // Admins should see all tasks; non-admins see tasks assigned TO them or assigned BY them
+      if (isAdmin) return true;
+      return Boolean(matchesAssignedTo || matchesAssignedBy);
+    });
 
   const filtered = relevant.filter(t => {
     const displayStatus = getDisplayStatus(t);
@@ -746,7 +762,7 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     filteredTasks: filtered, 
     counts: { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } 
   };
-}, [safeTasks, activeTab, searchTerm, searchDateFrom, searchDateTo, selectedMemberId, isAdmin, currentUser.employeeId, currentUser.id, currentUser.name, employees]);
+}, [safeTasks, activeTab, searchTerm, searchDateFrom, searchDateTo, selectedMemberId, isAdmin, currentUser.employeeId, currentUser.id, currentUser.name, employees, archivedEmpIdSet]);
 
 const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } = counts;
 
@@ -837,14 +853,24 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
             >
               <CheckCircle2 size={isMobile ? 18 : 16} /> Complete Task
             </button>
-            {(isTaskOverdue || displayStatus === 'PENDING') && (
-              <button
-                onClick={() => setShowObjectionModal(task.id)}
-                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-red-600`}
-              >
-                <AlertTriangle size={isMobile ? 18 : 16} /> Raise Objection
-              </button>
-            )}
+            {(isTaskOverdue || displayStatus === 'PENDING') && (() => {
+              const objCount = (task as any).objectionCount || (task.extensionHistory || []).length;
+              if (objCount >= 3) {
+                return (
+                  <div className={isMobile ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 text-red-500 bg-red-50 border border-red-100 rounded-lg" : "w-full py-2 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border border-red-100 text-red-500 bg-red-50"}>
+                    <AlertTriangle size={isMobile ? 18 : 16} /> Objection Limit (3/3)
+                  </div>
+                );
+              }
+              return (
+                <button
+                  onClick={() => setShowObjectionModal(task.id)}
+                  className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-red-600`}
+                >
+                  <AlertTriangle size={isMobile ? 18 : 16} /> Raise Objection
+                </button>
+              );
+            })()}
           </>
         )}
 
@@ -951,22 +977,35 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
 
         {/* Tab bar: horizontally scrollable on mobile */}
         <div className="flex gap-1.5 md:gap-2 overflow-x-auto pb-1 md:pb-4 w-full bg-white/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl border border-slate-100 backdrop-blur-sm" style={{ scrollbarWidth: 'none' }}>
-          {['ALL', 'PENDING', 'HOLD', 'COMPLETED', 'OVERDUE', 'OBJECTIONS', 'TERMINATE', 'REJECT'].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => {
-                startTabTransition(() => {
-                  setActiveTab(tab as any);
-                });
-              }}
-              className={`px-3 md:px-5 py-1.5 md:py-2.5 rounded-lg md:rounded-xl text-xs md:text-sm font-bold transition-all whitespace-nowrap ${activeTab === tab
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
-                  : 'text-slate-500 hover:bg-white hover:text-indigo-600'
-                }`}
-            >
-              {tab === 'ALL' ? `All (${totalCount})` : tab === 'PENDING' ? `Pending (${pendingCount})` : tab === 'HOLD' ? `Hold (${holdCount})` : tab === 'COMPLETED' ? `Done (${completedCount})` : tab === 'OVERDUE' ? `Overdue (${overdueCount})` : tab === 'OBJECTIONS' ? `Obj (${objectionCount})` : tab === 'TERMINATE' ? `Term (${terminateCount})` : `Rej (${rejectCount})`}
-            </button>
-          ))}
+          {[
+            { id: 'ALL', label: 'All', count: totalCount, icon: Layers },
+            { id: 'PENDING', label: 'Pending', count: pendingCount, icon: Clock },
+            { id: 'HOLD', label: 'Hold', count: holdCount, icon: PauseCircle },
+            { id: 'COMPLETED', label: 'Done', count: completedCount, icon: CheckCircle2 },
+            { id: 'OVERDUE', label: 'Overdue', count: overdueCount, icon: AlertTriangle },
+            { id: 'OBJECTIONS', label: 'Obj', count: objectionCount, icon: AlertCircle },
+            { id: 'TERMINATE', label: 'Term', count: terminateCount, icon: Ban },
+            { id: 'REJECT', label: 'Rej', count: rejectCount, icon: XCircle },
+          ].map(({ id, label, count, icon: TabIcon }) => {
+            const isActive = activeTab === id;
+            return (
+              <button
+                key={id}
+                onClick={() => {
+                  startTabTransition(() => {
+                    setActiveTab(id as any);
+                  });
+                }}
+                className={`px-3 md:px-4 py-1.5 md:py-2.5 rounded-lg md:rounded-xl text-xs md:text-sm font-bold transition-all whitespace-nowrap flex items-center gap-1.5 md:gap-2 ${isActive
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
+                    : 'text-slate-500 hover:bg-white hover:text-indigo-600'
+                  }`}
+              >
+                <TabIcon size={15} className={`shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                <span>{label} ({count})</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Bottom Row: Search + Filters — stacks vertically on mobile */}
@@ -1791,38 +1830,45 @@ const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Assign To / Transfer</label>
-              <select
-                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                value={assignedTo}
-                onChange={e => { setAssignedTo(e.target.value); setServerError(null); }}
-              >
-                <option value="">Select Team Member</option>
-                {employees.filter(emp => !(emp as any).is_archived).map(emp => (
-                  <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
-                ))}
-              </select>
+              <label className="block text-xs font-black text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <ArrowRightLeft size={13} className="text-indigo-600" /> Assign To / Transfer
+              </label>
+              <div className="relative">
+                <Users className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <select
+                  className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-xs"
+                  value={assignedTo}
+                  onChange={e => { setAssignedTo(e.target.value); setServerError(null); }}
+                >
+                  <option value="">Select Team Member...</option>
+                  {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                    <option key={emp.id} value={emp.id}>{emp.name} {emp.department ? `(${emp.department})` : ''}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Priority</label>
+              <label className="block text-xs font-black text-slate-500 uppercase tracking-wider mb-2">Priority Level</label>
               <select
-                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-xs"
                 value={priority}
                 onChange={e => setPriority(e.target.value as any)}
               >
-                <option value="LOW">Low</option>
-                <option value="MEDIUM">Medium</option>
-                <option value="HIGH">High</option>
+                <option value="LOW">Low Priority</option>
+                <option value="MEDIUM">Medium Priority</option>
+                <option value="HIGH font-bold">High Priority (Urgent)</option>
               </select>
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Due Date</label>
+              <label className="block text-xs font-black text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Calendar size={13} className="text-indigo-600" /> Target Due Date
+              </label>
               <input
                 type="date"
-                className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none"
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-xs"
                 value={dueDate}
                 onChange={e => setDueDate(e.target.value)}
               />

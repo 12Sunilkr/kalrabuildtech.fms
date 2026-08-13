@@ -4,23 +4,27 @@
  */
 
 let persistTimer = null;
-let pendingExport = null;
+let hasPendingChanges = false;
 let lastFlushAt = 0;
 
 const DEFAULT_DELAY_MS = Number(process.env.DB_PERSIST_DELAY_MS || (process.env.NODE_ENV === 'production' ? 10000 : 1000));
 
 export function createDebouncedPersist(exportFn, writeFn, delayMs = DEFAULT_DELAY_MS) {
   const flush = () => {
-    if (!pendingExport) return;
-    const data = pendingExport;
-    pendingExport = null;
+    if (!hasPendingChanges) return;
+    hasPendingChanges = false;
     persistTimer = null;
-    writeFn(data);
-    lastFlushAt = Date.now();
+    try {
+      const data = exportFn();
+      writeFn(data);
+      lastFlushAt = Date.now();
+    } catch (e) {
+      console.error('[dbPersist] Failed to export or write database:', e);
+    }
   };
 
   const schedule = () => {
-    pendingExport = exportFn();
+    hasPendingChanges = true;
     if (persistTimer) clearTimeout(persistTimer);
     persistTimer = setTimeout(flush, delayMs);
   };
@@ -30,12 +34,12 @@ export function createDebouncedPersist(exportFn, writeFn, delayMs = DEFAULT_DELA
       clearTimeout(persistTimer);
       persistTimer = null;
     }
-    pendingExport = exportFn();
+    hasPendingChanges = true;
     flush();
   };
 
   const shutdown = () => {
-    if (persistTimer || pendingExport) flushNow();
+    if (persistTimer || hasPendingChanges) flushNow();
   };
 
   return { schedule, flushNow, shutdown, getLastFlushAt: () => lastFlushAt };

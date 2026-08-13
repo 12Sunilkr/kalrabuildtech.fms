@@ -27,6 +27,7 @@ const ChecklistSystem = React.lazy(() => import('./components/ChecklistSystem').
 const DatabaseManager = React.lazy(() => import('./components/DatabaseManager').then(m => ({ default: m.DatabaseManager })));
 const PMSDashboard = React.lazy(() => import('./components/PMSDashboard'));
 const CRMModule = React.lazy(() => import('./components/CRMModule').then(m => ({ default: m.CRMModule })));
+const SystemMaster = React.lazy(() => import('./components/SystemMaster'));
 const Playbook = React.lazy(() => import('./components/Playbook').then(m => ({ default: m.Playbook })));
 import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance, CRMLead } from './types';
 import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
@@ -41,6 +42,7 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
   const [authError, setAuthError] = useState<string>('');
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
 
   // Use shared helpers from api module to normalize responses and ensure arrays
   const extractPayload = apiExtractPayload;
@@ -64,6 +66,10 @@ const App: React.FC = () => {
 
       // Keep requests as-provided. Frontend should use relative /api paths.
       reqInit.headers = new Headers(reqInit.headers || {} as HeadersInit);
+      const token = localStorage.getItem('kbt_token');
+      if (token) {
+        reqInit.headers.set('Authorization', `Bearer ${token}`);
+      }
       // Do not read from localStorage anymore. Authentication uses cookies or explicit Authorization headers.
 
       if (!reqInit.credentials) reqInit.credentials = 'include';
@@ -112,79 +118,55 @@ const App: React.FC = () => {
           // DO NOT remove kbt_session_logout here. Keep it until explicit login,
           // to completely prevent auto-restore on subsequent refreshes.
           setCurrentUser(null);
+          setUsers(INITIAL_USERS);
         } else {
-          // Try to restore session via shared axios client
-          try {
-            // Use safeGet with cache-bust fallback to avoid relying on cached 304 responses in production
-            let meRes = await safeGet('/auth/me', { cacheBust: false });
-            let mePayload = extractPayload(meRes);
-            if ((!mePayload || Object.keys(mePayload).length === 0) && meRes && meRes.status === 304) {
-              // Retry with cache busting to force fresh response from backend
-              try {
-                meRes = await safeGet('/auth/me', { cacheBust: true });
-                mePayload = extractPayload(meRes);
-              } catch (e) {
-                console.warn('Retry /auth/me with cacheBust failed', e && (e.stack || e.message || e));
-              }
-            }
-            meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
-            setCurrentUser(meUser || null);
-            if (meUser) {
-              try {
-                const tRes = await safeGet('/tasks', { cacheBust: true });
-                const tasksPayload = extractPayload(tRes);
-                setTasks(ensureArray(tasksPayload));
-              } catch (e) {
-                console.warn('Failed to fetch tasks after restoring session', e && (e.stack || e.message || e));
-              }
-            }
-          } catch (e) {
-            console.warn('Auth/me unreachable (axios)', e && (e.stack || e.message || e));
+          // Fetch /auth/me with cache busting to resolve current session status immediately
+          const meRes = await safeGet('/auth/me', { cacheBust: true });
+          const mePayload = extractPayload(meRes);
+          meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
+          setCurrentUser(meUser || null);
+
+          if (meUser) {
+            // Preload core master data (users and employees) in background without blocking initial rendering
+            Promise.all([
+              safeGet('/users')
+                .then(res => {
+                  const uArr = ensureArray(extractPayload(res));
+                  setUsers(uArr.length ? uArr : INITIAL_USERS);
+                })
+                .catch(err => {
+                  console.error('Background users fetch failed', err);
+                  setUsers(INITIAL_USERS);
+                }),
+
+              safeGet('/employees')
+                .then(res => {
+                  const empsArr = ensureArray(extractPayload(res)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+                  setEmployees(empsArr);
+                })
+                .catch(err => console.warn('Background employees fetch failed', err)),
+
+              meUser.role === 'ADMIN'
+                ? safeGet('/employees?archived=1')
+                    .then(res => {
+                      const archivedArr = ensureArray(extractPayload(res)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+                      setArchivedEmployees(archivedArr);
+                    })
+                    .catch(err => console.warn('Background archived employees fetch failed', err))
+                : Promise.resolve()
+            ]).catch(err => {
+              console.warn('Master data preloading encountered errors', err);
+            });
+          } else {
+            setUsers(INITIAL_USERS);
           }
         }
       } catch (err) {
-        console.warn('Auth/me unexpected error', err && (err.stack || err.message || err));
-      }
-
-      if (meUser) {
-        try {
-          const uRes = await safeGet('/users');
-          const uPayload = extractPayload(uRes);
-          const uArr = ensureArray(uPayload);
-          setUsers(uArr.length ? uArr : INITIAL_USERS);
-        } catch (err) {
-          console.error('User API unreachable, using local defaults', err && (err.stack || err.message || err));
-          setUsers(INITIAL_USERS);
-        }
-
-        // Try to load employees from server
-        try {
-          const r = await safeGet('/employees');
-          const empsPayload = extractPayload(r);
-          const empsArr = ensureArray(empsPayload).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
-          setEmployees(empsArr);
-        } catch (err) {
-          console.warn('Employees API unreachable', err && (err.stack || err.message || err));
-        }
-
-        // Also load archived employees separately (admin only)
-        if (meUser.role === 'ADMIN') {
-          try {
-            const ra = await safeGet('/employees?archived=1');
-            const archivedArr = ensureArray(extractPayload(ra)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
-            setArchivedEmployees(archivedArr);
-          } catch (err) {
-            console.warn('Archived employees fetch failed', err && (err.stack || err.message || err));
-          }
-        }
-      } else {
-        // Fallback to local default users if not authenticated
+        console.warn('Auth/me session restoration failed', err);
         setUsers(INITIAL_USERS);
+      } finally {
+        setIsAuthChecking(false);
       }
-
-      // Load attendance records from server
-      // NOTE: Removed massive pre-loading here!
-      // This is now handled lazily by the currentView useEffect below
     };
     init();
   }, []);
@@ -348,29 +330,76 @@ const App: React.FC = () => {
   // so we can call them from both the main useEffect and SWR callbacks.
 
   const applyAttendance = useCallback((arr: any[]) => {
-    const ag: Record<string, AttendanceRecord> = {};
-    arr.forEach((a: any) => {
-      if (!a) return;
-      if (!ag[a.userId]) ag[a.userId] = {};
-      ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+    const incoming = ensureArray(arr);
+    setAttendanceData(prev => {
+      const next = { ...prev };
+      incoming.forEach((a: any) => {
+        if (!a || !a.userId || !a.date) return;
+        if (!next[a.userId]) next[a.userId] = {};
+        next[a.userId] = {
+          ...next[a.userId],
+          [a.date]: a.value == null ? (a.clockIn ? 1 : 0) : a.value
+        };
+      });
+      return next;
     });
-    setAttendanceData(ag);
   }, []);
 
   const applyTimelogs = useCallback((tlPayload: any[]) => {
-    const tlAg: Record<string, Record<string, TimeLog[]>> = {};
-    tlPayload.forEach((t: any) => {
-      if (!t) return;
-      const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
-      if (!tlAg[t.userId]) tlAg[t.userId] = {};
-      if (!tlAg[t.userId][dateKey]) tlAg[t.userId][dateKey] = [];
-      let duration = t.durationHours;
-      if (!duration && t.startTime && t.endTime) {
-        duration = Math.max(0, (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 3600000);
-      }
-      tlAg[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration });
+    const incoming = ensureArray(tlPayload);
+    setTimeLogs(prev => {
+      const next = { ...prev };
+      incoming.forEach((t: any) => {
+        if (!t || !t.userId) return;
+        const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
+        if (!dateKey) return;
+
+        if (!next[t.userId]) next[t.userId] = {};
+        const userLogs = { ...next[t.userId] };
+        const dayLogs = [...(userLogs[dateKey] || [])];
+
+        let duration = t.durationHours;
+        if (!duration && t.startTime && t.endTime) {
+          duration = Math.max(0, (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 3600000);
+        }
+
+        const tStartMs = t.startTime ? new Date(t.startTime).getTime() : 0;
+
+        // Check matching index by ID or close startTime (within 2 min) or exact startTime string
+        const existingIndex = dayLogs.findIndex(item => {
+          if (t.id && item.id === t.id) return true;
+          const itemStartMs = item.clockIn ? new Date(item.clockIn).getTime() : 0;
+          if (tStartMs && itemStartMs && Math.abs(tStartMs - itemStartMs) < 120000) return true;
+          if (item.clockIn === t.startTime) return true;
+          return false;
+        });
+
+        const newLogEntry: TimeLog = {
+          id: t.id,
+          date: dateKey,
+          clockIn: t.startTime || t.createdAt,
+          clockOut: t.endTime || undefined,
+          durationHours: duration
+        };
+
+        if (existingIndex >= 0) {
+          const oldLog = dayLogs[existingIndex];
+          dayLogs[existingIndex] = {
+            ...oldLog,
+            ...newLogEntry,
+            id: t.id || oldLog.id,
+            clockOut: newLogEntry.clockOut || oldLog.clockOut,
+            durationHours: newLogEntry.durationHours ?? oldLog.durationHours
+          };
+        } else {
+          dayLogs.push(newLogEntry);
+        }
+
+        userLogs[dateKey] = dayLogs;
+        next[t.userId] = userLogs;
+      });
+      return next;
     });
-    setTimeLogs(tlAg);
   }, []);
 
   // Fetch data specific to the current view ON DEMAND (lazy loading, stale-while-revalidate)
@@ -470,9 +499,13 @@ const App: React.FC = () => {
             await Promise.all([
               safeGetSwr(`/attendance?userId=${encodeURIComponent(uid)}`, (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
               safeGetSwr(`/timelogs?userId=${encodeURIComponent(uid)}`, (fresh) => applyTimelogs(ensureArray(extractPayload(fresh)))),
-            ]).then(([sat, stl]) => {
+              safeGetSwr('/tasks', (fresh) => setTasks(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
+            ]).then(([sat, stl, tRes, eRes]) => {
               applyAttendance(ensureArray(extractPayload(sat)));
               applyTimelogs(ensureArray(extractPayload(stl)));
+              setTasks(ensureArray(extractPayload(tRes)));
+              setEmployees(ensureArray(extractPayload(eRes)));
             });
             break;
           }
@@ -563,6 +596,19 @@ const App: React.FC = () => {
             setLeaveRequests(ensureArray(extractPayload(lv)));
             break;
           }
+          case ViewMode.EMPLOYEES: {
+            const [eRes, uRes, aRes] = await Promise.all([
+              safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/users', (fresh) => setUsers(ensureArray(extractPayload(fresh)))),
+              currentUser.role === 'ADMIN'
+                ? safeGetSwr('/employees?archived=1', (fresh) => setArchivedEmployees(ensureArray(extractPayload(fresh))))
+                : Promise.resolve(null)
+            ]);
+            setEmployees(ensureArray(extractPayload(eRes)));
+            setUsers(ensureArray(extractPayload(uRes)));
+            if (aRes) setArchivedEmployees(ensureArray(extractPayload(aRes)));
+            break;
+          }
           case ViewMode.FINANCE: {
             const f = await safeGetSwr('/finance', (fresh) => setClientFinancials(ensureArray(extractPayload(fresh))));
             setClientFinancials(ensureArray(extractPayload(f)));
@@ -607,7 +653,7 @@ const App: React.FC = () => {
       const payloadData = extractPayload(res) || {};
       // If backend didn't return user in login response (some production setups may rely on cookie-only sessions),
       // try to fetch /auth/me immediately with cacheBust to obtain user info.
-      let user = (payloadData.user || (payloadData && payloadData.id) ? payloadData : null) as User | null;
+      let user = (payloadData.user ? payloadData.user : (payloadData && payloadData.id ? payloadData : null)) as User | null;
       if (!user) {
         // Server sets httpOnly cookie on login; we rely on that cookie (axios has withCredentials:true)
         try {
@@ -617,8 +663,6 @@ const App: React.FC = () => {
         } catch (e) {
           console.warn('/auth/me after login failed', e && (e.stack || e.message || e));
         }
-      } else {
-        // Server sets httpOnly cookie on login; no localStorage token storage.
       }
 
       // If user still not resolved, treat as failure
@@ -629,13 +673,59 @@ const App: React.FC = () => {
 
       // Proceed with resolved user
       if (user) {
-        if (user.role === 'EMPLOYEE' && user.employeeId) {
-          const isActive = employees.find(e => e.id === user.employeeId);
-          // if (!isActive) {
-          //   setAuthError('Account is inactive. Contact Administrator.');
-          //   return;
-          // }
+        const token = payloadData.token;
+        if (token) {
+          localStorage.setItem('kbt_token', token);
         }
+        // Professional parallelized eager-load of all necessary master data to prevent any generic fallback templates
+        // We use catch blocks on individual promises so a single endpoint failure won't halt the entire login flow
+        await Promise.all([
+          safeGet('/users', { cacheBust: true })
+            .then(uRes => {
+              const uArr = ensureArray(extractPayload(uRes));
+              setUsers(uArr.length ? uArr : INITIAL_USERS);
+            })
+            .catch(err => {
+              console.warn('Failed to eager-fetch users on login', err);
+              setUsers(INITIAL_USERS);
+            }),
+            
+          safeGet('/employees', { cacheBust: true })
+            .then(empRes => {
+              const empsArr = ensureArray(extractPayload(empRes)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+              setEmployees(empsArr.length ? empsArr : INITIAL_EMPLOYEES);
+            })
+            .catch(err => {
+              console.warn('Failed to eager-fetch employees on login', err);
+              setEmployees(INITIAL_EMPLOYEES);
+            }),
+            
+          safeGet('/tasks', { cacheBust: true })
+            .then(tRes => setTasks(ensureArray(extractPayload(tRes))))
+            .catch(err => console.warn('Failed to eager-fetch tasks on login', err)),
+            
+          safeGet('/reminders', { cacheBust: true })
+            .then(rRes => setReminders(ensureArray(extractPayload(rRes))))
+            .catch(err => console.warn('Failed to eager-fetch reminders on login', err)),
+
+          safeGet('/attendance', { cacheBust: true })
+            .then(res => applyAttendance(ensureArray(extractPayload(res))))
+            .catch(err => console.warn('Failed to eager-fetch attendance on login', err)),
+
+          safeGet('/timelogs', { cacheBust: true })
+            .then(res => applyTimelogs(ensureArray(extractPayload(res))))
+            .catch(err => console.warn('Failed to eager-fetch timelogs on login', err)),
+
+          user.role === 'ADMIN' 
+            ? safeGet('/employees?archived=1', { cacheBust: true })
+                .then(ra => {
+                  const archivedArr = ensureArray(extractPayload(ra)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+                  setArchivedEmployees(archivedArr);
+                })
+                .catch(err => console.warn('Failed to eager-fetch archived employees on login', err))
+            : Promise.resolve()
+        ]);
+
         setCurrentUser(user);
         // Do not persist full user object in localStorage; session is server-managed.
         setAuthError('');
@@ -644,18 +734,6 @@ const App: React.FC = () => {
         if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
         // Default to profile (EMPLOYEE_HOME) for employees, Dashboard for admins
         setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
-        // Fetch tasks for this user after login (cache-bust to avoid stale 304)
-        try {
-          const tRes = await safeGet('/tasks', { cacheBust: true });
-          setTasks(ensureArray(extractPayload(tRes)));
-          // Also refresh reminders for the logged-in user
-          try {
-            const rRes = await safeGet('/reminders', { cacheBust: true });
-            setReminders(ensureArray(extractPayload(rRes)));
-          } catch (e) { console.warn('Failed to fetch reminders after login', e && (e.stack || e.message || e)); }
-        } catch (e) {
-          console.warn('Failed to fetch tasks on login', e && (e.stack || e.message || e));
-        }
         return;
       }
       setAuthError('Invalid credentials. Access Denied.');
@@ -663,10 +741,16 @@ const App: React.FC = () => {
       // If server unreachable, fall back to local in-browser users
       console.error('Auth server unreachable, falling back to local users', err && (err.stack || err.message || err));
       await new Promise(r => setTimeout(r, 600));
-      const user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === pass);
+
+      // Populate local master data for mock session so components are fully hydrated
+      setEmployees(INITIAL_EMPLOYEES);
+      setTasks(INITIAL_TASKS);
+      setUsers(INITIAL_USERS);
+
+      const user = INITIAL_USERS.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === pass);
       if (user) {
         if (user.role === 'EMPLOYEE' && user.employeeId) {
-          const isActive = employees.find(e => e.id === user.employeeId);
+          const isActive = INITIAL_EMPLOYEES.find(e => e.id === user.employeeId);
           if (!isActive) {
             setAuthError('Account is inactive. Contact Administrator.');
             return;
@@ -694,6 +778,7 @@ const App: React.FC = () => {
       console.warn('Logout call failed', err);
     }
     // Remove persisted token
+    localStorage.removeItem('kbt_token');
     // Remove client token storage (we do not persist token to localStorage)
     setCurrentUser(null);
     setAuthError('');
@@ -743,60 +828,36 @@ const App: React.FC = () => {
     const empId = currentUser.employeeId;
     const now = new Date();
     const dateKey = formatDateKey(now);
-    if (isDateSunday(now)) {
-      const approvedReq = sundayRequests.find(r => r.employeeId === empId && r.date === dateKey && r.status === 'APPROVED');
-      if (!approvedReq) {
-        alert("Sunday work requires approval.");
-        return;
-      }
-    }
+
+    // Enforce max 2 sessions per day
+    const existingDayLogs = timeLogs[empId]?.[dateKey] || [];
+    if (existingDayLogs.length >= 2) return;
 
     const tId = `TL-${empId}-${Date.now()}`;
     const aId = `A-${empId}-${dateKey}`;
+    const newLog: TimeLog = { id: tId, date: dateKey, clockIn: now.toISOString() };
 
+    // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
+    setTimeLogs(prev => {
+      const userLogs = prev[empId] || {};
+      const dayLogs = userLogs[dateKey] || [];
+      return { ...prev, [empId]: { ...userLogs, [dateKey]: [...dayLogs, newLog] } };
+    });
+    setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
+    addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
+    addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
+
+    // --- Background server sync (non-blocking) ---
     try {
-      // Create timelog
       await api.post('/timelogs', { id: tId, userId: empId, startTime: now.toISOString() }, { withCredentials: true });
-      // Create attendance record (value may be null until clock out)
-      // Note: Attendance usually tracks one record per day, but timelogs track sessions.
-      await api.post('/attendance', { id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null }, { withCredentials: true });
-
-      const newLog: TimeLog = { id: tId, date: dateKey, clockIn: now.toISOString() };
-
-      // Update local state to reflect server
-      setTimeLogs(prev => {
-        const userLogs = prev[empId] || {};
-        const dayLogs = userLogs[dateKey] || [];
-        return {
-          ...prev,
-          [empId]: {
-            ...userLogs,
-            [dateKey]: [...dayLogs, newLog]
-          }
-        };
-      });
-      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
-      addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
-      addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
+      // Only create attendance record for the first session of the day
+      if (existingDayLogs.length === 0) {
+        await api.post('/attendance', { id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null }, { withCredentials: true });
+      }
     } catch (err) {
-      console.warn('Clock-in server call failed, falling back to local update', err);
-      const newLog: TimeLog = { id: tId, date: dateKey, clockIn: now.toISOString() };
-      setTimeLogs(prev => {
-        const userLogs = prev[empId] || {};
-        const dayLogs = userLogs[dateKey] || [];
-        return {
-          ...prev,
-          [empId]: {
-            ...userLogs,
-            [dateKey]: [...dayLogs, newLog]
-          }
-        };
-      });
-      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
-      addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
-      addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
+      console.warn('[ClockIn] Background server sync failed (optimistic update already applied)', err);
     }
-  }, [currentUser, sundayRequests, addNotification]);
+  }, [currentUser, sundayRequests, timeLogs, addNotification]);
 
   const handleClockOut = useCallback(async () => {
     if (!currentUser?.employeeId) return;
@@ -816,49 +877,25 @@ const App: React.FC = () => {
     // Compute day total hours for attendance value
     const otherLogsHours = dayLogs.filter(l => l.id !== currentLog.id).reduce((sum, l) => sum + (l.durationHours || 0), 0);
     const totalDayHours = otherLogsHours + hoursWorked;
-
     const computedVal: AttendanceValue = totalDayHours >= 7.5 ? 1 : (totalDayHours >= 6 ? 0.75 : (totalDayHours >= 4 ? 0.5 : (totalDayHours >= 2 ? 0.25 : 0)));
 
+    // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
+    setTimeLogs(prev => {
+      const userLogs = prev[empId] || {};
+      const dLogs = userLogs[dateKey] || [];
+      const updatedLogs = dLogs.map(l => l.id === currentLog.id ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
+      return { ...prev, [empId]: { ...userLogs, [dateKey]: updatedLogs } };
+    });
+    setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
+    addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
+    addNotification('System Alert', `${currentUser.name} clocked out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
+
+    // --- Background server sync (non-blocking) ---
     try {
-      // Update timelog endTime
       await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: now.toISOString() }, { withCredentials: true });
-
-      // Update attendance with clockOut and computed value
       await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: now.toISOString(), value: computedVal }, { withCredentials: true });
-
-      // Update local state
-      setTimeLogs(prev => {
-        const userLogs = prev[empId] || {};
-        const dLogs = userLogs[dateKey] || [];
-        const updatedLogs = dLogs.map(l => l.id === currentLog.id ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
-        return {
-          ...prev,
-          [empId]: {
-            ...userLogs,
-            [dateKey]: updatedLogs
-          }
-        };
-      });
-      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
-      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
-      addNotification('System Alert', `${currentUser.name} clocked out out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
     } catch (err) {
-      console.warn('Clock-out server call failed, falling back to local update', err);
-      setTimeLogs(prev => {
-        const userLogs = prev[empId] || {};
-        const dLogs = userLogs[dateKey] || [];
-        const updatedLogs = dLogs.map(l => l.id === currentLog.id ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
-        return {
-          ...prev,
-          [empId]: {
-            ...userLogs,
-            [dateKey]: updatedLogs
-          }
-        };
-      });
-      setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
-      addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
-      addNotification('System Alert', `${currentUser.name} clocked out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
+      console.warn('[ClockOut] Background server sync failed (optimistic update already applied)', err);
     }
   }, [currentUser, timeLogs, addNotification]);
 
@@ -884,6 +921,18 @@ const App: React.FC = () => {
     }
   }, [addNotification, ensureArray, extractPayload, safeGet, showToast]);
 
+  // INITIALIZATION LOADER: Show a lightweight loading state while restoring session status
+  if (isAuthChecking) {
+    return (
+      <div className="flex items-center justify-center h-screen w-screen bg-slate-50">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+          <span className="text-xs font-bold text-slate-500 animate-pulse">Initializing...</span>
+        </div>
+      </div>
+    );
+  }
+
   // MASTER SECURITY GUARD: If not logged in, return Auth component IMMEDIATELY
   if (!currentUser) {
     return (
@@ -891,19 +940,45 @@ const App: React.FC = () => {
         onLogin={handleLogin}
         onResetPassword={async (email) => {
           try {
-            const res = await api.get('/users');
-            const list = ensureArray(extractPayload(res));
-            const user = list.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
-            if (!user) return false;
-            const newPass = 'KBT' + Math.floor(Math.random() * 9000);
-            const upd = await api.put(`/users/${user.id}`, { password: newPass }, { withCredentials: true });
-            if (!upd) return false;
-            const refreshed = await api.get('/users');
-            setUsers(ensureArray(extractPayload(refreshed)));
-            return true;
-          } catch (err) {
-            console.error('Reset password failed', err);
+            // Eagerly call the public forgot-password API
+            const res = await api.post('/auth/forgot-password', { email });
+            const payload = extractPayload(res);
+            if (payload && payload.otp) {
+              return payload.otp; // return the generated OTP
+            }
             return false;
+          } catch (err) {
+            console.warn('Backend reset password failed, attempting local fallback', err);
+            // Professional local fallback logic
+            const user = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
+            if (!user) return false;
+            // Generate a 6-digit numeric OTP for local fallback
+            const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+            (window as any)._localOtp = otpCode;
+            return otpCode; 
+          }
+        }}
+        onConfirmReset={async (email, otp, newPass) => {
+          try {
+            const res = await api.post('/auth/reset-password-otp', { email, otp, password: newPass });
+            if (res && res.data && res.data.success) {
+              // Refresh local users list
+              try { const uList = await safeGet('/users'); setUsers(ensureArray(extractPayload(uList))); } catch {}
+              return true;
+            }
+            return false;
+          } catch (err) {
+            console.warn('Backend reset password-otp failed, attempting local fallback', err);
+            // Professional local fallback logic
+            const user = users.find((u: any) => u.email.toLowerCase() === email.toLowerCase());
+            if (!user) return false;
+            
+            // Validate local OTP
+            const expectedOtp = (window as any)._localOtp || '123456';
+            if (otp !== expectedOtp) return false;
+
+            setUsers(prev => prev.map(u => u.id === user.id ? { ...u, password: newPass, plain_password: newPass } : u));
+            return true;
           }
         }}
         error={authError}
@@ -957,6 +1032,7 @@ const App: React.FC = () => {
         case ViewMode.DATABASE: return <DatabaseManager allData={{ ...commonProps, users }} onRestore={(d) => { }} onReset={() => { }} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role="ADMIN" />;
+        case ViewMode.SYSTEM_MASTER: return <SystemMaster currentView={currentView} onNavigate={setCurrentView} currentUser={currentUser} showToast={showToast} />;
         default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} />;
       }
     } else {
@@ -977,6 +1053,7 @@ const App: React.FC = () => {
         case ViewMode.EMPLOYEE_CRM: return <CRMModule currentUser={currentUser} employees={employees} />;
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
         case ViewMode.PLAYBOOK: return <Playbook currentUser={currentUser} employees={employees} />;
+        case ViewMode.SYSTEM_MASTER: return <SystemMaster currentView={currentView} onNavigate={setCurrentView} currentUser={currentUser} showToast={showToast} />;
         default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
       }
     }

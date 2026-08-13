@@ -11,6 +11,9 @@
     <link rel="preload" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
     <noscript><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet"></noscript>
     <style>
+      html {
+        font-size: 14px;
+      }
       body {
         font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         background-color: #f1f5f9;
@@ -150,15 +153,19 @@
 
       /* Ensure the app shell never overflows */
       #root > div { max-width: 100vw; overflow: hidden; }
-
-      /* Mobile bottom navigation safe area */
-      @supports (padding-bottom: env(safe-area-inset-bottom)) {
-        body { padding-bottom: env(safe-area-inset-bottom); }
-      }
-</style>
-</head>
+    </style>
+  </head>
   <body>
     <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
-</body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js"></script>
+    <script>
+      window.pdfjsLib = window['pdfjs-dist/build/pdf'];
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
+    </script>
+    <script type="module" src="/index.tsx"></script>
+  </body>
 </html>
+
+
+

@@ -11,6 +11,8 @@ interface EmployeeMasterProps {
   setUsers: (v: User[]) => void;
   archivedEmployees: Employee[];
   setArchivedEmployees: (v: Employee[]) => void;
+  tasks?: any[];
+  setTasks?: React.Dispatch<React.SetStateAction<any[]>>;
   onNavigate: (mode: ViewMode) => void;
   onSwitchUser: (u: User) => void;
   currentUser: User; // Current authenticated user (used for admin actions)
@@ -23,6 +25,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   employees, setEmployees,
   users, setUsers,
   archivedEmployees, setArchivedEmployees,
+  tasks, setTasks,
   onNavigate,
   onSwitchUser,
   currentUser
@@ -38,6 +41,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const [reassignToId, setReassignToId] = useState<string>('');
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Archive modal states
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<Employee | null>(null);
+  const [archiveReassignToId, setArchiveReassignToId] = useState<string>('');
+  const [isArchiving, setIsArchiving] = useState(false);
 
   // State for Add/Edit
   const [currentEmp, setCurrentEmp] = useState<Partial<Employee>>({ status: 'Active' });
@@ -56,8 +65,10 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   const [activeTab, setActiveTab] = useState('All');
   const [viewLayout, setViewLayout] = useState<'grid' | 'list'>('grid');
   const [selectedEmpDetail, setSelectedEmpDetail] = useState<Employee | null>(null);
+  const [showPlainPassword, setShowPlainPassword] = useState(false);
 
   const openEmployeeDetail = async (emp: Employee) => {
+    setShowPlainPassword(false);
     setSelectedEmpDetail(emp);
     if (emp.documents) return;
     try {
@@ -189,11 +200,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               console.warn('Auto-login failed', e && (e.stack || e.message || e));
             }
           } else {
-            setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
+            setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
           }
         } catch (err) {
           console.error('Failed to create user on server, using local fallback', err && (err.stack || err.message || err));
-          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
+          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
         }
       }
 
@@ -204,6 +215,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   };
 
   const openEditModal = async (emp: Employee) => {
+    setShowPlainPassword(false);
     setIsNewDept(false);
     setIsNewDesig(false);
     let target = emp;
@@ -257,11 +269,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
           const list = await safeGet('/users');
           setUsers(ensureArray(extractPayload(list)));
         } else {
-          setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password } : u));
+          setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password, plain_password: password ? password : (u.plain_password || (u.password && !u.password.startsWith('$2') ? u.password : '123')) } : u));
         }
       } catch (err) {
         console.error('Failed to update user on server, using local fallback', err && (err.stack || err.message || err));
-        setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password } : u));
+        setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password, plain_password: password ? password : (u.plain_password || (u.password && !u.password.startsWith('$2') ? u.password : '123')) } : u));
       }
     } else if (currentEmp.email) {
       // Create user on server or fallback locally
@@ -277,11 +289,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
             if (d?.user) onSwitchUser(d.user);
           } catch (e) { console.warn('Auto-login failed', e && (e.stack || e.message || e)); }
         } else {
-          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
+          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
         }
       } catch (err) {
         console.error('Failed to create user on server, using local fallback', err && (err.stack || err.message || err));
-        setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
+        setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
       }
     }
 
@@ -308,7 +320,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
       alert("Admin password updated successfully.");
     } catch (err) {
       console.error('Failed to update admin password on server, using local fallback', err && (err.stack || err.message || err));
-      setUsers(users.map(u => u.email === email ? { ...u, password: newAdminPassword } : u));
+      setUsers(users.map(u => u.email === email ? { ...u, password: newAdminPassword, plain_password: newAdminPassword } : u));
       setEditingAdminEmail(null);
       setNewAdminPassword('');
       alert("Admin password updated (local fallback).");
@@ -319,15 +331,30 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     if (!deleteTarget) return;
     setIsDeleting(true);
     try {
+      const targetId = deleteTarget.id;
       await api.delete(
-        `/employees/${deleteTarget.id}/permanent`,
+        `/employees/${targetId}/permanent`,
         { data: { replacementEmployeeId: reassignToId || undefined }, withCredentials: true } as any
       );
-      setEmployees(employees.filter(e => e.id !== deleteTarget.id));
-      setUsers(users.filter(u => u.employeeId !== deleteTarget.id));
+      setEmployees(employees.filter(e => e.id !== targetId));
+      setArchivedEmployees(archivedEmployees.filter(e => e.id !== targetId));
+      setUsers(users.filter(u => u.employeeId !== targetId));
+
+      if (setTasks) {
+        if (reassignToId) {
+          setTasks(prev => prev.map(t => (t.assignedTo === targetId || (t as any).assignedToEmployeeId === targetId) ? { ...t, assignedTo: reassignToId } : t));
+        } else {
+          // Hard-delete tasks assigned to deleted employee so no leftover data remains
+          setTasks(prev => prev.filter(t => t.assignedTo !== targetId && (t as any).assignedToEmployeeId !== targetId));
+        }
+      }
+
       setShowDeleteModal(false);
       setDeleteTarget(null);
       setReassignToId('');
+      if (selectedEmpDetail && selectedEmpDetail.id === targetId) {
+        setSelectedEmpDetail(null);
+      }
     } catch (err) {
       console.error('Permanent delete failed', err);
       alert('Failed to permanently delete. Please try again.');
@@ -336,40 +363,56 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     }
   };
 
-  const handleArchive = async (id: string) => {
-    if (window.confirm('Are you sure you want to archive this team member? Data will be moved to the Archive section.')) {
-      const empToArchive = employees.find(e => e.id === id);
-      if (empToArchive) {
-        // Optimistic UI update
-        setArchivedEmployees([...archivedEmployees, { ...empToArchive, status: 'Inactive' }]);
-        setEmployees(employees.filter(e => e.id !== id));
-        onNavigate(ViewMode.ARCHIVED_STAFF);
+  const openArchiveModal = (emp: Employee) => {
+    setArchiveTarget(emp);
+    setArchiveReassignToId('');
+    setShowArchiveModal(true);
+  };
 
-        // Update server status and archive flags if possible
-        try {
-          // Mark employee archived
-          await api.put(`/employees/${id}`, { status: 'Inactive', is_archived: 1 });
+  const handleConfirmArchive = async () => {
+    if (!archiveTarget) return;
+    setIsArchiving(true);
+    try {
+      const id = archiveTarget.id;
+      // Optimistic UI update
+      setEmployees(employees.filter(e => e.id !== id));
+      setArchivedEmployees([...archivedEmployees, { ...archiveTarget, status: 'Inactive' }]);
 
-          // If there is a linked user, archive that user as well
-          const linkedUser = users.find(u => u.employeeId === id);
-          if (linkedUser && (linkedUser as any).id) {
-            try {
-              await api.delete(`/users/${(linkedUser as any).id}`);
-            } catch (e) { console.warn('Failed to archive linked user', e); }
-          }
-
-          // Refresh server lists
-          try {
-            const r = await api.get('/employees?archived=1'); setArchivedEmployees(apiEnsureArray(apiExtractPayload(r)));
-          } catch (e) { console.warn('Failed to refresh archived employees', e); }
-          try {
-            const uu = await api.get('/users'); setUsers(apiEnsureArray(apiExtractPayload(uu)));
-          } catch (e) { console.warn('Failed to refresh users list', e); }
-
-        } catch (err) {
-          console.warn('Failed to archive employee on server', err);
-        }
+      if (archiveReassignToId && setTasks) {
+        setTasks(prev => prev.map(t => (t.assignedTo === id || (t as any).assignedToEmployeeId === id) ? { ...t, assignedTo: archiveReassignToId } : t));
       }
+
+      // Update server status and archive flags
+      await api.put(`/employees/${id}`, { status: 'Inactive', is_archived: 1, reassignToId: archiveReassignToId || undefined });
+
+      // Archive linked user
+      const linkedUser = users.find(u => u.employeeId === id);
+      if (linkedUser && (linkedUser as any).id) {
+        try {
+          await api.delete(`/users/${(linkedUser as any).id}`);
+        } catch (e) { console.warn('Failed to archive linked user', e); }
+      }
+
+      // Refresh server lists
+      try {
+        const r = await api.get('/employees?archived=1'); setArchivedEmployees(apiEnsureArray(apiExtractPayload(r)));
+      } catch (e) { console.warn('Failed to refresh archived employees', e); }
+      try {
+        const uu = await api.get('/users'); setUsers(apiEnsureArray(apiExtractPayload(uu)));
+      } catch (e) { console.warn('Failed to refresh users list', e); }
+
+      setShowArchiveModal(false);
+      setArchiveTarget(null);
+      setArchiveReassignToId('');
+      if (selectedEmpDetail && selectedEmpDetail.id === id) {
+        setSelectedEmpDetail(null);
+      }
+      onNavigate(ViewMode.ARCHIVED_STAFF);
+    } catch (err) {
+      console.warn('Failed to archive employee on server', err);
+      alert('Failed to archive employee. Please try again.');
+    } finally {
+      setIsArchiving(false);
     }
   };
 
@@ -480,6 +523,30 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                           <p className="text-sm font-bold text-slate-800">{selectedEmpDetail.phone || <span className="italic text-slate-400 font-normal">Not provided</span>}</p>
                         </div>
                       </div>
+                      {(() => {
+                        const linkedUser = users.find(u => u.employeeId === selectedEmpDetail.id);
+                        if (!linkedUser) return null;
+                        const displayPass = linkedUser.plain_password || (linkedUser.password && !linkedUser.password.startsWith('$2') ? linkedUser.password : '123');
+                        return (
+                          <div className="flex items-start gap-4 border-t border-slate-200/50 pt-4">
+                            <div className="p-2.5 bg-white rounded-xl shadow-sm text-slate-500 border border-slate-100"><Lock size={18} /></div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">System Password</p>
+                              <div className="flex items-center justify-between gap-2 mt-0.5">
+                                <p className="text-sm font-bold font-mono text-slate-800 tracking-wide">
+                                  {showPlainPassword ? displayPass : '••••••••'}
+                                </p>
+                                <button 
+                                  onClick={() => setShowPlainPassword(!showPlainPassword)} 
+                                  className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2 py-1 rounded-md transition-all shrink-0"
+                                >
+                                  {showPlainPassword ? 'Hide' : 'See'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                   
@@ -496,7 +563,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                         <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-blue-100 transition-colors"><Shield size={20}/></div>
                         Permissions
                       </button>
-                      <button onClick={() => { setDeleteTarget(selectedEmpDetail); setShowDeleteModal(true); }} className="p-4 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-bold hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-all flex flex-col items-center justify-center gap-2.5 shadow-sm group col-span-2">
+                      <button onClick={() => openArchiveModal(selectedEmpDetail)} className="p-4 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-bold hover:bg-amber-50 hover:text-amber-700 hover:border-amber-200 transition-all flex flex-col items-center justify-center gap-2.5 shadow-sm group">
+                        <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-amber-100 transition-colors"><Archive size={20} className="group-hover:text-amber-600"/></div>
+                        Archive Member
+                      </button>
+                      <button onClick={() => { setDeleteTarget(selectedEmpDetail); setShowDeleteModal(true); }} className="p-4 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-bold hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-all flex flex-col items-center justify-center gap-2.5 shadow-sm group">
                         <div className="p-2 bg-slate-50 rounded-xl group-hover:bg-red-100 transition-colors"><Trash2 size={20} className="group-hover:text-red-600"/></div>
                         Delete Account
                       </button>
@@ -729,6 +800,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                       <div className="flex justify-end gap-2">
                         <button onClick={() => openEmployeeDetail(emp)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="View Details"><ExternalLink size={16}/></button>
                         <button onClick={() => openEditModal(emp)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Edit Profile"><Edit2 size={16} /></button>
+                        <button onClick={() => openArchiveModal(emp)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="Archive"><Archive size={16} /></button>
                       </div>
                     </td>
                   </tr>
@@ -784,6 +856,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                   <div className="flex gap-1">
                     <button onClick={() => openEditModal(emp)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors" title="Edit Profile"><Edit2 size={15}/></button>
                     <button onClick={() => {}} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors" title="Permissions"><Shield size={15}/></button>
+                    <button onClick={() => openArchiveModal(emp)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors" title="Archive"><Archive size={15}/></button>
                     <button onClick={() => { setDeleteTarget(emp); setShowDeleteModal(true); }} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors" title="Delete"><Trash2 size={15}/></button>
                   </div>
                   <button onClick={() => openEmployeeDetail(emp)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold text-xs rounded-xl transition-colors">
@@ -1178,6 +1251,29 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                 </div>
               </div>
 
+              {(() => {
+                const linkedUser = users.find(u => u.employeeId === currentEmp.id);
+                if (!linkedUser) return null;
+                const displayPass = linkedUser.plain_password || (linkedUser.password && !linkedUser.password.startsWith('$2') ? linkedUser.password : '123');
+                return (
+                  <div className="bg-slate-50 border border-slate-200/60 p-4 rounded-xl mt-2">
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-xs font-bold text-slate-500 uppercase flex items-center gap-1"><Lock size={12} /> Current Password</label>
+                      <button 
+                        type="button"
+                        onClick={() => setShowPlainPassword(!showPlainPassword)} 
+                        className="text-xs text-blue-600 hover:text-blue-800 font-bold"
+                      >
+                        {showPlainPassword ? 'Hide' : 'See'}
+                      </button>
+                    </div>
+                    <div className="text-sm font-mono font-bold text-slate-700">
+                      {showPlainPassword ? displayPass : '••••••••'}
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="bg-red-50 p-4 rounded-xl mt-2">
                 <label className="block text-xs font-bold text-red-500 uppercase mb-2 flex items-center gap-1"><Lock size={12} /> Reset Password</label>
                 <input
@@ -1398,7 +1494,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                     ))}
                 </select>
                 <p className="text-[11px] text-slate-400 mt-1.5">
-                  If no replacement is selected, tasks will remain in the system as unassigned.
+                  If no replacement is selected, all active tasks & checklist items for this employee will be permanently deleted.
                 </p>
               </div>
             </div>
@@ -1419,6 +1515,81 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                 {isDeleting
                   ? <><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Deleting…</>
                   : <><Trash2 size={14} /> Permanently Delete</>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ARCHIVE MEMBER MODAL */}
+      {showArchiveModal && archiveTarget && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+            {/* Header */}
+            <div className="p-6 bg-amber-50 border-b border-amber-100 flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 flex items-center justify-center shrink-0">
+                <Archive size={22} className="text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-extrabold text-amber-900">Archive Team Member</h3>
+                <p className="text-sm text-amber-600 font-medium mt-0.5">
+                  {archiveTarget.name} &nbsp;·&nbsp; <span className="font-mono">{archiveTarget.id}</span>
+                </p>
+              </div>
+              <button onClick={() => setShowArchiveModal(false)} className="ml-auto p-2 hover:bg-amber-100 rounded-full text-amber-500">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-5">
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex gap-3">
+                <AlertTriangle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-800 leading-relaxed space-y-1">
+                  <p><strong>Member will be moved to Archive.</strong> Login access and active views will be disabled. You can restore this member anytime from the Archived section.</p>
+                </div>
+              </div>
+
+              {/* Reassign tasks */}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Reassign Their Tasks & Checklists To (Optional)
+                </label>
+                <select
+                  className="w-full border border-slate-200 rounded-xl p-3 bg-slate-50 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  value={archiveReassignToId}
+                  onChange={e => setArchiveReassignToId(e.target.value)}
+                >
+                  <option value="">— Do not reassign (Keep tasks tied to this member) —</option>
+                  {employees
+                    .filter(e => e.id !== archiveTarget.id && e.status === 'Active')
+                    .map(e => (
+                      <option key={e.id} value={e.id}>{e.name} ({e.id})</option>
+                    ))}
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  If no replacement is selected, tasks will remain tied to this member and hidden while archived until restored.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowArchiveModal(false)}
+                className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmArchive}
+                disabled={isArchiving}
+                className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-bold shadow-lg shadow-amber-600/20 active:scale-95 transition-all text-sm"
+              >
+                {isArchiving
+                  ? <><span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Archiving…</>
+                  : <><Archive size={14} /> Archive Member</>
                 }
               </button>
             </div>

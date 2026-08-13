@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, AttendanceRecord, Employee, TimeLog, Task, SundayRequest, Notification } from '../types';
 import { formatDateKey, isDateSunday } from '../utils/dateUtils';
-import { format, differenceInSeconds, differenceInYears, getDate, getMonth } from 'date-fns';
+import { format, differenceInSeconds, differenceInYears } from 'date-fns';
 import { 
   CheckCircle, Clock, Calendar, ShieldCheck, LogOut, 
   PlayCircle, MapPin, Mail, Briefcase, User as UserIcon, 
   Cake, Camera, BarChart, FileText, Upload, CheckCircle2, 
-  X, AlertTriangle, TrendingUp, Award, Zap, ChevronRight, FileBarChart, RefreshCw, ImagePlus
+  X, AlertTriangle, TrendingUp, Award, Zap, ChevronRight, FileBarChart, RefreshCw, ImagePlus, AlertCircle, Timer
 } from 'lucide-react';
 
 import { ImageCropModal } from './ImageCropModal';
@@ -66,6 +66,64 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   // Total hours for today from all sessions
   const todayDuration = dayLogs.reduce((sum, l) => sum + (l.durationHours || 0), 0);
   const isAnyLogToday = dayLogs.length > 0;
+  const sessionCount = dayLogs.length;              // how many sessions used today
+  const MAX_SESSIONS = 2;                            // max allowed sessions per day
+  const sessionsLeft = MAX_SESSIONS - sessionCount;
+
+  // First clock-in time for the day (official login time)
+  const firstLogToday = dayLogs.length > 0
+    ? [...dayLogs].sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime())[0]
+    : null;
+  const firstLoginTime = firstLogToday ? new Date(firstLogToday.clockIn) : null;
+
+  // Late login: first login after 10:15 AM is considered late
+  const LATE_CUTOFF_HOUR = 10;
+  const LATE_CUTOFF_MINUTE = 15;
+  const isLateLogin = firstLoginTime
+    ? firstLoginTime.getHours() > LATE_CUTOFF_HOUR ||
+      (firstLoginTime.getHours() === LATE_CUTOFF_HOUR && firstLoginTime.getMinutes() > LATE_CUTOFF_MINUTE)
+    : false;
+
+  // 2-minute cooldown after clock-out when sessions remain
+  // Tracks seconds remaining before re-login is allowed
+  const [cooldownSecs, setCooldownSecs] = useState(0);
+  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // When employee clocks out and sessions remain, start 2-min cooldown
+  useEffect(() => {
+    // isClockedIn just became false and sessions remain — start cooldown
+    if (!isClockedIn && isAnyLogToday && sessionsLeft > 0) {
+      // Only start if there's a recently-completed log (clockOut set in last 5 seconds)
+      const lastCompleted = dayLogs
+        .filter(l => l.clockOut)
+        .sort((a, b) => new Date(b.clockOut!).getTime() - new Date(a.clockOut!).getTime())[0];
+      if (lastCompleted?.clockOut) {
+        const outAge = (Date.now() - new Date(lastCompleted.clockOut).getTime()) / 1000;
+        if (outAge <= 10) { // recently clocked out
+          setCooldownSecs(120); // 2 minutes
+        }
+      }
+    }
+  }, [isClockedIn]);
+
+  // Countdown tick
+  useEffect(() => {
+    if (cooldownSecs > 0) {
+      cooldownRef.current = setInterval(() => {
+        setCooldownSecs(prev => {
+          if (prev <= 1) {
+            clearInterval(cooldownRef.current!);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
+  }, [cooldownSecs > 0]);
+
+  const cooldownMins = Math.floor(cooldownSecs / 60);
+  const cooldownSecsDisplay = cooldownSecs % 60;
 
   // Retrieve Full Employee Details
   const employeeDetails = employees.find(e => e.id === empId);
@@ -314,21 +372,47 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
             
             {/* Left Column: Shift & Quick Stats */}
             <div className="lg:col-span-4 space-y-6">
-                
-                {/* Structured Shift Tracker */}
+                        {/* Structured Shift Tracker */}
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+                    {/* Header */}
                     <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4 flex items-center justify-between">
-                        <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm"><Clock size={16} className="text-indigo-500" /> Time & Attendance</h3>
+                        <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm"><Clock size={16} className="text-indigo-500" /> Time &amp; Attendance</h3>
                         <div className="flex items-center gap-2">
+                           {/* Late Login Badge */}
+                           {isLateLogin && (
+                             <span className="flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 text-red-600 rounded-full text-[10px] font-black uppercase tracking-wider">
+                               <AlertCircle size={10} /> Late
+                             </span>
+                           )}
+                           {/* Session counter */}
+                           {isAnyLogToday && (
+                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${sessionsLeft === 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-slate-100 border-slate-200 text-slate-500'}`}>
+                               {sessionCount}/{MAX_SESSIONS} sessions
+                             </span>
+                           )}
                            <span className={`w-2 h-2 rounded-full ${isClockedIn ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></span>
                            <span className="text-xs font-medium text-slate-500">{isClockedIn ? 'Active' : 'Offline'}</span>
                         </div>
                     </div>
                     
                     <div className="p-6 text-center flex-1 flex flex-col justify-center">
-                        <div className="font-mono text-4xl sm:text-5xl font-semibold text-slate-800 tracking-tight mb-6">
+                        {/* Timer display */}
+                        <div className="font-mono text-4xl sm:text-5xl font-semibold text-slate-800 tracking-tight mb-2">
                             {formatTime(elapsed)}
                         </div>
+
+                        {/* Official first-login time + late indicator */}
+                        {firstLoginTime && (
+                          <div className={`text-xs font-semibold mb-4 flex items-center justify-center gap-1.5 ${isLateLogin ? 'text-red-500' : 'text-emerald-600'}`}>
+                            <Clock size={11} />
+                            Login: {format(firstLoginTime, 'hh:mm:ss a')}
+                            {isLateLogin ? (
+                              <span className="ml-1 text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-black">LATE</span>
+                            ) : (
+                              <span className="ml-1 text-[10px] bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded font-black">ON TIME</span>
+                            )}
+                          </div>
+                        )}
                         
                         <div className="grid grid-cols-2 gap-3 mb-6">
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
@@ -342,48 +426,82 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                         </div>
 
                         {/* Shift Controls */}
-                        {isSunday && !isClockedIn && !isShiftComplete && existingSundayReq?.status !== 'APPROVED' ? (
-                            <div className="bg-orange-50 border border-orange-200 p-4 rounded-xl text-center">
-                                <AlertTriangle size={24} className="text-orange-500 mx-auto mb-2" />
-                                <h3 className="text-orange-900 font-bold text-sm mb-1">Sunday Protocol</h3>
-                                {existingSundayReq ? (
-                                    <div className="text-[10px] font-bold text-orange-600 uppercase tracking-wider mt-2">
-                                        Status: {existingSundayReq.status}
-                                    </div>
-                                ) : (
-                                    <button
-                                        onClick={() => setShowSundayReqModal(true)}
-                                        className="w-full bg-orange-600 hover:bg-orange-700 text-white font-semibold py-2.5 rounded-lg transition-all text-sm mt-3"
-                                    >
-                                        Request Access
-                                    </button>
-                                )}
+                        {isSunday && !isClockedIn && !isShiftComplete ? (
+                            <div className="space-y-3">
+                              <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-center">
+                                  <AlertTriangle size={18} className="text-amber-500 mx-auto mb-1" />
+                                  <h3 className="text-amber-900 font-bold text-xs mb-1">Sunday Work</h3>
+                                  <p className="text-amber-700 text-[10px] leading-relaxed">Attendance will be marked. Any leave taken this week can be treated as <strong>Compensate</strong>.</p>
+                              </div>
+                              {sessionsLeft > 0 && cooldownSecs === 0 && (
+                                <button
+                                    onClick={onClockIn}
+                                    className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
+                                >
+                                    <PlayCircle size={18} /> Begin Shift
+                                </button>
+                              )}
+                              {!existingSundayReq && (
+                                <button
+                                    onClick={() => setShowSundayReqModal(true)}
+                                    className="w-full border border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 font-semibold py-2 rounded-xl transition-all text-xs flex items-center justify-center gap-1"
+                                >
+                                    <AlertTriangle size={14} /> Notify Admin (Optional)
+                                </button>
+                              )}
+                              {existingSundayReq && (
+                                <div className="text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                    Admin Notified — Status: {existingSundayReq.status}
+                                </div>
+                              )}
                             </div>
                         ) : (
                             <div className="space-y-3">
-                                {isShiftComplete ? (
+                                {/* All sessions used — shift complete */}
+                                {sessionsLeft === 0 && !isClockedIn ? (
                                     <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl text-center">
                                         <CheckCircle size={24} className="text-emerald-500 mx-auto mb-2" />
                                         <p className="text-emerald-900 font-bold text-sm">Shift Completed</p>
-                                        <p className="text-emerald-700 text-xs mt-1">Total: {todayDuration.toFixed(2)} Hrs</p>
+                                        <p className="text-emerald-700 text-xs mt-1">Total: {todayDuration.toFixed(2)} Hrs · {MAX_SESSIONS}/{MAX_SESSIONS} sessions used</p>
                                     </div>
                                 ) : isClockedIn ? (
+                                    /* Currently clocked in — show End Session */
                                     <button
                                         onClick={onClockOut}
-                                        className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
+                                        className="w-full bg-red-600 hover:bg-red-700 active:scale-95 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
                                     >
                                         <LogOut size={18} /> End Session
                                     </button>
+                                ) : cooldownSecs > 0 ? (
+                                    /* 2-minute cooldown between sessions */
+                                    <div className="space-y-3">
+                                      <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl text-center">
+                                          <div className="flex items-center justify-center gap-2 mb-2">
+                                            <div className="w-8 h-8 rounded-full border-2 border-blue-400 flex items-center justify-center animate-pulse">
+                                              <Clock size={14} className="text-blue-500" />
+                                            </div>
+                                          </div>
+                                          <p className="text-blue-900 font-bold text-sm">Re-login in</p>
+                                          <p className="font-mono text-2xl font-black text-blue-700 mt-1">
+                                            {cooldownMins}:{cooldownSecsDisplay.toString().padStart(2, '0')}
+                                          </p>
+                                          <p className="text-blue-600 text-[10px] mt-1">
+                                            Session {sessionCount + 1} of {MAX_SESSIONS} available after cooldown
+                                          </p>
+                                      </div>
+                                    </div>
                                 ) : (
+                                    /* Ready to start next session (or first session) */
                                     <button
                                         onClick={onClockIn}
-                                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
+                                        className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
                                     >
-                                        <PlayCircle size={18} /> Begin Shift
+                                        <PlayCircle size={18} />
+                                        {sessionCount === 0 ? 'Begin Shift' : `Resume Session (${sessionCount + 1}/${MAX_SESSIONS})`}
                                     </button>
                                 )}
                                 {isClockedIn && activeLog?.clockIn && (
-                                    <p className="text-[10px] font-medium text-slate-400">Started at {format(new Date(activeLog.clockIn), 'HH:mm:ss')}</p>
+                                    <p className="text-[10px] font-medium text-slate-400">Session started at {format(new Date(activeLog.clockIn), 'HH:mm:ss')}</p>
                                 )}
                             </div>
                         )}
@@ -525,8 +643,8 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                     <X size={24} className="text-slate-400" />
                 </button>
               </div>
-              <h3 className="text-3xl font-black text-slate-900 mb-3 tracking-tight">Sunday Protocol</h3>
-              <p className="text-slate-500 font-bold mb-8 leading-relaxed">Please provide a valid reason for working on a scheduled off-day. Requests are reviewed by the administration for approval.</p>
+              <h3 className="text-3xl font-black text-slate-900 mb-3 tracking-tight">Notify Admin</h3>
+              <p className="text-slate-500 font-bold mb-8 leading-relaxed">Let the admin know you are working today (Sunday). Any leave you take this week will be eligible to be marked as <span className="text-teal-600">Compensate Sunday</span> instead of a regular leave.</p>
               
               <textarea
                 className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-6 focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 outline-none h-40 resize-none mb-8 text-slate-800 font-bold text-sm"
@@ -540,7 +658,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                 disabled={!sundayReason.trim()}
                 className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-5 rounded-[2rem] shadow-2xl shadow-slate-900/20 active:scale-95 transition-all text-lg disabled:opacity-50 disabled:pointer-events-none"
               >
-                Submit Request
+                Notify Admin
               </button>
             </div>
           </div>

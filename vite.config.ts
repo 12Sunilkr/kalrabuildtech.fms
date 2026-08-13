@@ -127,7 +127,7 @@ export default defineConfig(({ mode }) => {
           let expressApp = null;
           try {
             process.env.VITE_EMBEDDED = '1';
-            const mod = await import(pathToFileURL(path.resolve(process.cwd(), 'server/index.js')).href);
+            const mod = await import(pathToFileURL(path.resolve(process.cwd(), 'server/index.js')).href + '?t=' + Date.now());
             expressApp = mod && (mod.default || mod.app);
             if (expressApp) {
               console.log('embed-express-api: Express app imported, mounting to Vite');
@@ -151,7 +151,8 @@ export default defineConfig(({ mode }) => {
 
           // If app becomes available later (e.g., hot reload of server/index.js), re-import
           server.watcher.on('change', async (file) => {
-            if (file.endsWith('server/index.js') || file.endsWith('server/index.ts')) {
+            const normalizedFile = file.replace(/\\/g, '/');
+            if (normalizedFile.endsWith('server/index.js') || normalizedFile.endsWith('server/index.ts')) {
               try {
                 const m = await import(pathToFileURL(path.resolve(process.cwd(), 'server/index.js')).href + '?t=' + Date.now());
                 expressApp = m && (m.default || m.app);

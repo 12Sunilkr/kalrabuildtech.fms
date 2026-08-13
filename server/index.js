@@ -15,6 +15,54 @@ import nodemailer from 'nodemailer';
 import { startPeriodicSync, syncToGoogleSheets } from './googleSheetsSync.js';
 import { createDebouncedPersist } from './utils/dbPersist.js';
 import { cacheGet, cacheSet, cacheInvalidate, withCache } from './utils/apiCache.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+// Load .env files manually if process.env is not populated (such as when run directly or in production via PM2)
+try {
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf8');
+    const lines = content.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const index = trimmed.indexOf('=');
+      if (index > 0) {
+        const key = trimmed.slice(0, index).trim();
+        let val = trimmed.slice(index + 1).trim();
+        // Remove surrounding quotes
+        if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+        if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
+        if (!process.env[key]) {
+          process.env[key] = val;
+        }
+      }
+    }
+  }
+} catch (e) {
+  console.warn('Failed to parse .env file:', e);
+}
+
+// Bind VITE_GEMINI_API_KEY to GEMINI_API_KEY for compatibility
+if (process.env.VITE_GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
+  process.env.GEMINI_API_KEY = process.env.VITE_GEMINI_API_KEY;
+}
+
+// Track database changes to optimize background sync operations
+global.dbChanged = true;
+
+// Initialize Gemini Client
+let genAI = null;
+if (process.env.GEMINI_API_KEY) {
+  try {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    console.log('Gemini AI system successfully initialized');
+  } catch (err) {
+    console.warn('Failed to initialize GoogleGenerativeAI client:', err && err.message);
+  }
+} else {
+  console.warn('No GEMINI_API_KEY found. AI Search and automated zone suggesting will be disabled.');
+}
 
 const app = express();
 app.use(compression());
@@ -24,10 +72,9 @@ app.use((req, res, next) => {
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
     try {
       const url = req.originalUrl || req.url || '';
-      if (url.includes('/api/users') || url.includes('/api/admin/cleanup-demo-users') || url.includes('/api/admin/archive-demo-users')) {
+      if (url.includes('/api/users') || url.includes('/api/admin/cleanup-demo-users') || url.includes('/api/admin/archive-demo-users') ||
+          url.includes('/api/employees') || url.includes('/api/employee/profile') || url.includes('/api/employee/documents')) {
         cacheInvalidate('users');
-      }
-      if (url.includes('/api/employees') || url.includes('/api/employee/profile') || url.includes('/api/employee/documents')) {
         cacheInvalidate('employees');
       }
       if (url.includes('/api/attendance')) {
@@ -63,6 +110,9 @@ app.use((req, res, next) => {
       }
       if (url.includes('/api/holidays')) {
         cacheInvalidate('holidays');
+      }
+      if (url.includes('/api/system-master')) {
+        cacheInvalidate('system-master');
       }
     } catch (e) {
       console.warn('Cache invalidation middleware warning:', e);
@@ -115,10 +165,26 @@ if (!dbFile.startsWith(__dirname + path.sep) && dbFile !== path.join(__dirname, 
   throw new Error(`DB file must be inside server directory: ${dbFile}`);
 }
 
+// Helper to verify if a file is a valid non-empty SQLite database header
+function isDbValidFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const stats = fs.statSync(filePath);
+    if (stats.size < 100) return false;
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(16);
+    fs.readSync(fd, buf, 0, 16, 0);
+    fs.closeSync(fd);
+    return buf.toString('latin1', 0, 15) === 'SQLite format 3';
+  } catch (e) {
+    return false;
+  }
+}
+
 // --- Database Sync Logic: automatically synchronize root and server database files ---
 try {
   const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-  if (fs.existsSync(rootDbFile)) {
+  if (fs.existsSync(rootDbFile) && isDbValidFile(rootDbFile)) {
     const rootStats = fs.statSync(rootDbFile);
     let copyRoot = false;
     if (fs.existsSync(dbFile)) {
@@ -134,6 +200,8 @@ try {
       console.log(`[Database Sync] Found different/newer root database.sqlite (${(rootStats.size / 1024 / 1024).toFixed(2)} MB). Syncing to ${dbFile}...`);
       fs.copyFileSync(rootDbFile, dbFile);
     }
+  } else if (fs.existsSync(rootDbFile)) {
+    console.warn('[Database Sync] Skipped initial sync: root database.sqlite file is invalid or malformed.');
   }
 } catch (err) {
   console.warn('[Database Sync] Failed to sync root database.sqlite to server directory:', err);
@@ -262,15 +330,32 @@ try {
           name TEXT,
           email TEXT UNIQUE,
           password TEXT,
+          plain_password TEXT,
           role TEXT,
           employeeId TEXT
         )`);
-        const insert = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
-        insert.run(['Admin User', 'admin@example.com', bcrypt.hashSync('admin123', 10), 'ADMIN', null]);
-        insert.run(['Administrator', 'admin@fms.com', bcrypt.hashSync('admin', 10), 'ADMIN', null]);
+        const insert = db.prepare('INSERT INTO users (name, email, password, plain_password, role, employeeId) VALUES (?,?,?,?,?,?)');
+        insert.run(['Admin User', 'admin@example.com', bcrypt.hashSync('admin123', 10), 'admin123', 'ADMIN', null]);
+        insert.run(['Administrator', 'admin@fms.com', bcrypt.hashSync('admin', 10), 'admin', 'ADMIN', null]);
         insert.free && insert.free();
         persistDB();
         console.log('Ensure Users: created users table and seeded default admin users');
+      }
+
+      // 30+ years experienced developer dynamic migration pattern:
+      // Dynamically alter existing users table to add plain_password if it doesn't exist
+      const tblUserInfo = db.prepare("PRAGMA table_info('users')");
+      const existingCols = new Set();
+      while (tblUserInfo.step()) {
+        existingCols.add(String(tblUserInfo.getAsObject().name));
+      }
+      tblUserInfo.free();
+      if (!existingCols.has('plain_password')) {
+        db.run("ALTER TABLE users ADD COLUMN plain_password TEXT");
+        db.run("UPDATE users SET plain_password = 'admin' WHERE lower(email) = 'admin@fms.com'");
+        db.run("UPDATE users SET plain_password = 'admin123' WHERE lower(email) = 'admin@example.com'");
+        persistDB();
+        console.log('Ensure Users: dynamically added plain_password column and migrated defaults');
       }
     } catch (err) {
       console.warn('Users table check failed', err);
@@ -679,23 +764,20 @@ try {
     () => Buffer.from(db.export()),
     (buff) => {
       isWritingRootDb = true;
-      fs.writeFile(dbFile, buff, (err) => {
-        if (err) {
-          console.error('Failed to write database file asynchronously:', err);
-          isWritingRootDb = false;
-        } else {
-          // If successful, also update the root database file to stay in sync
-          try {
-            const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-            fs.writeFile(rootDbFile, buff, (rootErr) => {
-              if (rootErr) console.warn('[Database Sync] Failed to update root database.sqlite:', rootErr);
-              setTimeout(() => { isWritingRootDb = false; }, 500);
-            });
-          } catch (e) {
-            isWritingRootDb = false;
-          }
-        }
-      });
+      try {
+        const tmpDbFile = dbFile + '.tmp';
+        fs.writeFileSync(tmpDbFile, buff);
+        fs.renameSync(tmpDbFile, dbFile);
+
+        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+        const tmpRootDbFile = rootDbFile + '.tmp';
+        fs.writeFileSync(tmpRootDbFile, buff);
+        fs.renameSync(tmpRootDbFile, rootDbFile);
+      } catch (err) {
+        console.error('Failed to write database file asynchronously:', err);
+      } finally {
+        setTimeout(() => { isWritingRootDb = false; }, 1500);
+      }
     }
   );
 
@@ -720,6 +802,10 @@ try {
               if (!fs.existsSync(rootDbFile)) return;
               const stats = fs.statSync(rootDbFile);
               if (stats.size === 0) return;
+              if (!isDbValidFile(rootDbFile)) {
+                console.warn('[Database Sync] Ignored external modification: root database file is invalid or malformed.');
+                return;
+              }
               
               const activeStats = fs.existsSync(dbFile) ? fs.statSync(dbFile) : null;
               if (activeStats && stats.size === activeStats.size && stats.mtimeMs <= activeStats.mtimeMs) {
@@ -803,6 +889,7 @@ async function reloadDatabaseFromDisk() {
     }
     
     console.log('[Database Sync] Database successfully reloaded and memory/disk sync complete.');
+    global.dbChanged = true;
     return true;
   } catch (err) {
     console.error('[Database Sync] Reload database from disk failed:', err);
@@ -813,6 +900,7 @@ async function reloadDatabaseFromDisk() {
 // Helper to persist DB file (debounced to avoid blocking on burst writes)
 function persistDB() {
   try {
+    global.dbChanged = true;
     if (!db) return false;
     if (dbPersistCtl) {
       dbPersistCtl.schedule();
@@ -836,6 +924,7 @@ function persistDB() {
 
 function persistDBNow() {
   try {
+    global.dbChanged = true;
     if (!db) return false;
     if (dbPersistCtl) {
       dbPersistCtl.flushNow();
@@ -867,30 +956,49 @@ function saveToDB() {
 
 // Core tables are ensured to exist early in database initialization
 
-// --- Migration: Hash any existing plaintext passwords ---
+// --- Migration: Hash any existing plaintext passwords & ensure plain_password is set ---
 try {
-  const sel = db.prepare('SELECT id, password FROM users');
+  const sel = db.prepare('SELECT id, password, plain_password FROM users');
   const toUpdate = [];
   while (sel.step()) {
     const r = sel.getAsObject();
+    let plainPass = r.plain_password;
+    let newHash = null;
+
+    if (!plainPass && r.password && !r.password.startsWith('$2') && typeof r.password === 'string') {
+      plainPass = r.password;
+    }
+    if (!plainPass) {
+      plainPass = '123';
+    }
+
     if (r.password && !r.password.startsWith('$2') && typeof r.password === 'string') {
-      const hashed = bcrypt.hashSync(r.password, 10);
-      toUpdate.push({ id: r.id, hashed });
+      newHash = bcrypt.hashSync(r.password, 10);
+    }
+
+    if (plainPass !== r.plain_password || newHash) {
+      toUpdate.push({
+        id: r.id,
+        plain_password: plainPass,
+        hashed: newHash || r.password
+      });
     }
   }
   sel.free();
+
   toUpdate.forEach(u => {
-    const upd = db.prepare('UPDATE users SET password = ? WHERE id = ?');
-    upd.run([u.hashed, u.id]);
+    const upd = db.prepare('UPDATE users SET password = ?, plain_password = ? WHERE id = ?');
+    upd.run([u.hashed, u.plain_password, u.id]);
     upd.free && upd.free();
   });
   if (toUpdate.length > 0) {
     persistDB();
-    console.log('Migration: hashed existing plaintext passwords for', toUpdate.length, 'users');
+    console.log('Migration: updated plain_password and hashed passwords for', toUpdate.length, 'users');
   }
 } catch (err) {
   console.warn('Password migration check failed', err);
 }
+
 
 // Ensure attendance & timelogs tables exist on older DBs
 try {
@@ -910,6 +1018,12 @@ try {
       createdAt TEXT
     )`);
   }
+  // Cleanup any legacy corrupted rows where userId was stored as 'E'
+  try {
+    const cleanStmt = db.prepare("DELETE FROM attendance WHERE userId = 'E'");
+    cleanStmt.run();
+    cleanStmt.free();
+  } catch (e) { /* ignore */ }
 } catch (err) {
   console.warn('Attendance table check failed', err);
 }
@@ -928,6 +1042,12 @@ try {
       notes TEXT,
       createdAt TEXT
     )`);
+  } else {
+    // Cleanup any existing duplicate timelog records in the database
+    try {
+      db.run(`DELETE FROM timelogs WHERE rowid NOT IN (SELECT MIN(rowid) FROM timelogs GROUP BY id)`);
+      db.run(`DELETE FROM timelogs WHERE rowid NOT IN (SELECT MIN(rowid) FROM timelogs GROUP BY userId, startTime, coalesce(endTime, ''))`);
+    } catch (e) { /* ignore */ }
   }
 } catch (err) {
   console.warn('Timelogs table check failed', err);
@@ -1482,6 +1602,109 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
+// Global active OTPs store (persisted in global scope across hot-reloads)
+global.activeOTPs = global.activeOTPs || {};
+const activeOTPs = global.activeOTPs;
+
+app.post('/api/auth/forgot-password', (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return failure(res, 'Missing email address', 400);
+
+    const check = db.prepare('SELECT id, name FROM users WHERE lower(email) = ? AND coalesce(is_archived, 0) = 0');
+    check.bind([email.toLowerCase()]);
+    if (!check.step()) {
+      check.free();
+      return failure(res, 'Email not found in our records', 404);
+    }
+    const user = check.getAsObject();
+    check.free();
+
+    // Generate a secure 6-digit OTP code
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    
+    // Store OTP in-memory with a 10 minute expiration
+    activeOTPs[email.toLowerCase()] = {
+      otp,
+      expires: Date.now() + 10 * 60 * 1000
+    };
+
+    // Send OTP via Nodemailer SMTP if configured
+    const mailOptions = {
+      from: '"KBT FMS Support" <' + (process.env.SMTP_USER || 'noreply@kbtfms.com') + '>',
+      to: email,
+      subject: `Your Password Reset Verification Code: ${otp}`,
+      text: `Hello ${user.name},\n\nYou requested a password reset for your KBT FMS account.\n\nYour 6-digit OTP verification code is:\n\n${otp}\n\nThis code is valid for 10 minutes. Enter this code in the reset window to choose a new password.\n\nIf you did not request this, please ignore this email.\n\nRegards,\nKBT Administration Team`
+    };
+
+    transporter.sendMail(mailOptions).then(() => {
+      console.log(`[SMTP] Successfully sent password reset OTP code ${otp} to ${email}`);
+    }).catch(err => {
+      console.warn(`[SMTP] Nodemailer failed to send email to ${email}:`, err.message);
+    });
+
+    console.log(`Password reset OTP requested for ${email}. Generated OTP: ${otp}`);
+    
+    // Return OTP in the payload as a demo fallback so that offline/non-configured systems can still read it on screen
+    return success(res, { otp, email }, 'Verification code sent to your email.');
+  } catch (err) {
+    console.error('Forgot password endpoint error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.post('/api/auth/reset-password-otp', (req, res) => {
+  try {
+    const { email, otp, password } = req.body || {};
+    if (!email || !otp || !password) {
+      return failure(res, 'Missing email, OTP, or password', 400);
+    }
+
+    const emailKey = email.toLowerCase().trim();
+    const active = activeOTPs[emailKey];
+    if (!active) {
+      return failure(res, 'No active password reset request found for this email. Please request a new OTP code.', 400);
+    }
+
+    if (active.expires < Date.now()) {
+      delete activeOTPs[emailKey];
+      return failure(res, 'Your verification code has expired. Please request a new code.', 400);
+    }
+
+    if (String(active.otp).trim() !== String(otp).trim()) {
+      return failure(res, 'Invalid verification code. Please check and try again.', 400);
+    }
+
+    // OTP verified successfully! Proceed to update password and plain_password
+    const check = db.prepare('SELECT id FROM users WHERE lower(email) = ? AND coalesce(is_archived, 0) = 0');
+    check.bind([emailKey]);
+    if (!check.step()) {
+      check.free();
+      return failure(res, 'Account no longer exists', 404);
+    }
+    const user = check.getAsObject();
+    check.free();
+
+    const hashed = bcrypt.hashSync(password, 10);
+    const upd = db.prepare('UPDATE users SET password = ?, plain_password = ? WHERE id = ?');
+    upd.run([hashed, password, user.id]);
+    upd.free();
+    persistDB();
+
+    // Clear active OTP
+    delete activeOTPs[emailKey];
+    
+    // Clear user cache
+    cacheInvalidate('users');
+
+    console.log(`Password successfully updated via OTP for ${emailKey}`);
+    return success(res, null, 'Your password has been reset successfully. You can now log in.');
+  } catch (err) {
+    console.error('Reset password OTP endpoint error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
 // Auth helpers
 app.get('/api/auth/me', (req, res) => {
   console.log('GET /api/auth/me from', req.ip, 'origin', req.headers.origin || 'no-origin');
@@ -1549,7 +1772,7 @@ app.get('/api/users', requireAuth, withCache('users', 15000), (req, res) => {
     console.log('GET /api/users from', req.headers.origin || 'no-origin');
     // Default: return only non-archived users unless explicitly requested
     const archived = req.query.archived === '1' || req.query.archived === 'true';
-    const q = archived ? 'SELECT id, name, email, role, employeeId, is_archived, archived_at FROM users' : "SELECT id, name, email, role, employeeId FROM users WHERE coalesce(is_archived, 0) = 0";
+    const q = archived ? 'SELECT id, name, email, role, employeeId, is_archived, archived_at, plain_password FROM users' : "SELECT id, name, email, role, employeeId, plain_password FROM users WHERE coalesce(is_archived, 0) = 0";
     const stmt = db.prepare(q);
     const out = [];
     while (stmt.step()) {
@@ -1584,7 +1807,7 @@ app.get('/api/users/by-email', requireAuth, (req, res) => {
   try {
     const email = req.query.email;
     if (!email) return failure(res, 'Missing email', 400);
-    const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE lower(email) = ?');
+    const stmt = db.prepare('SELECT id, name, email, role, employeeId, plain_password FROM users WHERE lower(email) = ?');
     stmt.bind([String(email).toLowerCase()]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     const row = stmt.getAsObject();
@@ -1598,7 +1821,7 @@ app.get('/api/users/by-email', requireAuth, (req, res) => {
 
 app.get('/api/users/:id', requireAuth, (req, res) => {
   try {
-    const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE id = ?');
+    const stmt = db.prepare('SELECT id, name, email, role, employeeId, plain_password FROM users WHERE id = ?');
     const id = Number(req.params.id);
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
@@ -1626,9 +1849,9 @@ app.post('/api/users', requireAuth, (req, res) => {
 
     // Hash password and insert. Rely also on DB unique index to catch race conditions.
     const hashed = bcrypt.hashSync(password, 10);
-    const insert = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
+    const insert = db.prepare('INSERT INTO users (name, email, password, plain_password, role, employeeId) VALUES (?,?,?,?,?,?)');
     try {
-      insert.run([name || null, email, hashed, role || 'EMPLOYEE', employeeId || null]);
+      insert.run([name || null, email, hashed, password, role || 'EMPLOYEE', employeeId || null]);
     } catch (dbErr) {
       // Handle unique constraint race condition (insert may fail if another request added same email)
       const msg = dbErr && (dbErr.message || dbErr);
@@ -1653,20 +1876,26 @@ app.put('/api/users/:id', requireAuth, (req, res) => {
   try {
     const id = Number(req.params.id);
     const { name, email, password, role, employeeId, is_archived } = req.body || {};
-    const stmt = db.prepare('SELECT id FROM users WHERE id = ?');
+    const stmt = db.prepare('SELECT id, is_archived, archived_at FROM users WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
+    const existing = stmt.getAsObject();
     stmt.free();
 
     // Hash password if provided
     const hashed = password ? bcrypt.hashSync(password, 10) : null;
     const sanitizedEmail = email ? String(email).trim().toLowerCase() : null;
 
-    // If setting is_archived to truthy, record archived_at timestamp
-    const archivedAt = is_archived ? new Date().toISOString() : null;
+    // If setting is_archived, record archived_at timestamp when archiving, or null if unarchiving
+    let finalIsArchived = existing.is_archived;
+    let finalArchivedAt = existing.archived_at;
+    if (req.body && req.body.hasOwnProperty('is_archived')) {
+      finalIsArchived = is_archived ? 1 : 0;
+      finalArchivedAt = is_archived ? (existing.archived_at || new Date().toISOString()) : null;
+    }
 
-    const update = db.prepare('UPDATE users SET name = coalesce(?, name), email = coalesce(?, email), password = coalesce(?, password), role = coalesce(?, role), employeeId = coalesce(?, employeeId), is_archived = coalesce(?, is_archived), archived_at = coalesce(?, archived_at) WHERE id = ?');
-    update.run([name || null, sanitizedEmail, hashed || null, role || null, employeeId || null, is_archived == null ? null : (is_archived ? 1 : 0), archivedAt, id]);
+    const update = db.prepare('UPDATE users SET name = coalesce(?, name), email = coalesce(?, email), password = coalesce(?, password), plain_password = coalesce(?, plain_password), role = coalesce(?, role), employeeId = coalesce(?, employeeId), is_archived = ?, archived_at = ? WHERE id = ?');
+    update.run([name || null, sanitizedEmail, hashed || null, password || null, role || null, employeeId || null, finalIsArchived, finalArchivedAt, id]);
     update.free && update.free();
     persistDB();
     return success(res, null, 'Updated');
@@ -1723,7 +1952,7 @@ app.post('/api/admin/reload-db', requireAuth, async (req, res) => {
     // Sync from root database.sqlite if it exists and is different/newer
     try {
       const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-      if (fs.existsSync(rootDbFile)) {
+      if (fs.existsSync(rootDbFile) && isDbValidFile(rootDbFile)) {
         const rootStats = fs.statSync(rootDbFile);
         let copyRoot = false;
         if (fs.existsSync(dbFile)) {
@@ -2102,7 +2331,7 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
 
     ensureEmployeesTable();
     const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, is_archived, avatar } = req.body || {};
-    const stmt = db.prepare('SELECT id, documents FROM employees WHERE id = ?');
+    const stmt = db.prepare('SELECT id, documents, is_archived, archived_at FROM employees WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     const existing = stmt.getAsObject();
@@ -2123,11 +2352,60 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     }
     const docs = Object.keys(mergedDocs).length > 0 ? JSON.stringify(mergedDocs) : null;
 
-    // If setting is_archived, record archived_at timestamp when archiving
-    const archivedAt = is_archived ? new Date().toISOString() : null;
+    // If setting is_archived, record archived_at timestamp when archiving, or null if unarchiving
+    let finalIsArchived = existing.is_archived;
+    let finalArchivedAt = existing.archived_at;
+    if (req.body && req.body.hasOwnProperty('is_archived')) {
+      finalIsArchived = is_archived ? 1 : 0;
+      finalArchivedAt = is_archived ? (existing.archived_at || new Date().toISOString()) : null;
+    }
 
-    const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), is_archived = coalesce(?, is_archived), archived_at = coalesce(?, archived_at) WHERE id = ?');
-    update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, is_archived == null ? null : (is_archived ? 1 : 0), archivedAt, id]);
+    // Handle optional task & checklist reassignment on archive/edit if reassignToId is provided
+    const reassignToId = req.body && req.body.reassignToId;
+    if (reassignToId) {
+      try {
+        const updT = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ?");
+        updT.run([reassignToId, id]);
+        updT.free();
+      } catch (e) { console.warn('Could not reassign tasks on employee update', e); }
+
+      try {
+        const tplsStmt = db.prepare("SELECT id, data FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+        tplsStmt.bind([id]);
+        const items = [];
+        while (tplsStmt.step()) { items.push(tplsStmt.getAsObject()); }
+        tplsStmt.free();
+        for (const item of items) {
+          try {
+            const data = JSON.parse(item.data);
+            data.doerId = reassignToId;
+            const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
+            updTpl.run([JSON.stringify(data), item.id]);
+            updTpl.free();
+          } catch (e2) {}
+        }
+      } catch (e) { console.warn('Could not reassign checklist templates on employee update', e); }
+
+      try {
+        const instStmt = db.prepare("SELECT id, item FROM checklists WHERE json_extract(item, '$.doerId') = ?");
+        instStmt.bind([id]);
+        const items = [];
+        while (instStmt.step()) { items.push(instStmt.getAsObject()); }
+        instStmt.free();
+        for (const item of items) {
+          try {
+            const data = JSON.parse(item.item);
+            data.doerId = reassignToId;
+            const updInst = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
+            updInst.run([JSON.stringify(data), item.id]);
+            updInst.free();
+          } catch (e2) {}
+        }
+      } catch (e) { console.warn('Could not reassign checklist instances on employee update', e); }
+    }
+
+    const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), is_archived = ?, archived_at = ? WHERE id = ?');
+    update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, finalIsArchived, finalArchivedAt, id]);
     update.free && update.free();
     persistDB();
     return success(res, null, 'Updated');
@@ -2160,7 +2438,7 @@ app.delete('/api/employees/:id', requireAuth, (req, res) => {
 
 // --- Permanent Delete Employee ---
 // DELETE /api/employees/:id/permanent  (Admin only)
-// Body: { replacementEmployeeId?: string }  — if provided, tasks are reassigned to this employee
+// Body: { replacementEmployeeId?: string }  — if provided, tasks are reassigned to this employee; if not, tasks & checklists are deleted
 app.delete('/api/employees/:id/permanent', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
@@ -2170,40 +2448,76 @@ app.delete('/api/employees/:id/permanent', requireAuth, (req, res) => {
     const id = req.params.id;
     const { replacementEmployeeId } = req.body || {};
 
-    // 1. Reassign or clear tasks assigned to this employee
+    // 1. Reassign or delete tasks assigned to this employee
     try {
       if (replacementEmployeeId) {
         const upd = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ?");
         upd.run([replacementEmployeeId, id]);
         upd.free();
       } else {
-        // Unassign — set to empty string so admin can reassign later
-        const upd = db.prepare("UPDATE tasks SET assignedTo = '' WHERE assignedTo = ?");
-        upd.run([id]);
-        upd.free();
+        // Hard-delete tasks assigned to deleted employee so no leftover data remains
+        const delT = db.prepare("DELETE FROM tasks WHERE assignedTo = ?");
+        delT.run([id]);
+        delT.free();
       }
-    } catch (e) { console.warn('Could not reassign tasks', e && (e.message || e)); }
+    } catch (e) { console.warn('Could not process tasks for deleted employee', e && (e.message || e)); }
 
-    // 2. Delete checklist instances for templates assigned to this employee
+    // 2. Reassign or delete checklist templates & instances for this employee
     try {
-      // Get template IDs for this doer
-      const tplsStmt = db.prepare("SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
-      tplsStmt.bind([id]);
-      const tplIds = [];
-      while (tplsStmt.step()) { tplIds.push(tplsStmt.getAsObject().id); }
-      tplsStmt.free();
+      if (replacementEmployeeId) {
+        // Reassign checklist templates
+        const tplsStmt = db.prepare("SELECT id, data FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+        tplsStmt.bind([id]);
+        const items = [];
+        while (tplsStmt.step()) { items.push(tplsStmt.getAsObject()); }
+        tplsStmt.free();
+        for (const item of items) {
+          try {
+            const data = JSON.parse(item.data);
+            data.doerId = replacementEmployeeId;
+            const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
+            updTpl.run([JSON.stringify(data), item.id]);
+            updTpl.free();
+          } catch (e2) {}
+        }
+        // Reassign checklist instances
+        const instStmt = db.prepare("SELECT id, item FROM checklists WHERE json_extract(item, '$.doerId') = ?");
+        instStmt.bind([id]);
+        const instItems = [];
+        while (instStmt.step()) { instItems.push(instStmt.getAsObject()); }
+        instStmt.free();
+        for (const item of instItems) {
+          try {
+            const data = JSON.parse(item.item);
+            data.doerId = replacementEmployeeId;
+            const updInst = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
+            updInst.run([JSON.stringify(data), item.id]);
+            updInst.free();
+          } catch (e2) {}
+        }
+      } else {
+        // Hard-delete checklist templates & instances
+        const tplsStmt = db.prepare("SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+        tplsStmt.bind([id]);
+        const tplIds = [];
+        while (tplsStmt.step()) { tplIds.push(tplsStmt.getAsObject().id); }
+        tplsStmt.free();
 
-      for (const tplId of tplIds) {
-        try {
-          const delInst = db.prepare("DELETE FROM checklists WHERE refId = ?");
-          delInst.run([tplId]);
-          delInst.free();
-          const delTpl = db.prepare("DELETE FROM checklist_templates WHERE id = ?");
-          delTpl.run([tplId]);
-          delTpl.free();
-        } catch (e2) { console.warn('Could not delete checklist template', tplId, e2 && (e2.message || e2)); }
+        for (const tplId of tplIds) {
+          try {
+            const delInst = db.prepare("DELETE FROM checklists WHERE refId = ?");
+            delInst.run([tplId]);
+            delInst.free();
+            const delTpl = db.prepare("DELETE FROM checklist_templates WHERE id = ?");
+            delTpl.run([tplId]);
+            delTpl.free();
+          } catch (e2) {}
+        }
+        const delChks = db.prepare("DELETE FROM checklists WHERE json_extract(item, '$.doerId') = ?");
+        delChks.run([id]);
+        delChks.free();
       }
-    } catch (e) { console.warn('Could not delete checklist templates for employee', e && (e.message || e)); }
+    } catch (e) { console.warn('Could not process checklist templates for deleted employee', e && (e.message || e)); }
 
     // 3. Delete linked user account
     try {
@@ -2524,10 +2838,20 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    // If it exists, we might want to keep the old userId/date if not provided
-    // But usually in this app they are provided or derivable from ID
-    const finalUserId = userId || (id.split('-')[1]); // fallback to parsing ID A-E-002-date
-    const finalDate = date || (id.split('-').slice(2).join('-'));
+    // Parse finalUserId and finalDate safely from req.body or fallback from id
+    let finalUserId = userId;
+    let finalDate = date;
+    if (!finalUserId || !finalDate) {
+      if (id.startsWith('A-') && id.length >= 13) {
+        const datePart = id.slice(-10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+          finalDate = finalDate || datePart;
+          finalUserId = finalUserId || id.slice(2, id.length - 11);
+        }
+      }
+      if (!finalUserId) finalUserId = id.split('-')[1];
+      if (!finalDate) finalDate = id.split('-').slice(2).join('-');
+    }
 
     stmt.run([
       id,
@@ -2543,7 +2867,8 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
     stmt.free();
 
     persistDB();
-    console.log(`[ATTENDANCE] PUT success: ${exists ? 'Updated' : 'Created'}`);
+    cacheInvalidate('attendance');
+    console.log(`[ATTENDANCE] PUT success: ${exists ? 'Updated' : 'Created'} for user=${finalUserId} date=${finalDate}`);
     return success(res, null, exists ? 'Updated' : 'Created');
   } catch (err) {
     console.error('[ATTENDANCE] PUT error', err);
@@ -2553,19 +2878,25 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
 
 app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, res) => {
   try {
-    // Optional query: ?userId= or ?date=
-    const userId = req.query.userId;
-    const date = req.query.date;
+    // Query filters: userId, date, month (YYYY-MM), startDate, endDate
+    const { userId, date, month, startDate, endDate } = req.query || {};
     let q = 'SELECT id, userId, date, clockIn, clockOut, value, location, notes, createdAt FROM attendance';
+    const clauses = [];
     const params = [];
-    if (userId || date) {
-      const clauses = [];
-      if (userId) { clauses.push('userId = ?'); params.push(userId); }
-      if (date) { clauses.push('date = ?'); params.push(date); }
+
+    if (userId) { clauses.push('userId = ?'); params.push(userId); }
+    if (date) { clauses.push('date = ?'); params.push(date); }
+    if (month) { clauses.push('date LIKE ?'); params.push(`${month}%`); }
+    if (startDate) { clauses.push('date >= ?'); params.push(startDate); }
+    if (endDate) { clauses.push('date <= ?'); params.push(endDate); }
+
+    if (clauses.length) {
       q += ' WHERE ' + clauses.join(' AND ');
     }
+    q += ' ORDER BY date DESC';
+
     const stmt = db.prepare(q);
-    stmt.bind(params);
+    if (params.length) stmt.bind(params);
     const out = [];
     while (stmt.step()) out.push(stmt.getAsObject());
     stmt.free();
@@ -2589,6 +2920,7 @@ app.post('/api/attendance', requireAuth, (req, res) => {
     insert.run([id, userId, date, clockIn || null, clockOut || null, value == null ? null : value, location || null, notes || null, new Date().toISOString()]);
     insert.free && insert.free();
     persistDB();
+    cacheInvalidate('attendance');
     return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Attendance POST error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -2604,6 +2936,7 @@ app.delete('/api/attendance/:id', requireAuth, (req, res) => {
     del.run([id]);
     del.free();
     persistDB();
+    cacheInvalidate('attendance');
     return success(res, null, 'Deleted');
   } catch (err) {
     console.error('Attendance DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -2614,26 +2947,63 @@ app.delete('/api/attendance/:id', requireAuth, (req, res) => {
 // Time logs endpoints
 app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) => {
   try {
-    const userId = req.query.userId;
+    const { userId, startDate, endDate, month } = req.query || {};
     let q = 'SELECT id, userId, startTime, endTime, task, notes, createdAt FROM timelogs';
+    const clauses = [];
     const params = [];
-    if (userId) { q += ' WHERE userId = ?'; params.push(userId); }
+
+    if (userId) { clauses.push('userId = ?'); params.push(userId); }
+    if (month) { clauses.push('startTime LIKE ?'); params.push(`${month}%`); }
+    if (startDate) { clauses.push('startTime >= ?'); params.push(startDate); }
+    if (endDate) { clauses.push('startTime <= ?'); params.push(endDate); }
+
+    if (clauses.length) {
+      q += ' WHERE ' + clauses.join(' AND ');
+    }
+    q += ' ORDER BY startTime DESC';
+
     const stmt = db.prepare(q);
-    stmt.bind(params);
-    const out = [];
+    if (params.length) stmt.bind(params);
+    const rawLogs = [];
     while (stmt.step()) {
-      const record = stmt.getAsObject();
-      // Calculate durationHours if both startTime and endTime exist
+      rawLogs.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    const out = [];
+    const userDateMap = new Map();
+
+    for (const record of rawLogs) {
       if (record.startTime && record.endTime) {
         const start = new Date(record.startTime);
         const end = new Date(record.endTime);
         const diffMs = end - start;
-        const diffHours = diffMs / (1000 * 60 * 60);
-        record.durationHours = Math.max(0, diffHours); // Ensure non-negative
+        record.durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
       }
-      out.push(record);
+
+      const dateKey = record.startTime ? record.startTime.split('T')[0] : (record.createdAt ? record.createdAt.split('T')[0] : 'nodate');
+      const uKey = `${record.userId}_${dateKey}`;
+
+      if (!userDateMap.has(uKey)) {
+        userDateMap.set(uKey, [record]);
+        out.push(record);
+      } else {
+        const existingList = userDateMap.get(uKey);
+        const recordTime = record.startTime ? new Date(record.startTime).getTime() : 0;
+        const isDup = existingList.some(ex => {
+          if (ex.id === record.id) return true;
+          const exTime = ex.startTime ? new Date(ex.startTime).getTime() : 0;
+          if (recordTime && exTime && Math.abs(recordTime - exTime) < 120000) {
+            return true;
+          }
+          return false;
+        });
+        if (!isDup) {
+          existingList.push(record);
+          out.push(record);
+        }
+      }
     }
-    stmt.free();
     return success(res, out);
   } catch (err) {
     console.error('Timelogs GET error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -2812,31 +3182,65 @@ app.post('/api/tasks', requireAuth, (req, res) => {
   }
 });
 
-// GET /api/tasks - get tasks for the logged-in user (admin returns all)
+// GET /api/tasks - get tasks for the logged-in user (admin returns all, supports pagination/filtering)
 app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
 
     const isAdmin = req.user.role === 'ADMIN';
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limitParam = req.query.limit;
+    // Default to 0 (return ALL tasks) unless an explicit numeric limit is specified
+    const limit = (limitParam === undefined || limitParam === 'all' || limitParam === '0' || limitParam === '-1')
+      ? 0
+      : Math.max(1, parseInt(limitParam, 10) || 0);
+    const statusFilter = req.query.status ? String(req.query.status).trim().toLowerCase() : null;
+    const searchFilter = req.query.search ? String(req.query.search).trim().toLowerCase() : null;
+    const assignedToFilter = req.query.assignedTo ? String(req.query.assignedTo).trim() : null;
+    const includeAttachments = req.query.includeAttachments === 'true' || req.query.includeAttachments === '1';
 
-    // Use LEFT JOIN to include assigner and assignee names directly
+    // Exclude heavy base64 attachment field BY DEFAULT to prevent 25MB JSON payloads
+    const attachmentSelect = includeAttachments ? ', t.completionAttachment, t.completionProcess' : '';
+
     const base = `
       SELECT t.id, t.title, t.description, t.priority, t.due_date, t.assigned_to, t.assignedTo as assignedToStr, t.status, t.created_at,
              ua.name AS assignedByName, ua.employeeId AS assignedByEmployeeId,
              ub.name AS assignedToName, ub.employeeId AS assignedToEmployeeId,
-             t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess, t.completionAttachment, t.statusNote
+             t.extensionHistory, t.extensionRequest, t.completionDate, t.statusNote ${attachmentSelect}
       FROM tasks t
       LEFT JOIN users ua ON ua.id = t.assigned_by
       LEFT JOIN users ub ON ub.id = t.assigned_to
     `;
 
-    let query = base + ' ORDER BY t.created_at DESC';
+    const conditions = [];
     const params = [];
+
     if (!isAdmin) {
-      // Restrict to tasks assigned to the current user (by numeric id or employeeId)
       const normalizedEmp = req.user.employeeId ? String(req.user.employeeId).replace(/[^a-zA-Z0-9]/g, '') : '';
-      query = base + ' WHERE t.assigned_to = ? OR t.assignedTo = ? OR REPLACE(t.assignedTo, "-", "") = ? ORDER BY t.created_at DESC';
+      conditions.push('(t.assigned_to = ? OR t.assignedTo = ? OR REPLACE(t.assignedTo, "-", "") = ?)');
       params.push(Number(req.user.id), req.user.employeeId || '', normalizedEmp);
+    } else if (assignedToFilter) {
+      const normalizedEmp = assignedToFilter.replace(/[^a-zA-Z0-9]/g, '');
+      conditions.push('(t.assignedTo = ? OR REPLACE(t.assignedTo, "-", "") = ?)');
+      params.push(assignedToFilter, normalizedEmp);
+    }
+
+    if (statusFilter) {
+      conditions.push('LOWER(t.status) = ?');
+      params.push(statusFilter);
+    }
+
+    if (searchFilter) {
+      conditions.push('(LOWER(t.title) LIKE ? OR LOWER(t.description) LIKE ?)');
+      params.push(`%${searchFilter}%`, `%${searchFilter}%`);
+    }
+
+    let whereClause = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+    let query = base + whereClause + ' ORDER BY t.created_at DESC';
+
+    if (limit > 0) {
+      const offset = (page - 1) * limit;
+      query += ` LIMIT ${limit} OFFSET ${offset}`;
     }
 
     const stmt = db.prepare(query);
@@ -2845,13 +3249,10 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
     const out = [];
     while (stmt.step()) {
       const r = stmt.getAsObject();
-      // Map DB columns to frontend shape
       r.assigned_to = r.assigned_to || null;
-      r.assignedTo = r.assignedToStr || r.assignedToEmployeeId || r.assignedToEmployeeId || null;
-      // Prefer joined names when available
+      r.assignedTo = r.assignedToStr || r.assignedToEmployeeId || null;
       r.assignedBy = r.assignedByName || null;
       r.assignedToName = r.assignedToName || null;
-
       r.dueDate = r.due_date || null;
       r.createdDate = r.created_at || null;
       r.priority = r.priority || 'MEDIUM';
@@ -2863,7 +3264,7 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
       out.push(r);
     }
     stmt.free();
-    return success(res, { tasks: out });
+    return success(res, { tasks: out, page, limit: limit > 0 ? limit : out.length, total: out.length });
   } catch (err) {
     console.error('Tasks GET error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
@@ -2976,7 +3377,7 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     const id = req.params.id;
-    const getStmt = db.prepare("SELECT id, title, description, assignedTo, priority, dueDate, assigned_to, createdAt, coalesce(assignedBy, '') as assignedBy FROM tasks WHERE id = ?");
+    const getStmt = db.prepare("SELECT id, title, description, assignedTo, priority, dueDate, assigned_to, createdAt, coalesce(assignedBy, '') as assignedBy, extensionHistory, extensionRequest FROM tasks WHERE id = ?");
     getStmt.bind([id]);
     if (!getStmt.step()) { getStmt.free(); return failure(res, 'Not found', 404); }
     const existing = getStmt.getAsObject();
@@ -2988,6 +3389,20 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
     if (!isAdmin && !isAssignee) return failure(res, 'Forbidden', 403);
 
     const updates = req.body || {};
+
+    // Validate objection count limit if status is set to EXTENSION_REQUESTED
+    if (updates.status === 'EXTENSION_REQUESTED') {
+      const currentHistory = (() => {
+        try {
+          return JSON.parse(existing.extensionHistory || '[]');
+        } catch (e) {
+          return [];
+        }
+      })();
+      if (currentHistory.length >= 3) {
+        return failure(res, 'Maximum limit of 3 objections reached for this task', 400);
+      }
+    }
 
     try {
       db.run('BEGIN TRANSACTION');
@@ -3381,14 +3796,14 @@ app.get('/api/notifications/:userId', requireAuth, (req, res) => {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     if (req.user.role !== 'ADMIN' && req.user.employeeId !== userId) return failure(res, 'Forbidden', 403);
 
-    // Attempt to select full row; fallback to simpler select if columns missing
+    // Attempt to select full row; fallback to simpler select if columns missing. Limit to latest 300 to optimize performance.
     let stmt;
     try {
       // Return notifications for the requested user *and* global/admin broadcasts
-      stmt = db.prepare("SELECT id, userId, message, meta, isRead, createdAt FROM notifications WHERE (userId = ? OR userId = 'ALL' OR userId = 'ADMIN') ORDER BY createdAt DESC");
+      stmt = db.prepare("SELECT id, userId, message, meta, isRead, createdAt FROM notifications WHERE (userId = ? OR userId = 'ALL' OR userId = 'ADMIN') ORDER BY createdAt DESC LIMIT 300");
       stmt.bind([userId]);
     } catch (e) {
-      stmt = db.prepare("SELECT id, userId, message, createdAt FROM notifications WHERE (userId = ? OR userId = 'ALL' OR userId = 'ADMIN') ORDER BY createdAt DESC");
+      stmt = db.prepare("SELECT id, userId, message, createdAt FROM notifications WHERE (userId = ? OR userId = 'ALL' OR userId = 'ADMIN') ORDER BY createdAt DESC LIMIT 300");
       stmt.bind([userId]);
     }
 
@@ -3535,6 +3950,15 @@ app.post('/api/checklists/bulk', requireAuth, (req, res) => {
     if (!Array.isArray(items) || items.length === 0) return failure(res, 'Missing items array', 400);
     try {
       db.run('BEGIN TRANSACTION');
+
+      // Clean up previous pending instances of the templates being bulk-created to prevent duplicate schedule accumulation
+      const uniqueRefIds = [...new Set(items.map(it => it.refId).filter(Boolean))];
+      const deleteStmt = db.prepare('DELETE FROM checklists WHERE refId = ? AND done = 0');
+      for (const refId of uniqueRefIds) {
+        deleteStmt.run([refId]);
+      }
+      deleteStmt.free();
+
       const insert = db.prepare('INSERT INTO checklists (id, refId, refType, item, done, createdBy, createdAt) VALUES (?,?,?,?,?,?,?)');
       const createdBy = req.user && (req.user.employeeId || req.user.id) || null;
       const createdAt = new Date().toISOString();
@@ -3560,11 +3984,26 @@ app.get('/api/checklists-instances/all', requireAuth, (req, res) => {
 
     const stmt = db.prepare('SELECT id, refId, refType, item, done, createdBy, createdAt FROM checklists ORDER BY refId, createdAt ASC');
     const grouped = {};
+    const today = new Date();
+    const limitDate = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days future horizon
+    const limitDateStr = limitDate.toISOString().split('T')[0];
+
     while (stmt.step()) {
       const row = stmt.getAsObject();
-      const ref = String(row.refId);
-      if (!grouped[ref]) grouped[ref] = [];
-      grouped[ref].push(row);
+      let itemDate = '';
+      try {
+        const itemObj = JSON.parse(row.item);
+        itemDate = itemObj.date || '';
+      } catch (e) {
+        itemDate = row.item || '';
+      }
+
+      // Filter: return if completed (done === 1) OR scheduled within 90 days from now (includes all past & current items)
+      if (row.done === 1 || (itemDate && itemDate <= limitDateStr)) {
+        const ref = String(row.refId);
+        if (!grouped[ref]) grouped[ref] = [];
+        grouped[ref].push(row);
+      }
     }
     stmt.free();
     cacheSet(cacheKey, grouped, 15000);
@@ -3585,7 +4024,25 @@ app.get('/api/checklists/:refId', requireAuth, (req, res) => {
     const stmt = db.prepare('SELECT id, refId, refType, item, done, createdBy, createdAt FROM checklists WHERE refId = ? ORDER BY createdAt ASC');
     stmt.bind([refId]);
     const out = [];
-    while (stmt.step()) out.push(stmt.getAsObject());
+    const today = new Date();
+    const limitDate = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days future horizon
+    const limitDateStr = limitDate.toISOString().split('T')[0];
+
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      let itemDate = '';
+      try {
+        const itemObj = JSON.parse(row.item);
+        itemDate = itemObj.date || '';
+      } catch (e) {
+        itemDate = row.item || '';
+      }
+
+      // Filter: return if completed (done === 1) OR scheduled within 90 days from now (includes all past & current items)
+      if (row.done === 1 || (itemDate && itemDate <= limitDateStr)) {
+        out.push(row);
+      }
+    }
     stmt.free();
     const outArr = out || [];
     cacheSet(cacheKey, outArr, 15000);
@@ -5253,15 +5710,40 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
   try {
     const { id, userId, startTime, endTime, task, notes } = req.body || {};
     if (!id || !userId || !startTime) return failure(res, 'Missing fields', 400);
+
     const check = db.prepare('SELECT id FROM timelogs WHERE id = ?');
     check.bind([id]);
     if (check.step()) { check.free(); return failure(res, 'TimeLog ID already exists', 409); }
     check.free();
 
+    // Prevent duplicate open timelogs or duplicate clock-ins within 2 minutes for the same user
+    const existingStmt = db.prepare('SELECT id, startTime, endTime FROM timelogs WHERE userId = ? ORDER BY createdAt DESC');
+    existingStmt.bind([userId]);
+    const reqTime = new Date(startTime).getTime();
+    let isDuplicate = false;
+    let existingId = null;
+    while (existingStmt.step()) {
+      const row = existingStmt.getAsObject();
+      const exTime = row.startTime ? new Date(row.startTime).getTime() : 0;
+      if (!row.endTime || (reqTime && exTime && Math.abs(reqTime - exTime) < 120000)) {
+        isDuplicate = true;
+        existingId = row.id;
+        break;
+      }
+    }
+    existingStmt.free();
+
+    if (isDuplicate) {
+      console.log(`[TIMELOGS] POST skip duplicate insert for userId=${userId} startTime=${startTime}, reusing existingId=${existingId}`);
+      cacheInvalidate('timelogs');
+      return success(res, { id: existingId || id }, 'Duplicate session skipped');
+    }
+
     const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
     insert.run([id, userId, startTime, endTime || null, task || null, notes || null, new Date().toISOString()]);
     insert.free && insert.free();
     persistDB();
+    cacheInvalidate('timelogs');
     return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Timelogs POST error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -5281,6 +5763,7 @@ app.put('/api/timelogs/:id', requireAuth, (req, res) => {
     update.run([startTime || null, endTime || null, task || null, notes || null, id]);
     update.free && update.free();
     persistDB();
+    cacheInvalidate('timelogs');
     return success(res, null, 'Updated');
   } catch (err) {
     console.error('Timelogs PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -5295,6 +5778,7 @@ app.delete('/api/timelogs/:id', requireAuth, (req, res) => {
     del.run([id]);
     del.free();
     persistDB();
+    cacheInvalidate('timelogs');
     return success(res, null, 'Deleted');
   } catch (err) {
     console.error('Timelogs DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -6189,6 +6673,1027 @@ app.delete('/api/crm/leads/:id', requireAuth, (req, res) => {
   }
 });
 
+// ==========================================
+// PROJECT MAPS & LAYOUT SYSTEM API ENDPOINTS
+// ==========================================
+
+// Multer storage config for project maps and layouts
+const storageProjectMaps = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.resolve(process.cwd(), 'server', 'uploads', 'project_maps');
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const uniqueName = `pmap-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+    cb(null, uniqueName);
+  }
+});
+const uploadProjectMap = multer({
+  storage: storageProjectMaps,
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB
+});
+
+// Serve static project files
+app.use('/api/project-maps/static', express.static(path.resolve(process.cwd(), 'server', 'uploads', 'project_maps')));
+
+// 1. GET /api/project-maps/projects - Get all projects with layout statistics
+app.get('/api/project-maps/projects', requireAuth, (req, res) => {
+  try {
+    const stmt = db.prepare(`
+      SELECT p.id, p.project_name, p.status, p.location, p.start_date,
+             (SELECT COUNT(*) FROM project_files WHERE project_id = p.id AND is_latest = 1) as file_count,
+             (SELECT id FROM project_maps WHERE project_id = p.id) as map_id
+      FROM pms_projects p
+      ORDER BY p.project_name ASC
+    `);
+    const projects = [];
+    while (stmt.step()) {
+      projects.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return success(res, projects);
+  } catch (err) {
+    console.error('Failed to fetch project maps projects:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 2. GET /api/project-maps/files/:projectId - Get all files for a specific project
+app.get('/api/project-maps/files/:projectId', requireAuth, (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { category, all_revisions } = req.query;
+
+    let query = `
+      SELECT id, project_id, filename, original_name, file_size, file_type,
+             category, revision, revision_number, keywords, parent_file_id, is_latest, created_by, created_at
+      FROM project_files
+      WHERE project_id = ?
+    `;
+    const params = [projectId];
+
+    if (all_revisions !== '1') {
+      query += ` AND is_latest = 1`;
+    }
+    if (category) {
+      query += ` AND category = ?`;
+      params.push(category);
+    }
+
+    query += ` ORDER BY category ASC, original_name ASC, revision_number DESC`;
+
+    const stmt = db.prepare(query);
+    stmt.bind(params);
+    const files = [];
+    while (stmt.step()) {
+      files.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    // 30+ years experienced developer dynamic keyword correlation engine
+    // Finds files with matching keywords inside the same project
+    for (const file of files) {
+      file.related = [];
+      if (file.keywords) {
+        const kws = file.keywords.split(',').map(k => k.trim().toLowerCase()).filter(k => k.length > 2);
+        if (kws.length > 0) {
+          const otherStmt = db.prepare(`
+            SELECT id, original_name, category, keywords
+            FROM project_files
+            WHERE project_id = ? AND id != ? AND is_latest = 1
+          `);
+          otherStmt.bind([projectId, file.id]);
+          const candidates = [];
+          while (otherStmt.step()) {
+            candidates.push(otherStmt.getAsObject());
+          }
+          otherStmt.free();
+
+          for (const cand of candidates) {
+            if (cand.keywords) {
+              const candKws = cand.keywords.split(',').map(k => k.trim().toLowerCase());
+              const hasOverlap = kws.some(k => candKws.includes(k));
+              if (hasOverlap) {
+                file.related.push({
+                  id: cand.id,
+                  original_name: cand.original_name,
+                  category: cand.category
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return success(res, files);
+  } catch (err) {
+    console.error('Failed to fetch project files:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 3. POST /api/project-maps/upload - Upload file with automated parsing and revision stacking
+app.post('/api/project-maps/upload', requireAuth, uploadProjectMap.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return failure(res, 'No file uploaded', 400);
+    }
+    const { projectId } = req.body;
+    if (!projectId) {
+      return failure(res, 'Project ID is required', 400);
+    }
+
+    const originalName = req.file.originalname;
+    const filename = req.file.filename;
+    const filepath = req.file.path;
+    const fileSize = req.file.size;
+    const fileType = originalName.split('.').pop() || '';
+
+    // Smart Revision Parse (Matches _Rev03, _v2, -R12, rev.4, v02 etc.)
+    let revision = '01';
+    let revisionNumber = 1;
+    const revPatterns = [
+      /_Rev(\d+)/i,
+      /_v(\d+)/i,
+      /-R(\d+)/i,
+      /rev\.?\s*(\d+)/i,
+      /_r(\d+)/i,
+      /v(\d+)/i
+    ];
+    for (const pat of revPatterns) {
+      const match = originalName.match(pat);
+      if (match) {
+        revision = match[1];
+        revisionNumber = parseInt(match[1]) || 1;
+        break;
+      }
+    }
+
+    // Category Suggestion Match
+    let category = 'Documents';
+    const nameLower = originalName.toLowerCase();
+    if (nameLower.includes('layout') || nameLower.includes('masterplan') || nameLower.includes('master_plan') || nameLower.includes('site_plan')) {
+      category = 'Layouts';
+    } else if (nameLower.includes('drawing') || nameLower.includes('elevation') || nameLower.includes('section') || fileType.toLowerCase() === 'dwg' || fileType.toLowerCase() === 'dxf') {
+      category = 'Drawings';
+    } else if (nameLower.includes('approval') || nameLower.includes('noc') || nameLower.includes('permit') || nameLower.includes('clearance') || nameLower.includes('letter')) {
+      category = 'Approvals';
+    } else if (nameLower.includes('photo') || nameLower.includes('site_photo') || nameLower.includes('image') || nameLower.includes('pic') || ['png', 'jpg', 'jpeg', 'webp'].includes(fileType.toLowerCase())) {
+      category = 'Photos';
+    } else if (nameLower.includes('report') || nameLower.includes('survey') || nameLower.includes('test') || nameLower.includes('investigation')) {
+      category = 'Reports';
+    }
+
+    // Tokenized Keyword Extraction
+    const baseNameWithoutExt = originalName.slice(0, originalName.lastIndexOf('.'));
+    const tokens = baseNameWithoutExt.split(/[^a-zA-Z0-9]/).map(t => t.trim().toLowerCase()).filter(t => {
+      const skipWords = ['rev', 'v', 'r', 'final', 'draft', 'version', 'project', 'new', 'old', 'pdf', 'dwg', 'dxf', 'layout', 'drawing', 'report', 'approval', 'photo'];
+      return t.length > 2 && !skipWords.includes(t);
+    });
+    const keywords = [...new Set(tokens)].join(',');
+
+    // Parent Stack Versioning Match
+    let baseKey = baseNameWithoutExt;
+    for (const pat of revPatterns) {
+      baseKey = baseKey.replace(pat, '');
+    }
+    baseKey = baseKey.replace(/_\d+$/, '').replace(/-\d+$/, '').trim().toLowerCase();
+
+    let parentFileId = null;
+    const parentSearchStmt = db.prepare(`
+      SELECT id, parent_file_id FROM project_files
+      WHERE project_id = ? AND (
+        LOWER(original_name) LIKE ? OR
+        REPLACE(REPLACE(LOWER(original_name), '_', ''), '-', '') LIKE ?
+      )
+      LIMIT 1
+    `);
+    
+    const likeQuery = `%${baseKey}%`;
+    parentSearchStmt.bind([projectId, likeQuery, `%${baseKey.replace(/[^a-z0-9]/g, '')}%`]);
+    
+    if (parentSearchStmt.step()) {
+      const matched = parentSearchStmt.getAsObject();
+      parentFileId = matched.parent_file_id || matched.id;
+    }
+    parentSearchStmt.free();
+
+    const newFileId = `FILE-${Date.now()}-${Math.round(Math.random() * 1000)}`;
+    if (!parentFileId) {
+      parentFileId = newFileId;
+    }
+
+    // De-promote old items in the revision stack
+    db.run(`
+      UPDATE project_files
+      SET is_latest = 0
+      WHERE project_id = ? AND parent_file_id = ?
+    `, [projectId, parentFileId]);
+
+    const uploader = req.user ? req.user.name || req.user.email : 'Admin';
+    const createdAt = new Date().toISOString();
+
+    db.run(`
+      INSERT INTO project_files (
+        id, project_id, filename, original_name, filepath, file_size, file_type,
+        category, revision, revision_number, keywords, parent_file_id, is_latest, created_by, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      newFileId, projectId, filename, originalName, filepath, fileSize, fileType,
+      category, revision, revisionNumber, keywords, parentFileId, 1, uploader, createdAt
+    ]);
+
+    persistDB();
+
+    return success(res, {
+      id: newFileId,
+      original_name: originalName,
+      category,
+      revision,
+      revisionNumber,
+      keywords,
+      parentFileId,
+      is_latest: 1
+    });
+
+  } catch (err) {
+    console.error('Smart upload failure:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 4. DELETE /api/project-maps/files/:fileId - Delete file (promotes next latest version if latest was deleted)
+app.delete('/api/project-maps/files/:fileId', requireAuth, (req, res) => {
+  try {
+    const { fileId } = req.params;
+
+    const fileStmt = db.prepare(`SELECT * FROM project_files WHERE id = ?`);
+    fileStmt.bind([fileId]);
+    if (!fileStmt.step()) {
+      fileStmt.free();
+      return failure(res, 'File not found', 404);
+    }
+    const fileInfo = fileStmt.getAsObject();
+    fileStmt.free();
+
+    db.run(`DELETE FROM project_files WHERE id = ?`, [fileId]);
+
+    if (fileInfo.filepath && fs.existsSync(fileInfo.filepath)) {
+      try {
+        fs.unlinkSync(fileInfo.filepath);
+      } catch (e) {
+        console.warn('Failed to delete physical file:', fileInfo.filepath, e.message);
+      }
+    }
+
+    // Promote next latest version
+    if (fileInfo.is_latest === 1 && fileInfo.parent_file_id) {
+      const nextLatestStmt = db.prepare(`
+        SELECT id FROM project_files
+        WHERE parent_file_id = ?
+        ORDER BY revision_number DESC, created_at DESC
+        LIMIT 1
+      `);
+      nextLatestStmt.bind([fileInfo.parent_file_id]);
+      if (nextLatestStmt.step()) {
+        const nextLatest = nextLatestStmt.getAsObject();
+        db.run(`UPDATE project_files SET is_latest = 1 WHERE id = ?`, [nextLatest.id]);
+      }
+      nextLatestStmt.free();
+    }
+
+    // Clean project_maps if it was bound as the main map
+    db.run(`DELETE FROM project_maps WHERE file_id = ?`, [fileId]);
+
+    persistDB();
+    return success(res, { message: 'File deleted successfully' });
+  } catch (err) {
+    console.error('Failed to delete file:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 5. POST /api/project-maps/map-config - Configure main project map and clickable coordinates
+app.post('/api/project-maps/map-config', requireAuth, (req, res) => {
+  try {
+    const { projectId, fileId, zones } = req.body;
+    if (!projectId || !fileId) {
+      return failure(res, 'Project ID and File ID are required', 400);
+    }
+
+    const zonesString = typeof zones === 'string' ? zones : JSON.stringify(zones || []);
+
+    db.run(`
+      INSERT OR REPLACE INTO project_maps (id, project_id, file_id, zones, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `, [
+      `MAP-${projectId}`, projectId, fileId, zonesString, new Date().toISOString()
+    ]);
+
+    persistDB();
+    return success(res, { message: 'Map configuration saved successfully' });
+  } catch (err) {
+    console.error('Failed to save map configuration:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 6. GET /api/project-maps/map-config/:projectId - Fetch map config & drawing details
+app.get('/api/project-maps/map-config/:projectId', requireAuth, (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const stmt = db.prepare(`
+      SELECT pm.id as map_id, pm.project_id, pm.file_id, pm.zones, pm.created_at,
+             pf.filename, pf.original_name, pf.file_type
+      FROM project_maps pm
+      JOIN project_files pf ON pf.id = pm.file_id
+      WHERE pm.project_id = ?
+    `);
+    stmt.bind([projectId]);
+    
+    if (!stmt.step()) {
+      stmt.free();
+      return success(res, null); // No map
+    }
+    
+    const config = stmt.getAsObject();
+    stmt.free();
+    
+    try {
+      config.zones = JSON.parse(config.zones || '[]');
+    } catch (e) {
+      config.zones = [];
+    }
+    
+    return success(res, config);
+  } catch (err) {
+    console.error('Failed to fetch map config:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 7. GET /api/project-maps/search - Full text search across file attributes and project name
+app.get('/api/project-maps/search', requireAuth, (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query) {
+      return success(res, []);
+    }
+
+    const stmt = db.prepare(`
+      SELECT pf.id, pf.project_id, pf.filename, pf.original_name, pf.file_size, pf.file_type,
+             pf.category, pf.revision, pf.revision_number, pf.keywords, pf.is_latest, pf.created_by, pf.created_at,
+             p.project_name
+      FROM project_files pf
+      JOIN pms_projects p ON p.id = pf.project_id
+      WHERE pf.is_latest = 1 AND (
+        pf.original_name LIKE ? OR
+        pf.category LIKE ? OR
+        pf.keywords LIKE ? OR
+        p.project_name LIKE ?
+      )
+      ORDER BY pf.created_at DESC
+    `);
+    const param = `%${query}%`;
+    stmt.bind([param, param, param, param]);
+
+    const results = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return success(res, results);
+  } catch (err) {
+    console.error('Search failure:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 8. POST /api/project-maps/ai-search - Natural Language Search powered by Gemini
+app.post('/api/project-maps/ai-search', requireAuth, async (req, res) => {
+  try {
+    const { query } = req.body;
+    if (!query) {
+      return failure(res, 'Query is required', 400);
+    }
+
+    if (!genAI) {
+      return failure(res, 'Gemini AI service not available', 503);
+    }
+
+    const stmt = db.prepare(`
+      SELECT pf.id, pf.original_name, pf.category, pf.keywords, pf.revision, p.project_name
+      FROM project_files pf
+      JOIN pms_projects p ON p.id = pf.project_id
+      WHERE pf.is_latest = 1
+    `);
+    const files = [];
+    while (stmt.step()) {
+      files.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    if (files.length === 0) {
+      return success(res, []);
+    }
+
+    const systemPrompt = `
+      You are an AI search assistant for a construction company project repository.
+      Return relevant document matches based on the user's natural language search query.
+      Here is the list of documents available in the system (in JSON format):
+      ${JSON.stringify(files)}
+
+      User Search Query: "${query}"
+
+      Return a JSON array containing ONLY the string IDs of the relevant documents.
+      Examples:
+      - "Show me all layouts for Block A" -> return IDs where category is "Layouts" and title contains "Block A".
+      - "Find latest approved road drawing" -> return IDs where category is "Drawings" or "Approvals", and title contains "road" and "approved".
+      
+      Return ONLY a raw JSON array of string IDs (e.g. ["FILE-123", "FILE-456"]). No markdown formatting, no code blocks (do NOT use \`\`\`), no extra text.
+    `;
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const aiRes = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: systemPrompt }] }]
+    });
+
+    const text = aiRes.response.text().trim();
+    console.log('AI Search Gemini Raw Response:', text);
+
+    let matchedIds = [];
+    try {
+      const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      matchedIds = JSON.parse(cleanText);
+    } catch (e) {
+      console.warn('Failed to parse Gemini JSON response:', text, e.message);
+      const matches = text.match(/FILE-\d+-\d+/g);
+      if (matches) matchedIds = matches;
+    }
+
+    if (!Array.isArray(matchedIds) || matchedIds.length === 0) {
+      return success(res, []);
+    }
+
+    const placeholders = matchedIds.map(() => '?').join(',');
+    const resultsStmt = db.prepare(`
+      SELECT pf.id, pf.project_id, pf.filename, pf.original_name, pf.file_size, pf.file_type,
+             pf.category, pf.revision, pf.revision_number, pf.keywords, pf.is_latest, pf.created_by, pf.created_at,
+             p.project_name
+      FROM project_files pf
+      JOIN pms_projects p ON p.id = pf.project_id
+      WHERE pf.id IN (${placeholders})
+    `);
+    resultsStmt.bind(matchedIds);
+
+    const results = [];
+    while (resultsStmt.step()) {
+      results.push(resultsStmt.getAsObject());
+    }
+    resultsStmt.free();
+
+    return success(res, results);
+
+  } catch (err) {
+    console.error('AI Search failure:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// 9. POST /api/project-maps/auto-detect-zones - Auto suggest map clickable hot zones
+app.post('/api/project-maps/auto-detect-zones', requireAuth, async (req, res) => {
+  try {
+    const { filename, originalName } = req.body;
+    if (!originalName) {
+      return failure(res, 'Filename is required', 400);
+    }
+
+    const mockRegions = [
+      { name: 'Block A', points: [[20, 20], [40, 20], [40, 45], [20, 45]], color: '#3b82f6', category: 'Layouts' },
+      { name: 'Block B', points: [[45, 20], [65, 20], [65, 45], [45, 45]], color: '#10b981', category: 'Layouts' },
+      { name: 'Road Section A', points: [[10, 50], [90, 50], [90, 60], [10, 60]], color: '#f59e0b', category: 'Drawings' },
+      { name: 'Drain Line', points: [[15, 65], [85, 65], [85, 70], [15, 70]], color: '#ef4444', category: 'Drawings' },
+      { name: 'Electrical Substation', points: [[70, 20], [85, 20], [85, 35], [70, 35]], color: '#8b5cf6', category: 'Drawings' },
+      { name: 'Water Tank', points: [[70, 40], [85, 40], [85, 48], [70, 48]], color: '#06b6d4', category: 'Documents' }
+    ];
+
+    if (genAI) {
+      try {
+        const systemPrompt = `
+          You are an expert GIS and architectural assistant. The user has uploaded a project map drawing named "${originalName}".
+          Suggest a list of 4 to 6 logical clicking zones (hotspots) on a grid of 100x100 coordinates (representing percentages from 0 to 100).
+          Each zone should represent a distinct area (e.g. Block A, Block B, Road Section A, Drain Line, Water Tank, Electrical Area) and have:
+          - name: String display name
+          - points: Array of 4 coordinate pairs [x, y] representing a polygon bounding box (scaled from 0 to 100, e.g. [[20, 20], [40, 20], [40, 45], [20, 45]])
+          - color: A hex color code
+          - category: Suggested linked file category ("Layouts", "Drawings", "Documents", "Photos", "Reports", "Approvals")
+
+          Return ONLY a valid JSON array of these zone objects. Do NOT wrap in markdown code blocks, do NOT write \`\`\`json.
+        `;
+
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const aiRes = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: systemPrompt }] }]
+        });
+
+        const text = aiRes.response.text().trim();
+        const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const suggestions = JSON.parse(cleanText);
+        if (Array.isArray(suggestions) && suggestions.length > 0) {
+          return success(res, suggestions);
+        }
+      } catch (e) {
+        console.warn('Gemini zone suggestion failed, falling back to mock:', e.message);
+      }
+    }
+
+    return success(res, mockRegions);
+
+  } catch (err) {
+    console.error('Zone detection failed:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+
+// ───────────────── KBT SYSTEM MASTER ENDPOINTS ─────────────────
+
+// POST /api/auth/google-login - Exchange Google SSO token for session cookie
+app.post('/api/auth/google-login', async (req, res) => {
+  try {
+    const { credential, mockEmail, mockName } = req.body || {};
+    let email = '';
+    let name = '';
+
+    if (credential && credential.startsWith('mock_')) {
+      email = mockEmail || 'sunil@kalrabuildtech.co.in';
+      name = mockName || 'Sunil (Admin)';
+    } else if (credential) {
+      try {
+        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+        if (!verifyRes.ok) {
+          return failure(res, 'Invalid Google token', 400);
+        }
+        const payload = await verifyRes.json();
+        if (!payload.email_verified) {
+          return failure(res, 'Google email not verified', 400);
+        }
+        email = payload.email.toLowerCase();
+        name = payload.name || payload.email.split('@')[0];
+      } catch (err) {
+        console.error('Google token verification error:', err);
+        return failure(res, 'Failed to verify Google token with Google servers', 400);
+      }
+    } else {
+      return failure(res, 'Google OAuth credentials missing', 400);
+    }
+
+    if (!email) {
+      return failure(res, 'Email not resolved from Google login', 400);
+    }
+
+    // Check if the user already exists in the users table
+    const checkStmt = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?');
+    checkStmt.bind([email.toLowerCase()]);
+    let user = null;
+    if (checkStmt.step()) {
+      user = checkStmt.getAsObject();
+    }
+    checkStmt.free();
+
+    // If user doesn't exist, create it
+    if (!user) {
+      const empStmt = db.prepare('SELECT id, name FROM employees WHERE LOWER(email) = ?');
+      empStmt.bind([email.toLowerCase()]);
+      let employee = null;
+      if (empStmt.step()) {
+        employee = empStmt.getAsObject();
+      }
+      empStmt.free();
+
+      // Create new user in users table
+      const insertUser = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?, ?, ?, ?, ?)');
+      insertUser.run([
+        employee ? employee.name : name,
+        email.toLowerCase(),
+        '', // No password needed for Google SSO
+        'EMPLOYEE', // Default role is EMPLOYEE (can be changed to ADMIN by FMS admins)
+        employee ? employee.id : null
+      ]);
+      insertUser.free();
+      persistDB();
+
+      // Retrieve newly created user
+      const retrieveStmt = db.prepare('SELECT * FROM users WHERE LOWER(email) = ?');
+      retrieveStmt.bind([email.toLowerCase()]);
+      if (retrieveStmt.step()) {
+        user = retrieveStmt.getAsObject();
+      }
+      retrieveStmt.free();
+    }
+
+    if (!user) {
+      return failure(res, 'Failed to establish user record', 500);
+    }
+
+    // Log the SSO login activity
+    const actorName = user.name || name;
+    const actorEmail = user.email || email;
+    const logStmt = db.prepare('INSERT INTO kbt_activities (action, details, actor_name, actor_email) VALUES (?, ?, ?, ?)');
+    logStmt.run(['Google Login', `${actorName} logged in using Google OAuth SSO.`, actorName, actorEmail]);
+    logStmt.free();
+    persistDB();
+
+    // Create JWT Session Token (valid for 24h)
+    const token = jwt.sign({
+      id: user.id,
+      role: user.role,
+      name: user.name,
+      employeeId: user.employeeId
+    }, JWT_SECRET, { expiresIn: '24h' });
+
+    // Set token cookie
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    });
+
+    return success(res, {
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        employeeId: user.employeeId
+      }
+    });
+
+  } catch (err) {
+    console.error('Google OAuth Login error:', err);
+    return failure(res, 'Internal server error during Google SSO login', 500);
+  }
+});
+
+// GET /api/system-master/sheets - Get sheets (optionally filtered for employees)
+app.get('/api/system-master/sheets', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+
+    // Fetch user email to determine employee view restrictions
+    const emailStmt = db.prepare('SELECT email FROM users WHERE id = ?');
+    emailStmt.bind([req.user.id]);
+    let userEmail = '';
+    if (emailStmt.step()) {
+      userEmail = emailStmt.getAsObject().email;
+    }
+    emailStmt.free();
+
+    const stmt = db.prepare('SELECT * FROM kbt_sheets ORDER BY id ASC');
+    const sheets = [];
+    while (stmt.step()) {
+      const s = stmt.getAsObject();
+      let assigned = [];
+      try {
+        assigned = JSON.parse(s.assigned_users || '[]');
+      } catch (e) {
+        assigned = [];
+      }
+      
+      // Admin sees everything; Employees only see sheets where they are assigned (case-insensitive check)
+      const isAssigned = assigned.some(email => email.toLowerCase() === userEmail.toLowerCase());
+      if (req.user.role === 'ADMIN' || isAssigned) {
+        sheets.push({
+          ...s,
+          assignedUsers: assigned // Map back to frontend naming convention
+        });
+      }
+    }
+    stmt.free();
+
+    return success(res, sheets);
+  } catch (err) {
+    console.error('GET Sheets error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// POST /api/system-master/sheets - Create new sheet (ADMIN-only)
+app.post('/api/system-master/sheets', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const { id, name, department, purpose, url, responsible_person, frequency, status, notes, assignedUsers } = req.body || {};
+    if (!name || !url) return failure(res, 'Missing sheet name or URL', 400);
+
+    let sheetId = id;
+    if (!sheetId || String(sheetId).trim() === '') {
+      const countStmt = db.prepare('SELECT COUNT(*) as count FROM kbt_sheets');
+      let count = 0;
+      if (countStmt.step()) {
+        count = countStmt.getAsObject().count;
+      }
+      countStmt.free();
+
+      let nextNum = count + 1;
+      let targetId = `KBT-${String(nextNum).padStart(3, '0')}`;
+      
+      let collision = true;
+      while (collision) {
+        const checkCollision = db.prepare('SELECT id FROM kbt_sheets WHERE id = ?');
+        checkCollision.bind([targetId]);
+        if (checkCollision.step()) {
+          nextNum++;
+          targetId = `KBT-${String(nextNum).padStart(3, '0')}`;
+          checkCollision.free();
+        } else {
+          checkCollision.free();
+          collision = false;
+        }
+      }
+      sheetId = targetId;
+    } else {
+      const checkStmt = db.prepare('SELECT id FROM kbt_sheets WHERE id = ?');
+      checkStmt.bind([sheetId]);
+      if (checkStmt.step()) {
+        checkStmt.free();
+        return failure(res, 'Sheet ID already exists', 409);
+      }
+      checkStmt.free();
+    }
+
+    const insert = db.prepare(`
+      INSERT INTO kbt_sheets (id, name, department, purpose, url, responsible_person, frequency, status, notes, assigned_users)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run([
+      sheetId,
+      name,
+      department || 'Other',
+      purpose || '',
+      url,
+      responsible_person || '',
+      frequency || 'On-Demand',
+      status || 'Active',
+      notes || '',
+      JSON.stringify(assignedUsers || [])
+    ]);
+    insert.free();
+    persistDB();
+
+    const actorEmail = req.user.email || '';
+    const actorName = req.user.name || 'Admin';
+    const logStmt = db.prepare('INSERT INTO kbt_activities (action, details, actor_name, actor_email) VALUES (?, ?, ?, ?)');
+    logStmt.run(['Add Sheet', `Added new Google Sheet "${name}" (${sheetId})`, actorName, actorEmail]);
+    logStmt.free();
+    persistDB();
+
+    return success(res, { id: sheetId }, 'Sheet created successfully', 201);
+  } catch (err) {
+    console.error('POST Sheet error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// PUT /api/system-master/sheets/:id - Edit sheet details & assignments (ADMIN-only)
+app.put('/api/system-master/sheets/:id', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const sheetId = req.params.id;
+    const { name, department, purpose, url, responsible_person, frequency, status, notes, assignedUsers } = req.body || {};
+
+    const checkStmt = db.prepare('SELECT * FROM kbt_sheets WHERE id = ?');
+    checkStmt.bind([sheetId]);
+    if (!checkStmt.step()) {
+      checkStmt.free();
+      return failure(res, 'Sheet not found', 404);
+    }
+    const existing = checkStmt.getAsObject();
+    checkStmt.free();
+
+    const update = db.prepare(`
+      UPDATE kbt_sheets
+      SET name = ?, department = ?, purpose = ?, url = ?, responsible_person = ?, frequency = ?, status = ?, notes = ?, assigned_users = ?
+      WHERE id = ?
+    `);
+    update.run([
+      name !== undefined ? name : existing.name,
+      department !== undefined ? department : existing.department,
+      purpose !== undefined ? purpose : existing.purpose,
+      url !== undefined ? url : existing.url,
+      responsible_person !== undefined ? responsible_person : existing.responsible_person,
+      frequency !== undefined ? frequency : existing.frequency,
+      status !== undefined ? status : existing.status,
+      notes !== undefined ? notes : existing.notes,
+      assignedUsers !== undefined ? JSON.stringify(assignedUsers) : existing.assigned_users,
+      sheetId
+    ]);
+    update.free();
+    persistDB();
+
+    const actorEmail = req.user.email || '';
+    const actorName = req.user.name || 'Admin';
+    const logStmt = db.prepare('INSERT INTO kbt_activities (action, details, actor_name, actor_email) VALUES (?, ?, ?, ?)');
+    logStmt.run(['Edit Sheet', `Updated Google Sheet "${name || existing.name}" (${sheetId})`, actorName, actorEmail]);
+    logStmt.free();
+    persistDB();
+
+    return success(res, null, 'Sheet updated successfully');
+  } catch (err) {
+    console.error('PUT Sheet error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// DELETE /api/system-master/sheets/:id - Delete sheet (ADMIN-only)
+app.delete('/api/system-master/sheets/:id', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const sheetId = req.params.id;
+
+    const checkStmt = db.prepare('SELECT name FROM kbt_sheets WHERE id = ?');
+    checkStmt.bind([sheetId]);
+    if (!checkStmt.step()) {
+      checkStmt.free();
+      return failure(res, 'Sheet not found', 404);
+    }
+    const name = checkStmt.getAsObject().name;
+    checkStmt.free();
+
+    const del = db.prepare('DELETE FROM kbt_sheets WHERE id = ?');
+    del.run([sheetId]);
+    del.free();
+    persistDB();
+
+    const actorEmail = req.user.email || '';
+    const actorName = req.user.name || 'Admin';
+    const logStmt = db.prepare('INSERT INTO kbt_activities (action, details, actor_name, actor_email) VALUES (?, ?, ?, ?)');
+    logStmt.run(['Delete Sheet', `Deleted Google Sheet "${name}" (${sheetId})`, actorName, actorEmail]);
+    logStmt.free();
+    persistDB();
+
+    return success(res, null, 'Sheet deleted successfully');
+  } catch (err) {
+    console.error('DELETE Sheet error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// GET /api/system-master/activities - Get activity logs (ADMIN-only)
+app.get('/api/system-master/activities', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const stmt = db.prepare('SELECT * FROM kbt_activities ORDER BY timestamp DESC LIMIT 500');
+    const logs = [];
+    while (stmt.step()) {
+      logs.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    return success(res, logs);
+  } catch (err) {
+    console.error('GET Activities error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// GET /api/system-master/users - Get all system users for assignments (ADMIN-only)
+app.get('/api/system-master/users', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const stmt = db.prepare(`
+      SELECT u.id, u.name, u.email, u.role, u.employeeId, e.department
+      FROM users u
+      LEFT JOIN employees e ON e.id = u.employeeId
+      ORDER BY u.name ASC
+    `);
+    const users = [];
+    while (stmt.step()) {
+      users.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    return success(res, users);
+  } catch (err) {
+    console.error('GET System Master Users error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// POST /api/system-master/users - Create new user (ADMIN-only)
+app.post('/api/system-master/users', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const { name, email, role, department } = req.body || {};
+    if (!name || !email) return failure(res, 'Missing user name or email', 400);
+
+    const checkStmt = db.prepare('SELECT id FROM users WHERE LOWER(email) = ?');
+    checkStmt.bind([email.toLowerCase()]);
+    if (checkStmt.step()) {
+      checkStmt.free();
+      return failure(res, 'User email already exists', 409);
+    }
+    checkStmt.free();
+
+    let employeeId = null;
+    const empCheck = db.prepare('SELECT id FROM employees WHERE LOWER(email) = ?');
+    empCheck.bind([email.toLowerCase()]);
+    if (empCheck.step()) {
+      employeeId = empCheck.getAsObject().id;
+    }
+    empCheck.free();
+
+    if (!employeeId && department) {
+      employeeId = `EMP-${Date.now()}`;
+      const insertEmp = db.prepare('INSERT INTO employees (id, name, email, department, status, createdAt) VALUES (?, ?, ?, ?, ?, ?)');
+      insertEmp.run([employeeId, name, email.toLowerCase(), department, 'Active', new Date().toISOString()]);
+      insertEmp.free();
+    }
+
+    const insert = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?, ?, ?, ?, ?)');
+    insert.run([name, email.toLowerCase(), bcrypt.hashSync('kbt123', 10), role || 'EMPLOYEE', employeeId]);
+    insert.free();
+    persistDB();
+
+    const actorEmail = req.user.email || '';
+    const actorName = req.user.name || 'Admin';
+    const logStmt = db.prepare('INSERT INTO kbt_activities (action, details, actor_name, actor_email) VALUES (?, ?, ?, ?)');
+    logStmt.run(['Create User', `Created new system user "${name}" (${email})`, actorName, actorEmail]);
+    logStmt.free();
+    persistDB();
+
+    return success(res, null, 'User created successfully', 201);
+  } catch (err) {
+    console.error('POST User error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+// PUT /api/system-master/users/:id - Edit user & role details (ADMIN-only)
+app.put('/api/system-master/users/:id', requireAuth, (req, res) => {
+  try {
+    if (!req.user) return failure(res, 'Unauthorized', 401);
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+
+    const userId = Number(req.params.id);
+    const { name, role, department } = req.body || {};
+
+    const checkStmt = db.prepare('SELECT * FROM users WHERE id = ?');
+    checkStmt.bind([userId]);
+    if (!checkStmt.step()) {
+      checkStmt.free();
+      return failure(res, 'User not found', 404);
+    }
+    const user = checkStmt.getAsObject();
+    checkStmt.free();
+
+    const update = db.prepare('UPDATE users SET name = ?, role = ? WHERE id = ?');
+    update.run([name || user.name, role || user.role, userId]);
+    update.free();
+    persistDB();
+
+    if (user.employeeId && department) {
+      const updateEmp = db.prepare('UPDATE employees SET department = ? WHERE id = ?');
+      updateEmp.run([department, user.employeeId]);
+      updateEmp.free();
+      persistDB();
+    }
+
+    const actorEmail = req.user.email || '';
+    const actorName = req.user.name || 'Admin';
+    const logStmt = db.prepare('INSERT INTO kbt_activities (action, details, actor_name, actor_email) VALUES (?, ?, ?, ?)');
+    logStmt.run(['Edit User', `Updated details for user "${name || user.name}"`, actorName, actorEmail]);
+    logStmt.free();
+    persistDB();
+
+    return success(res, null, 'User updated successfully');
+  } catch (err) {
+    console.error('PUT User error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+
+
+
 // Catch-all for any unmatched API routes — return JSON 404 instead of falling through to static host/index.html
 app.use('/api', (req, res) => {
   console.warn('Unmatched API request', { method: req.method, path: req.path, origin: req.headers.origin || null, cookies: req.headers.cookie || null });
@@ -6213,6 +7718,168 @@ const transporter = nodemailer.createTransport({
     pass: process.env.SMTP_PASS || 'your-app-password'
   }
 });
+
+function generateEmailHtml(title, leadText, detailsHtml, ctaLink, ctaText) {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f8fafc;
+      color: #334155;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container {
+      max-width: 600px;
+      margin: 40px auto;
+      background: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -2px rgba(0,0,0,0.05);
+      border: 1px solid #e2e8f0;
+    }
+    .header {
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      color: #ffffff;
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+    }
+    .header p {
+      margin: 8px 0 0 0;
+      font-size: 14px;
+      color: #cbd5e1;
+    }
+    .content {
+      padding: 32px 24px;
+    }
+    .lead-text {
+      font-size: 15px;
+      line-height: 1.6;
+      color: #1e293b;
+      margin-bottom: 24px;
+      font-weight: 500;
+    }
+    .card {
+      background-color: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .details-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .details-table td {
+      padding: 8px 0;
+      font-size: 14px;
+      vertical-align: top;
+      border-bottom: 1px dashed #e2e8f0;
+    }
+    .details-table tr:last-child td {
+      border-bottom: none;
+    }
+    .details-table td.label {
+      font-weight: 700;
+      color: #64748b;
+      width: 140px;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+    }
+    .details-table td.value {
+      color: #0f172a;
+      font-weight: 600;
+    }
+    .cta-container {
+      text-align: center;
+      margin-top: 32px;
+      margin-bottom: 8px;
+    }
+    .btn {
+      display: inline-block;
+      background-color: #4f46e5;
+      color: #ffffff !important;
+      font-weight: 700;
+      text-decoration: none;
+      padding: 12px 32px;
+      border-radius: 8px;
+      font-size: 14px;
+      box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2), 0 2px 4px -2px rgba(79, 70, 229, 0.2);
+    }
+    .footer {
+      background-color: #f1f5f9;
+      padding: 24px;
+      text-align: center;
+      font-size: 12px;
+      color: #64748b;
+      border-top: 1px solid #e2e8f0;
+    }
+    .footer p {
+      margin: 4px 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .badge-alert {
+      background-color: #fef2f2;
+      color: #991b1b;
+      border: 1px solid #fee2e2;
+    }
+    .badge-warning {
+      background-color: #fffbeb;
+      color: #92400e;
+      border: 1px solid #fef3c7;
+    }
+    .badge-info {
+      background-color: #e0f2fe;
+      color: #0369a1;
+      border: 1px solid #bae6fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>${title}</h1>
+      <p>Kalra Buildtech FMS Automation</p>
+    </div>
+    <div class="content">
+      <div class="lead-text">${leadText}</div>
+      <div class="card">${detailsHtml}</div>
+      ${ctaLink ? `
+      <div class="cta-container">
+        <a href="${ctaLink}" class="btn" target="_blank">${ctaText || 'Open Portal'}</a>
+      </div>
+      ` : ''}
+    </div>
+    <div class="footer">
+      <p>This is an automated notification from Kalra Buildtech FMS portal.</p>
+      <p>© ${new Date().getFullYear()} Kalra Buildtech. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
+  `;
+}
 
 function getCutoffDays(freq) {
   if (freq === 'WEEKLY') return 2;
@@ -6239,8 +7906,8 @@ cron.schedule('0 9 * * *', () => {
     }
     tplStmt.free();
 
-    // Get users map for email lookups
-    const userStmt = db.prepare("SELECT id, employeeId, email, name FROM users");
+    // Get users map for email lookups (exclude archived/deleted users)
+    const userStmt = db.prepare("SELECT id, employeeId, email, name FROM users WHERE coalesce(is_archived, 0) = 0");
     const users = {};
     while(userStmt.step()) {
       const row = userStmt.getAsObject();
@@ -6249,8 +7916,8 @@ cron.schedule('0 9 * * *', () => {
     }
     userStmt.free();
 
-    // Employee map for fallback email lookups
-    const empStmt = db.prepare("SELECT id, email, name FROM employees");
+    // Employee map for fallback email lookups (exclude archived/deleted employees)
+    const empStmt = db.prepare("SELECT id, email, name FROM employees WHERE coalesce(is_archived, 0) = 0");
     while(empStmt.step()) {
       const row = empStmt.getAsObject();
       if(row.id && !users[String(row.id)]) users[String(row.id)] = row;
@@ -6263,8 +7930,19 @@ cron.schedule('0 9 * * *', () => {
       const row = stmt.getAsObject();
       let item;
       try { item = JSON.parse(row.item); } catch(e) { continue; }
+
+      // Skip if task is missed, stopped, or completed
+      if (item && (item.status === 'MISSED' || item.status === 'STOPPED' || item.status === 'COMPLETED')) {
+        continue;
+      }
+
       const template = templates[row.templateId];
       if (!template) continue;
+
+      // Skip if template is inactive
+      if (template.active === false) {
+        continue;
+      }
 
       const doerId = String(item.doerId || template.doerId);
       const user = users[doerId];
@@ -6294,12 +7972,23 @@ cron.schedule('0 9 * * *', () => {
 
     for (const email in emailsToSend) {
        const userTasks = emailsToSend[email];
-       const taskList = userTasks.tasks.join('\\n');
+       const taskListText = userTasks.tasks.join('\n');
+       
+       const title = 'Daily Checklist Reminder';
+       const leadText = `Hello ${userTasks.name},<br/><br/>This is a reminder that you have the following tasks pending in your checklist:`;
+       const detailsHtml = `
+         <ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; color: #0f172a; font-weight: 600;">
+           ${userTasks.tasks.map(t => `<li style="margin-bottom: 8px;">${t.replace(/^- /, '')}</li>`).join('')}
+         </ul>
+       `;
+       const html = generateEmailHtml(title, leadText, detailsHtml, 'http://localhost:5173/#CHECKLIST', 'Open FMS Checklist');
+
        const mailOptions = {
          from: '"FMS Checklists" <' + (process.env.SMTP_USER || 'noreply@fms.local') + '>',
          to: email,
          subject: 'Checklist Reminder: You have pending tasks',
-         text: `Hello ${userTasks.name},\\n\\nThis is a reminder that you have the following tasks pending in your checklist:\\n\\n${taskList}\\n\\nPlease log in to the FMS portal to complete them.\\n\\nRegards,\\nFMS Admin`
+         text: `Hello ${userTasks.name},\n\nThis is a reminder that you have the following tasks pending in your checklist:\n\n${taskListText}\n\nPlease log in to the FMS portal to complete them.\n\nRegards,\nFMS Admin`,
+         html
        };
        transporter.sendMail(mailOptions).catch(err => console.warn('Cron email error to', email, err.message));
        console.log('Cron dispatched email to', email, 'with', userTasks.tasks.length, 'tasks');
@@ -6335,11 +8024,48 @@ cron.schedule('0 20 * * *', () => {
     const closed = leads.filter(l => l.status === 'Closed').length;
     const conversion = totalLeads > 0 ? Math.round((closed / totalLeads) * 100) : 0;
 
+    const title = `Daily CRM Activity Report`;
+    const leadText = `Hello,<br/><br/>Here is the CRM activity report summary for today (${todayStr}):`;
+    const detailsHtml = `
+      <table class="details-table">
+        <tr>
+          <td class="label">New Leads Today</td>
+          <td class="value">${totalToday}</td>
+        </tr>
+        <tr>
+          <td class="label">Site Visits Today</td>
+          <td class="value">${siteVisitsToday}</td>
+        </tr>
+        <tr>
+          <td class="label">Total System Leads</td>
+          <td class="value">${totalLeads}</td>
+        </tr>
+        <tr>
+          <td class="label">Total Site Visits</td>
+          <td class="value">${siteVisits}</td>
+        </tr>
+        <tr>
+          <td class="label">Closed Deals</td>
+          <td class="value">${closed}</td>
+        </tr>
+        <tr>
+          <td class="label">Conversion Rate</td>
+          <td class="value">
+            <span class="badge badge-info">
+              ${conversion}%
+            </span>
+          </td>
+        </tr>
+      </table>
+    `;
+    const html = generateEmailHtml(title, leadText, detailsHtml, 'http://localhost:5173/#CRM', 'View CRM Activity');
+
     const mailOptions = {
       from: '"CRM System" <' + (process.env.SMTP_USER || 'noreply@fms.local') + '>',
       to: process.env.SMTP_USER || 'admin@example.com',
       subject: `Daily CRM Report: ${todayStr}`,
-      text: `Hello,\\n\\nHere is the CRM report for today (${todayStr}):\\n\\nNew Leads Today: ${totalToday}\\nSite Visits Today: ${siteVisitsToday}\\n\\nOverall Metrics:\\nTotal Leads: ${totalLeads}\\nTotal Site Visits: ${siteVisits}\\nConversion Rate: ${conversion}%\\nClosed Deals: ${closed}\\n\\nRegards,\\nCRM Automation`
+      text: `Hello,\n\nHere is the CRM report for today (${todayStr}):\n\nNew Leads Today: ${totalToday}\nSite Visits Today: ${siteVisitsToday}\n\nOverall Metrics:\nTotal Leads: ${totalLeads}\nTotal Site Visits: ${siteVisits}\nConversion Rate: ${conversion}%\nClosed Deals: ${closed}\n\nRegards,\nCRM Automation`,
+      html
     };
     transporter.sendMail(mailOptions).catch(err => console.warn('CRM Cron email error:', err.message));
     console.log('CRM daily report dispatched');

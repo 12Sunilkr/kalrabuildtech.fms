@@ -261,6 +261,42 @@ export async function runMigrations({ db, dbFile }) {
     updatedAt: 'TEXT'
   });
 
+  // Project Maps & Layout Management System Tables
+  ensureTable('project_files', `CREATE TABLE project_files (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    filename TEXT,
+    original_name TEXT,
+    filepath TEXT,
+    file_size INTEGER,
+    file_type TEXT,
+    category TEXT,
+    revision TEXT,
+    revision_number INTEGER,
+    keywords TEXT,
+    parent_file_id TEXT,
+    is_latest INTEGER DEFAULT 1,
+    created_by TEXT,
+    created_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES pms_projects(id)
+  )`, [
+    `CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_project_files_category ON project_files(category)`,
+    `CREATE INDEX IF NOT EXISTS idx_project_files_parent ON project_files(parent_file_id)`
+  ]);
+
+  ensureTable('project_maps', `CREATE TABLE project_maps (
+    id TEXT PRIMARY KEY,
+    project_id TEXT UNIQUE,
+    file_id TEXT,
+    zones TEXT,
+    created_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES pms_projects(id),
+    FOREIGN KEY (file_id) REFERENCES project_files(id)
+  )`, [
+    `CREATE INDEX IF NOT EXISTS idx_project_maps_project ON project_maps(project_id)`
+  ]);
+
   // Ensure standard columns exist on tables where appropriate
   const tablesToPatch = ['tasks', 'calendar', 'finance', 'notifications', 'projects', 'checklists', 'notepad', 'leaves', 'holidays', 'employee_documents', 'employees_profile'];
   for (const t of tablesToPatch) {
@@ -306,6 +342,45 @@ export async function runMigrations({ db, dbFile }) {
     durationType: 'TEXT DEFAULT "Multiple Days"'
   });
 
+  // KBT System Master Tables
+  ensureTable('kbt_sheets', `CREATE TABLE kbt_sheets (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    department TEXT,
+    purpose TEXT,
+    url TEXT,
+    responsible_person TEXT,
+    frequency TEXT,
+    status TEXT,
+    notes TEXT,
+    assigned_users TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+
+  ensureTable('kbt_activities', `CREATE TABLE kbt_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT,
+    details TEXT,
+    actor_name TEXT,
+    actor_email TEXT,
+    timestamp TEXT DEFAULT (datetime('now'))
+  )`);
+
+
+
+  // Performance Indexes for high-frequency queries
+  const performanceIndexes = [
+    `CREATE INDEX IF NOT EXISTS idx_tasks_assigned_created ON tasks(assigned_to, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo_created ON tasks(assignedTo, created_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(userId, date)`,
+    `CREATE INDEX IF NOT EXISTS idx_timelogs_user_start ON timelogs(userId, startTime)`,
+    `CREATE INDEX IF NOT EXISTS idx_employees_status_archived ON employees(status, is_archived)`
+  ];
+  for (const idxSQL of performanceIndexes) {
+    try { db.run(idxSQL); } catch (e) { /* ignore */ }
+  }
+
   // Add more specific migrations if needed (e.g., migrate createdDate -> createdAt for tasks)
   try {
     const colsStmt = db.prepare("PRAGMA table_info('tasks')");
@@ -327,14 +402,18 @@ export async function runMigrations({ db, dbFile }) {
   if (changed) {
     try {
       const buff = Buffer.from(db.export());
-      fs.writeFileSync(dbFile, buff);
+      const tmpDbFile = dbFile + '.tmp';
+      fs.writeFileSync(tmpDbFile, buff);
+      fs.renameSync(tmpDbFile, dbFile);
       console.log('Migration: DB file persisted with changes');
       
       // Keep root database file in sync if it exists
       try {
         const rootDbFile = path.resolve(path.dirname(dbFile), '..', 'database.sqlite');
         if (fs.existsSync(rootDbFile)) {
-          fs.writeFileSync(rootDbFile, buff);
+          const tmpRootDbFile = rootDbFile + '.tmp';
+          fs.writeFileSync(tmpRootDbFile, buff);
+          fs.renameSync(tmpRootDbFile, rootDbFile);
           console.log('Migration: Root DB file synchronized');
         }
       } catch (err) { /* ignore */ }

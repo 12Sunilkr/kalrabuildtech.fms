@@ -14,6 +14,7 @@ export const STATUS_COLORS: Record<string, string> = {
   'HOLIDAY': 'bg-[#00b050] text-white', // Holiday (Green)
   'CO': 'bg-purple-200 text-purple-900', // Comp Off
   'LEAVE': 'bg-pink-500 text-white',    // Leave
+  'CS': 'bg-teal-500 text-white',       // Compensate Sunday
 };
 
 export const STATUS_LABELS: Record<string, string> = {
@@ -26,6 +27,7 @@ export const STATUS_LABELS: Record<string, string> = {
   'HOLIDAY': 'Holiday',
   'CO': 'Comp Off',
   'LEAVE': 'Leave',
+  'CS': 'Compensate Sunday',
 };
 
 export const MATERIAL_TAT_LIST: { name: string, value: number, unit: TATUnit }[] = [

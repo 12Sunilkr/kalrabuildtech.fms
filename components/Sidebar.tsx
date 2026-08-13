@@ -1,6 +1,6 @@
 
-import React, { useMemo } from 'react';
-import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, BarChart3, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database, BookOpen } from 'lucide-react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { LayoutDashboard, Users, CalendarCheck, FileBarChart, Info, LogOut, UserCircle, CalendarDays, ClipboardList, X, Package, Archive, BarChart, BarChart3, HelpCircle, MessageCircle, Clock, GitGraph, HardHat, Calendar, DollarSign, StickyNote, ListChecks, Bell, Database, BookOpen, Map, Layers, History, Search, FolderKanban, Percent } from 'lucide-react';
 import { ViewMode, Role } from '../types';
 import { COMPANY_LOGO } from '../constants';
 
@@ -16,9 +16,9 @@ interface SidebarProps {
 }
 
 const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, role, onLogout, userName, isOpen, onClose, userDepartment }) => {
-  
   const adminItems = [
     { id: ViewMode.DASHBOARD, label: 'Dashboard', icon: LayoutDashboard },
+    { id: ViewMode.SYSTEM_MASTER, label: 'Sheet Center', icon: Layers },
     { id: ViewMode.CALENDAR, label: 'Company Calendar', icon: Calendar }, 
     { id: ViewMode.FINANCE, label: 'Finance & Payments', icon: DollarSign },
     { id: ViewMode.DATABASE, label: 'Data Hub & Backups', icon: Database },
@@ -48,6 +48,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
   const employeeMenuItems = useMemo(() => {
     const baseEmployeeItems = [
       { id: ViewMode.EMPLOYEE_HOME, label: 'My Portal', icon: LayoutDashboard },
+      { id: ViewMode.SYSTEM_MASTER, label: 'Sheet Center', icon: Layers },
       { id: ViewMode.CALENDAR, label: 'Company Calendar', icon: Calendar }, 
       { id: ViewMode.NOTIFICATIONS, label: 'Notification Center', icon: Bell },
       { id: ViewMode.CHECKLIST, label: 'My Checklist', icon: ListChecks },
@@ -64,8 +65,8 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
 
     if (isFinanceOrSales && role === 'EMPLOYEE') {
       const extended = [...baseEmployeeItems];
-      extended.splice(3, 0, { id: ViewMode.FINANCE, label: 'Finance & Payments', icon: DollarSign });
-      extended.splice(4, 0, { id: ViewMode.EMPLOYEE_CRM, label: 'CRM Leads', icon: Users });
+      extended.splice(4, 0, { id: ViewMode.FINANCE, label: 'Finance & Payments', icon: DollarSign });
+      extended.splice(5, 0, { id: ViewMode.EMPLOYEE_CRM, label: 'CRM Leads', icon: Users });
       return extended;
     }
 
@@ -108,21 +109,22 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
         </div>
         
         <nav className="flex-1 px-4 space-y-2 overflow-y-auto py-4 custom-scrollbar">
-          {menuItems.map((item, index) => {
+          {menuItems.map((item) => {
             const isActive = currentView === item.id;
             return (
-              <button
-                key={item.id}
-                onClick={() => { onNavigate(item.id); onClose(); }}
-                className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all duration-300 group relative overflow-hidden ${
-                  isActive 
-                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_10px_20px_-5px_rgba(79,70,229,0.5)] translate-x-2 border border-white/20' 
-                    : 'text-slate-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <item.icon size={20} className={isActive ? 'scale-110' : ''} />
-                <span className={`font-medium tracking-wide ${isActive ? 'font-bold' : ''}`}>{item.label}</span>
-              </button>
+              <React.Fragment key={item.id}>
+                <button
+                  onClick={() => { onNavigate(item.id); onClose(); }}
+                  className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all duration-300 group relative overflow-hidden ${
+                    isActive 
+                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_10px_20px_-5px_rgba(79,70,229,0.5)] translate-x-2 border border-white/20' 
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <item.icon size={20} className={isActive ? 'scale-110' : ''} />
+                  <span className={`font-medium tracking-wide ${isActive ? 'font-bold' : ''}`}>{item.label}</span>
+                </button>
+              </React.Fragment>
             );
           })}
         </nav>

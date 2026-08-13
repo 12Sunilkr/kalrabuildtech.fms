@@ -182,16 +182,14 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  };
 
  const getChecklistStats = (empId: string) => {
- // Resolve the set of template IDs where this employee is doer or buddy
- const myTemplateIds = new Set(
- checklistTemplates
- .filter(t => String(t.doerId || '').trim() === String(empId).trim() ||
- String(t.buddyId || '').trim() === String(empId).trim())
- .map(t => t.id)
- );
-
- // Get only instances belonging to those templates
- const empInstances = checklistInstances.filter(inst => myTemplateIds.has(inst.templateId));
+  // Get instances where empId is either the explicit instance doerId, or template doerId/buddyId
+  const empInstances = (checklistInstances || []).filter(inst => {
+    const tpl = checklistTemplates?.find(t => String(t.id) === String(inst.templateId));
+    const effectiveDoer = String(inst.doerId || tpl?.doerId || '').trim();
+    const effectiveBuddy = String(tpl?.buddyId || '').trim();
+    const targetEmpId = String(empId || '').trim();
+    return effectiveDoer === targetEmpId || effectiveBuddy === targetEmpId;
+  });
 
  const today = new Date().toISOString().split('T')[0];
  
@@ -199,7 +197,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  // crucially: only include tasks UP TO TODAY so future schedule does not break the KPI score.
  let filtered = empInstances.filter(i => {
  // Overdue tasks should always be included regardless of the date filter
- if (i.status === 'PENDING' && i.date < today) return true;
+ if ((i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < today) return true;
 
  if (fromDate && toDate) {
  return i.date >= fromDate && i.date <= toDate;
@@ -210,10 +208,14 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  // Cap to today
  filtered = filtered.filter(i => i.date <= today);
 
- const total = filtered.length;
- const completed = filtered.filter(i => i.status === 'COMPLETED').length;
- const pending = filtered.filter(i => i.status === 'PENDING' && i.date === today).length;
- const overdue = filtered.filter(i => i.status === 'PENDING' && i.date < today).length;
+ // Exclude MISSED_EXCUSED from scoring (MISSED_EXCUSED = admin approved the excuse, no score impact).
+ // EXCUSE_REQUESTED = unapproved transfer request pending admin decision, so it remains assigned to the user and is included in KPI report!
+ const scorableFiltered = filtered.filter(i => i.status !== 'MISSED_EXCUSED');
+
+ const total = scorableFiltered.length;
+ const completed = scorableFiltered.filter(i => i.status === 'COMPLETED').length;
+ const pending = scorableFiltered.filter(i => (i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date === today).length;
+ const overdue = scorableFiltered.filter(i => (i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < today).length;
  // Logic: 0% = all done, 100% = nothing done
  const pct = total > 0 ? Math.round(((total - completed) / total) * 100) : 0;
  return { total, completed, pending, overdue, pct, instances: filtered.sort((a, b) => b.date.localeCompare(a.date)) };
@@ -243,18 +245,30 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  daysInRangeCount = Math.max(0, Math.ceil((endD.getTime() - startD.getTime()) / (1000 * 60 * 60 * 24)) + 1);
  }
 
+ // Determine the EARLIEST clockIn for each date for this employee
+ const firstClockInByDate: Record<string, Date> = {};
+ inRange.forEach(l => {
+  if (l.clockIn) {
+   const dt = new Date(l.clockIn);
+   if (!firstClockInByDate[l.date] || dt < firstClockInByDate[l.date]) {
+    firstClockInByDate[l.date] = dt;
+   }
+  }
+ });
+
  const processed = inRange.map(l => {
- const isMissed = !l.clockOut && l.date < today;
- const checkInTime = l.clockIn ? new Date(l.clockIn) : null;
- const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 15)) : false;
- const score = typeof attendanceData[empId]?.[l.date] === 'number' ? (attendanceData[empId][l.date] as number) : (l.clockIn ? 1 : 0);
- return { ...l, isMissed, isLate, score };
+  const isMissed = !l.clockOut && l.date < today;
+  const firstCheckIn = firstClockInByDate[l.date] || (l.clockIn ? new Date(l.clockIn) : null);
+  const isLate = firstCheckIn ? (firstCheckIn.getHours() > 10 || (firstCheckIn.getHours() === 10 && firstCheckIn.getMinutes() > 15)) : false;
+  const score = typeof attendanceData[empId]?.[l.date] === 'number' ? (attendanceData[empId][l.date] as number) : (l.clockIn ? 1 : 0);
+  return { ...l, isMissed, isLate, score };
  });
 
  const validLogs = processed.filter(l => !l.isMissed);
  const totalHours = validLogs.reduce((acc, curr) => acc + (curr.durationHours || 0), 0);
  const missedCount = processed.filter(l => l.isMissed).length;
- const lateCount = processed.filter(l => l.isLate).length;
+ const lateDates = new Set(processed.filter(l => l.isLate).map(l => l.date));
+ const lateCount = lateDates.size;
  const workingDays = new Set(validLogs.map(l => l.date)).size;
 
  const avgHours = workingDays > 0 ? totalHours / workingDays : 0;
@@ -324,7 +338,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  if (selectedEmployee && selectedStats && attendanceStats && checklistStats) {
  const todayStr = new Date().toISOString().split('T')[0];
  const overdueTasks = selectedStats.empTasks.filter(t => getDisplayStatus(t) === 'OVERDUE');
- const overdueChecklists = checklistStats.instances.filter(i => i.status === 'PENDING' && i.date < todayStr);
+ const overdueChecklists = checklistStats.instances.filter(i => (i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < todayStr);
  
  const overdueItems = [
  ...overdueTasks.map(t => ({
@@ -676,7 +690,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  
  const todayStr = new Date().toISOString().split('T')[0];
  const bulkOverdueTasks = stats.empTasks.filter(t => getDisplayStatus(t) === 'OVERDUE');
- const bulkOverdueChecklists = checkStats.instances.filter(i => i.status === 'PENDING' && i.date < todayStr);
+ const bulkOverdueChecklists = checkStats.instances.filter(i => (i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < todayStr);
  
  const bulkOverdueItems = [
  ...bulkOverdueTasks.map(t => ({

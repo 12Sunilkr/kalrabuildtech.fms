@@ -24,6 +24,8 @@ export interface Employee {
   // When true, this employee's attendance is hidden from admin users
   hideAttendance?: boolean;
   employmentType?: string;
+  is_archived?: number;
+  archived_at?: string;
 }
 
 export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN';
@@ -35,9 +37,10 @@ export interface User {
   role: Role;
   name: string;
   employeeId?: string; // Link to Employee record if role is EMPLOYEE
+  plain_password?: string;
 }
 
-export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO' | 'LEAVE';
+export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO' | 'LEAVE' | 'CS';
 
 export interface AttendanceRecord {
   [dateIso: string]: AttendanceValue;
@@ -378,7 +381,7 @@ export interface ChecklistInstance {
   id: string;
   templateId: string;
   date: string; // YYYY-MM-DD (Scheduled Date)
-  status: 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED';
+  status: 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED' | 'EXCUSE_REQUESTED' | 'MISSED_EXCUSED' | 'TRANSFERRED';
   completedDate?: string;
   shiftedDueToHoliday?: boolean; // Tracking if it was moved from Sun/Holiday
   // Enrichment fields populated at load time from the parent template
@@ -386,7 +389,22 @@ export interface ChecklistInstance {
   taskName?: string;
   department?: string;
   dbId?: string; // The real DB row ID used to persist mark-done to server
+  // Excuse & Transfer Request workflow fields
+  excuseReason?: string;          // Reason entered by employee when requesting excuse/transfer
+  excuseRequestedAt?: string;     // ISO timestamp when excuse/transfer was requested
+  excuseApprovedBy?: string;      // Admin name/id who approved the excuse/transfer
+  excuseRejectedAt?: string;      // ISO timestamp if admin rejected
+  requestedTransferTo?: string;   // Transferee employee ID requested by employee
+  requestedTransferDate?: string; // Target date requested by employee (primary date)
+  requestedTransferDates?: string[]; // Array of target dates requested by employee (multi-day)
+  // Instance-level transfer fields (does NOT affect the master template schedule)
+  transferredFrom?: string;       // Original date before transfer (YYYY-MM-DD)
+  transferNote?: string;          // Optional reason for transfer
+  transferredBy?: string;         // Admin name who performed the transfer
+  transferredAt?: string;         // ISO timestamp of transfer action
+  transferredTo?: string;         // Employee ID of new assignee (when transferred to another user)
 }
+
 
 export enum ViewMode {
   // Admin Views
@@ -414,6 +432,7 @@ export enum ViewMode {
   DATABASE = 'DATABASE',
   PMS_ADMIN = 'PMS_ADMIN',
   CRM = 'CRM',
+  SYSTEM_MASTER = 'SYSTEM_MASTER',
 
   // Employee Views
   EMPLOYEE_HOME = 'EMPLOYEE_HOME',
@@ -511,4 +530,27 @@ export interface PMSEmployeeReport {
   totalSessionsCompleted: number;
   pendingWork: string;
   projectsAssigned: number;
+}
+
+export interface KBTSheet {
+  id: string;
+  name: string;
+  department: string;
+  purpose: string;
+  url: string;
+  responsible_person: string;
+  frequency: string;
+  status: string;
+  notes?: string;
+  assignedUsers: string[];
+  created_at: string;
+}
+
+export interface KBTActivity {
+  id: number;
+  action: string;
+  details: string;
+  actor_name: string;
+  actor_email: string;
+  timestamp: string;
 }

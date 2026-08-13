@@ -1,24 +1,35 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, User, Lock, LayoutGrid, ShieldAlert, X, Mail, Send, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowRight, User, Lock, LayoutGrid, ShieldAlert, X, Mail, Send, CheckCircle2, Loader2, Eye, EyeOff } from 'lucide-react';
 import { COMPANY_LOGO } from '../constants';
 
 interface AuthProps {
   onLogin: (email: string, pass: string) => Promise<void> | void;
-  onResetPassword: (email: string) => Promise<boolean>;
+  onResetPassword: (email: string) => Promise<string | boolean>;
+  onConfirmReset: (email: string, otp: string, pass: string) => Promise<boolean>;
   error?: string;
 }
 
-export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) => {
+export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmReset, error }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Google OAuth States
+  const [showGoogleMockModal, setShowGoogleMockModal] = useState(false);
+  const [mockGoogleEmail, setMockGoogleEmail] = useState('');
+  const [mockGoogleName, setMockGoogleName] = useState('');
   
   // Forgot Password States
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [recoveryLoading, setRecoveryLoading] = useState(false);
-  const [recoverySuccess, setRecoverySuccess] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [recoveryStep, setRecoveryStep] = useState<'REQUEST' | 'RESET' | 'SUCCESS'>('REQUEST');
+  const [tempPassword, setTempPassword] = useState('');
 
   // Security State
   const [failedAttempts, setFailedAttempts] = useState(0);
@@ -26,6 +37,92 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
   const [lockoutTimer, setLockoutTimer] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Google OAuth SSO verify & login handler
+  const handleMockGoogleLogin = async (emailToUse: string, nameToUse: string) => {
+    setIsLoggingIn(true);
+    try {
+      const apiRes = await fetch('/api/auth/google-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: `mock_${Date.now()}`,
+          mockEmail: emailToUse,
+          mockName: nameToUse
+        })
+      });
+      const resJson = await apiRes.json();
+      if (resJson.success) {
+        const payloadData = resJson.data || {};
+        if (payloadData.token) {
+          localStorage.setItem('kbt_token', payloadData.token);
+        }
+        window.location.reload();
+      } else {
+        alert(resJson.message || 'Mock Google login failed');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Mock Google login failed');
+    } finally {
+      setIsLoggingIn(false);
+      setShowGoogleMockModal(false);
+    }
+  };
+
+  // Dynamically load Google accounts SSO script if client ID exists
+  useEffect(() => {
+    const client_id = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+    if (!client_id) return;
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      // @ts-ignore
+      if (window.google) {
+        // @ts-ignore
+        window.google.accounts.id.initialize({
+          client_id: client_id,
+          callback: async (response: any) => {
+            setIsLoggingIn(true);
+            try {
+              const apiRes = await fetch('/api/auth/google-login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ credential: response.credential })
+              });
+              const resJson = await apiRes.json();
+              if (resJson.success) {
+                const payloadData = resJson.data || {};
+                if (payloadData.token) {
+                  localStorage.setItem('kbt_token', payloadData.token);
+                }
+                window.location.reload();
+              } else {
+                alert(resJson.message || 'Google Login failed');
+              }
+            } catch (err) {
+              console.error('Google login error', err);
+            } finally {
+              setIsLoggingIn(false);
+            }
+          }
+        });
+
+        // @ts-ignore
+        window.google.accounts.id.renderButton(
+          document.getElementById('google-signin-button-real'),
+          { theme: 'filled_blue', size: 'large', width: 320 }
+        );
+      }
+    };
+    document.body.appendChild(script);
+    return () => {
+      try { document.body.removeChild(script); } catch(e){}
+    };
+  }, []);
 
   // Handle 3D Tilt Effect
   useEffect(() => {
@@ -89,14 +186,44 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
       
       setRecoveryLoading(true);
       try {
-          const success = await onResetPassword(recoveryEmail);
-          if (success) {
-              setRecoverySuccess(true);
+          const generatedPass = await onResetPassword(recoveryEmail);
+          if (generatedPass) {
+              if (typeof generatedPass === 'string') {
+                  setTempPassword(generatedPass); // Save dynamic OTP for demo backup
+              }
+              setRecoveryStep('RESET');
           } else {
               alert("Email not found in our records.");
           }
       } catch (err) {
           alert("System busy. Please try later.");
+      } finally {
+          setRecoveryLoading(false);
+      }
+  };
+
+  const handleConfirmResetSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!otpCode || !newPassword || !confirmPassword || recoveryLoading) return;
+      if (newPassword !== confirmPassword) {
+          alert("Passwords do not match!");
+          return;
+      }
+      if (newPassword.length < 4) {
+          alert("Password should be at least 4 characters.");
+          return;
+      }
+      
+      setRecoveryLoading(true);
+      try {
+          const success = await onConfirmReset(recoveryEmail, otpCode, newPassword);
+          if (success) {
+              setRecoveryStep('SUCCESS');
+          } else {
+              alert("Invalid verification code or code expired.");
+          }
+      } catch (err) {
+          alert("Reset failed. Please verify the code and try again.");
       } finally {
           setRecoveryLoading(false);
       }
@@ -139,7 +266,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
           style={{ transform: `rotateY(${mousePos.x}deg) rotateX(${-mousePos.y}deg)` }}
         >
           {/* 3D Logo */}
-          <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-32 h-32 bg-slate-900 rounded-3xl shadow-2xl flex items-center justify-center border border-slate-700" style={{ transform: 'translateZ(50px) translateX(-50%)' }}>
+          <div className="absolute -top-16 left-1/2 w-32 h-32 bg-slate-900 rounded-3xl shadow-2xl flex items-center justify-center border border-slate-700" style={{ transform: 'translate3d(-50%, 0, 50px)' }}>
                <div className="w-full h-full p-4">
                  <img src={COMPANY_LOGO} className="w-full h-full object-contain drop-shadow-lg" alt="Logo" />
                </div>
@@ -197,14 +324,22 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
                 <div className="relative">
                   <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-400 transition-colors"><Lock size={20} /></div>
                   <input
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                     required
                     disabled={isLocked || isLoggingIn}
-                    className="w-full bg-slate-950/50 border border-slate-700 text-white pl-12 pr-4 py-4 rounded-xl focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 outline-none transition-all placeholder-slate-600 shadow-inner disabled:opacity-50"
+                    className="w-full bg-slate-950/50 border border-slate-700 text-white pl-12 pr-12 py-4 rounded-xl focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 outline-none transition-all placeholder-slate-600 shadow-inner disabled:opacity-50"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    disabled={isLocked || isLoggingIn}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-cyan-400 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
                 </div>
               </div>
 
@@ -220,6 +355,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
                    {isLoggingIn ? <><Loader2 size={20} className="animate-spin" /> Authenticating...</> : isLocked ? `Locked (${lockoutTimer}s)` : <>Secure Login <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" /></>}
                 </span>
               </button>
+
             </form>
 
             <div className="mt-8 pt-6 border-t border-white/5 text-center" style={{ transform: 'translateZ(20px)' }}>
@@ -235,23 +371,114 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
       {/* FORGOT PASSWORD MODAL */}
       {showForgotModal && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-              <div className="bg-slate-900 border border-white/10 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden p-8 animate-in fade-in zoom-in-95 duration-200">
+              <div className="bg-slate-900 border border-white/10 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden p-8 animate-in fade-in zoom-in-95 duration-200">
                   <div className="flex justify-between items-center mb-6">
                       <div className="w-10 h-10 bg-blue-500/20 text-blue-400 rounded-xl flex items-center justify-center"><Mail size={20}/></div>
-                      <button onClick={() => { setShowForgotModal(false); setRecoverySuccess(false); }} className="text-slate-500 hover:text-white p-2"><X size={20}/></button>
+                      <button 
+                          onClick={() => { 
+                              setShowForgotModal(false); 
+                              setRecoveryStep('REQUEST'); 
+                              setTempPassword(''); 
+                              setOtpCode(''); 
+                              setNewPassword(''); 
+                              setConfirmPassword(''); 
+                          }} 
+                          className="text-slate-500 hover:text-white p-2"
+                      >
+                          <X size={20}/>
+                      </button>
                   </div>
                   
-                  {recoverySuccess ? (
+                  {recoveryStep === 'SUCCESS' && (
                       <div className="text-center space-y-4 py-4">
                           <div className="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-2"><CheckCircle2 size={32}/></div>
-                          <h3 className="text-xl font-bold text-white">Recovery Sent!</h3>
-                          <p className="text-slate-400 text-sm text-balance">We've sent a temporary login key to <b>{recoveryEmail}</b>. Please check your inbox.</p>
-                          <button onClick={() => { setShowForgotModal(false); setRecoverySuccess(false); }} className="w-full bg-white text-slate-900 font-bold py-3 rounded-xl mt-4">Back to Login</button>
+                          <h3 className="text-xl font-bold text-white">Password Reset Complete</h3>
+                          <p className="text-slate-400 text-sm text-balance">Your password has been successfully reset. You can now use your new password to log in.</p>
+                          <button 
+                              onClick={() => { 
+                                  setShowForgotModal(false); 
+                                  setRecoveryStep('REQUEST'); 
+                                  setTempPassword(''); 
+                                  setOtpCode(''); 
+                                  setNewPassword(''); 
+                                  setConfirmPassword(''); 
+                              }} 
+                              className="w-full bg-white text-slate-900 font-bold py-3 rounded-xl mt-4"
+                          >
+                              Back to Login
+                          </button>
                       </div>
-                  ) : (
+                  )}
+
+                  {recoveryStep === 'RESET' && (
+                      <form onSubmit={handleConfirmResetSubmit} className="space-y-4">
+                          <h3 className="text-xl font-bold text-white mb-2">Verify & Reset</h3>
+                          <p className="text-slate-400 text-sm mb-4">We've sent a 6-digit verification code to <b>{recoveryEmail}</b>. Please check your inbox.</p>
+                          
+                          {tempPassword && (
+                              <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 text-center space-y-2">
+                                  <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Demo Code (Developer Mode)</p>
+                                  <div className="font-mono text-xl font-black text-blue-300 tracking-widest select-all">{tempPassword}</div>
+                                  <p className="text-[10px] text-slate-500">This code was shown because SMTP may not be configured in this environment.</p>
+                              </div>
+                          )}
+                          
+                          <div className="space-y-4">
+                              <div>
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">6-Digit Code (OTP)</label>
+                                  <input 
+                                    type="text" 
+                                    required 
+                                    maxLength={6}
+                                    pattern="\d{6}"
+                                    className="w-full bg-slate-950 border border-slate-800 text-white p-4 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-center font-mono text-xl tracking-widest"
+                                    placeholder="000000"
+                                    value={otpCode}
+                                    onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                                  />
+                              </div>
+
+                              <div>
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">New Password</label>
+                                  <input 
+                                    type="password" 
+                                    required 
+                                    minLength={4}
+                                    className="w-full bg-slate-950 border border-slate-800 text-white p-4 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                                    placeholder="••••••••"
+                                    value={newPassword}
+                                    onChange={e => setNewPassword(e.target.value)}
+                                  />
+                              </div>
+
+                              <div>
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">Confirm New Password</label>
+                                  <input 
+                                    type="password" 
+                                    required 
+                                    minLength={4}
+                                    className="w-full bg-slate-950 border border-slate-800 text-white p-4 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                                    placeholder="••••••••"
+                                    value={confirmPassword}
+                                    onChange={e => setConfirmPassword(e.target.value)}
+                                  />
+                              </div>
+
+                              <button 
+                                type="submit"
+                                disabled={recoveryLoading}
+                                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 disabled:opacity-50 transition-all mt-6"
+                              >
+                                  {recoveryLoading ? <Loader2 size={18} className="animate-spin"/> : 'Reset Password'}
+                              </button>
+                          </div>
+                      </form>
+                  )}
+
+                  {recoveryStep === 'REQUEST' && (
                       <form onSubmit={handleRecoverySubmit}>
                           <h3 className="text-xl font-bold text-white mb-2">Recover Access</h3>
-                          <p className="text-slate-400 text-sm mb-6">Enter your registered email address to receive a recovery link.</p>
+                          <p className="text-slate-400 text-sm mb-6">Enter your registered work email to receive a secure 6-digit OTP code.</p>
                           
                           <div className="space-y-4">
                               <div>
@@ -270,7 +497,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, error }) =
                                 disabled={recoveryLoading}
                                 className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 disabled:opacity-50 transition-all"
                               >
-                                  {recoveryLoading ? <Loader2 size={18} className="animate-spin"/> : <><Send size={18}/> Send Reset Link</>}
+                                  {recoveryLoading ? <Loader2 size={18} className="animate-spin"/> : <><Send size={18}/> Send Verification Code</>}
                               </button>
                           </div>
                       </form>

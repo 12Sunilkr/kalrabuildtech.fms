@@ -46,18 +46,25 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
     // 1. Flatten logs into a workable array
     const allLogs = useMemo(() => {
         const logs: (TimeLog & { empName: string, empId: string, department: string, avatar?: string })[] = [];
+        const seenKeys = new Set<string>();
+
         employees.forEach(emp => {
             const empLogsMap = timeLogs[emp.id];
             if (empLogsMap) {
                 Object.values(empLogsMap).forEach(dayLogs => {
                     ensureArray(dayLogs).forEach(log => {
-                        logs.push({
-                            ...log,
-                            empName: emp.name,
-                            empId: emp.id,
-                            department: emp.department,
-                            avatar: emp.avatar
-                        });
+                        const timeMs = log.clockIn ? Math.floor(new Date(log.clockIn).getTime() / 120000) : 0;
+                        const uniqueKey = log.id ? `${emp.id}_${log.id}` : `${emp.id}_${log.date}_${timeMs}`;
+                        if (!seenKeys.has(uniqueKey)) {
+                            seenKeys.add(uniqueKey);
+                            logs.push({
+                                ...log,
+                                empName: emp.name,
+                                empId: emp.id,
+                                department: emp.department,
+                                avatar: emp.avatar
+                            });
+                        }
                     });
                 });
             }
@@ -103,15 +110,28 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
 
         const today = format(new Date(), 'yyyy-MM-dd');
 
+        // Determine the EARLIEST clockIn for each date for this employee
+        const firstClockInByDate: Record<string, Date> = {};
+        empLogs.forEach(l => {
+            if (l.clockIn) {
+                const dt = new Date(l.clockIn);
+                if (!firstClockInByDate[l.date] || dt < firstClockInByDate[l.date]) {
+                    firstClockInByDate[l.date] = dt;
+                }
+            }
+        });
+
         const processed = inRange.map(l => {
             const isMissed = !l.clockOut && l.date < today;
 
-            // Logical markers for professional audit
-            const checkInTime = l.clockIn ? new Date(l.clockIn) : null;
+            // Logical markers for professional audit: late status is based on FIRST clock-in of that date
+            const firstCheckInTime = firstClockInByDate[l.date] || (l.clockIn ? new Date(l.clockIn) : null);
             const checkOutTime = l.clockOut ? new Date(l.clockOut) : null;
 
-            // Late: check-in after 10:15 AM (customizable threshold)
-            const isLate = checkInTime ? (checkInTime.getHours() > 10 || (checkInTime.getHours() === 10 && checkInTime.getMinutes() > 15)) : false;
+            // Late: check if FIRST check-in of the day was after 10:15 AM
+            const isLate = firstCheckInTime
+                ? (firstCheckInTime.getHours() > 10 || (firstCheckInTime.getHours() === 10 && firstCheckInTime.getMinutes() > 15))
+                : false;
 
             // Early Departure: check-out before 5:00 PM
             const isEarlyOut = checkOutTime ? checkOutTime.getHours() < 17 : false;
@@ -125,7 +145,8 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         const validLogs = processed.filter(l => !l.isMissed);
         const totalHours = validLogs.reduce((acc, curr) => acc + (curr.durationHours || 0), 0);
         const missedCount = processed.filter(l => l.isMissed).length;
-        const lateCount = processed.filter(l => l.isLate).length;
+        const lateDates = new Set(processed.filter(l => l.isLate).map(l => l.date));
+        const lateCount = lateDates.size;
         const workingDays = new Set(validLogs.map(l => l.date)).size;
 
         // Logical insights
@@ -165,19 +186,58 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         return { totalHours, uniqueDays };
     }, [filteredLogs]);
 
-    // 3. Group by Date
-    const logsByDate = useMemo(() => {
-        const groups: Record<string, typeof filteredLogs> = {};
+    // 3. Deduplicate filteredLogs before grouping (robust safety net by empId + date + clockIn minute window)
+    const dedupedLogs = useMemo(() => {
+        const result: typeof filteredLogs = [];
+        const empDateMap = new Map<string, typeof filteredLogs>();
+
         filteredLogs.forEach(log => {
+            const key = `${log.empId}_${log.date}`;
+            if (!empDateMap.has(key)) {
+                empDateMap.set(key, [log]);
+                result.push(log);
+            } else {
+                const existingList = empDateMap.get(key)!;
+                const logTime = log.clockIn ? new Date(log.clockIn).getTime() : 0;
+
+                const dupIndex = existingList.findIndex(ex => {
+                    if (log.id && ex.id && log.id === ex.id) return true;
+                    const exTime = ex.clockIn ? new Date(ex.clockIn).getTime() : 0;
+                    if (logTime && exTime && Math.abs(logTime - exTime) < 120000) return true;
+                    if (!log.clockOut && !ex.clockOut) return true;
+                    return false;
+                });
+
+                if (dupIndex >= 0) {
+                    const ex = existingList[dupIndex];
+                    if (!ex.clockOut && log.clockOut) {
+                        const targetIdx = result.indexOf(ex);
+                        if (targetIdx >= 0) {
+                            result[targetIdx] = { ...ex, ...log };
+                        }
+                    }
+                } else {
+                    existingList.push(log);
+                    result.push(log);
+                }
+            }
+        });
+        return result;
+    }, [filteredLogs]);
+
+    // 4. Group by Date
+    const logsByDate = useMemo(() => {
+        const groups: Record<string, typeof dedupedLogs> = {};
+        dedupedLogs.forEach(log => {
             if (!groups[log.date]) {
                 groups[log.date] = [];
             }
             groups[log.date].push(log);
         });
         return groups;
-    }, [filteredLogs]);
+    }, [dedupedLogs]);
 
-    // 4. Sort Dates Descending
+    // 5. Sort Dates Descending
     const sortedDates = Object.keys(logsByDate).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
 
     // Slice based on pagination
@@ -318,7 +378,12 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                         duration = Math.max(0, diffMs / (1000 * 60 * 60));
                     }
 
-                    tlMap[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration } as TimeLog);
+                    const exists = tlMap[t.userId][dateKey].some(item =>
+                        (t.id && item.id === t.id) || (item.clockIn === t.startTime && item.clockOut === t.endTime)
+                    );
+                    if (!exists) {
+                        tlMap[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration } as TimeLog);
+                    }
                 });
                 setTimeLogs(tlMap);
             } catch (e) { console.warn('Failed to refresh timelogs after manual out', e && (e.stack || e.message || e)); }

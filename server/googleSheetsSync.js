@@ -1,7 +1,7 @@
 // server/googleSheetsSync.js
-//const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbyVmrysdjTAIKQ80g-K9WlWl5EyU4gESGxcQW8kgWqZyU0o4sa4xStgUeF2Xjafx7_GWQ/exec';
-const WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxUFz1rzJT1P6YTKKfBWHlA7I-4-2U3AAI8mrIUTsDRe9xdCkqWALkKySs5jGnyfVi7/exec';
 import https from 'https';
+
+const WEBHOOK_URL = process.env.GOOGLE_SHEETS_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbxUFz1rzJT1P6YTKKfBWHlA7I-4-2U3AAI8mrIUTsDRe9xdCkqWALkKySs5jGnyfVi7/exec';
 
 let isSyncing = false;
 let insecureTlsWarningShown = false;
@@ -64,6 +64,12 @@ async function postSheetsPayload(payload, allowInsecureTls = false) {
 
 export async function syncToGoogleSheets(db) {
   if (isSyncing) return;
+
+  // Skip syncing if database hasn't changed since the last successful sync
+  if (global.dbChanged === false && lastSyncAt > 0) {
+    return;
+  }
+
   isSyncing = true;
   try {
     const payload = {};
@@ -130,6 +136,7 @@ export async function syncToGoogleSheets(db) {
       }
       lastPayloadHash = payloadHash;
       lastSyncAt = Date.now();
+      global.dbChanged = false; // Reset the database change flag upon successful sync
       console.log('Successfully synced data to Google Sheets. Status:', response.status);
     }
   } catch (error) {

@@ -15,7 +15,13 @@ const api = axios.create({
 });
 
 // Keep request interceptor minimal
-api.interceptors.request.use((cfg) => cfg);
+api.interceptors.request.use((cfg) => {
+  const token = localStorage.getItem('kbt_token');
+  if (token && cfg.headers) {
+    cfg.headers['Authorization'] = `Bearer ${token}`;
+  }
+  return cfg;
+});
 
 // Automatically clear the entire client-side request cache on any data-modifying action (POST, PUT, DELETE)
 api.interceptors.response.use(
