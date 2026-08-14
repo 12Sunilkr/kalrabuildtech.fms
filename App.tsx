@@ -355,6 +355,45 @@ const App: React.FC = () => {
     };
   }, [currentUser]);
 
+  // ── Cross-device session watcher ────────────────────────────────────────────
+  // Polls /api/auth/session-check every 45 seconds.
+  // If the server says the session was invalidated (another device logged out),
+  // this device is automatically logged out so the UI is consistent across devices.
+  useEffect(() => {
+    if (!currentUser) return;
+    let destroyed = false;
+    const checkSession = async () => {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const res = await safeGet('/auth/session-check', { cacheBust: true });
+        const data = extractPayload(res);
+        if (data && data.valid === false && !destroyed) {
+          console.log('[SessionCheck] Session invalidated on another device — logging out');
+          // Clear local auth state
+          localStorage.removeItem('kbt_token');
+          // Clear any active log keys
+          try {
+            const uid = currentUser.employeeId || String(currentUser.id);
+            localStorage.removeItem(`kbt_active_log_${uid}`);
+            if (currentUser.id) localStorage.removeItem(`kbt_active_log_${String(currentUser.id)}`);
+          } catch { /* ignore */ }
+          setCurrentUser(null);
+          setAuthError('You were logged out from another device.');
+          setToast({ message: 'You were logged out from another device', type: 'warning' });
+        }
+      } catch { /* ignore network errors — don't log out on connectivity issues */ }
+    };
+    const iv = setInterval(checkSession, 45000);
+    const onVisible = () => { if (document.visibilityState === 'visible') checkSession(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      destroyed = true;
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [currentUser]);
+
+
   useEffect(() => {
     if (toast) {
       const timer = setTimeout(() => setToast(null), 5000);
@@ -465,7 +504,33 @@ const App: React.FC = () => {
     });
   }, [currentUser]);
 
-  // Fetch data specific to the current view ON DEMAND (lazy loading, stale-while-revalidate)
+  // ── Cross-device timelog sync ────────────────────────────────────────────────
+  // Polls the server every 30 seconds for the current user's timelogs.
+  // Ensures both devices (laptop + phone) always show the same active shift start time.
+  useEffect(() => {
+    if (!currentUser) return;
+    let destroyed = false;
+    const syncTimelogs = async () => {
+      if (document.visibilityState === 'hidden') return;
+      const uid = currentUser.employeeId || String(currentUser.id);
+      try {
+        const res = await safeGet(`/timelogs?userId=${encodeURIComponent(uid)}`, { cacheBust: true });
+        if (!destroyed) applyTimelogs(ensureArray(extractPayload(res)));
+      } catch { /* ignore */ }
+    };
+    // Initial sync after 5s (let the app settle first)
+    const initTimer = setTimeout(syncTimelogs, 5000);
+    const iv = setInterval(syncTimelogs, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') syncTimelogs(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      destroyed = true;
+      clearTimeout(initTimer);
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [currentUser, applyTimelogs]);
+
   useEffect(() => {
     if (!currentUser) return;
 

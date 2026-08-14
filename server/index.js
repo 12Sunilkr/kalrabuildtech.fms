@@ -1706,6 +1706,11 @@ app.post('/api/auth/reset-password-otp', (req, res) => {
 });
 
 // Auth helpers
+// In-memory session blacklist for cross-device logout.
+// Maps userId (string) -> timestamp (ms) of last logout.
+// Any token issued (iat) BEFORE this timestamp is considered invalid.
+const sessionBlacklist = new Map();
+
 app.get('/api/auth/me', (req, res) => {
   console.log('GET /api/auth/me from', req.ip, 'origin', req.headers.origin || 'no-origin');
 
@@ -1738,6 +1743,18 @@ app.get('/api/auth/me', (req, res) => {
     }
 
     const id = payload.id;
+
+    // Cross-device logout check: if this user has logged out AFTER the token was issued, reject it
+    const logoutTime = sessionBlacklist.get(String(id));
+    if (logoutTime) {
+      const tokenIat = (payload.iat || 0) * 1000; // iat is in seconds, convert to ms
+      if (tokenIat < logoutTime) {
+        console.log(`Auth/me: token for user ${id} was issued before logout — rejecting (cross-device logout)`);
+        res.clearCookie('token', { path: '/' });
+        return failure(res, 'Session expired. Please log in again.', 401);
+      }
+    }
+
     try {
       const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE id = ? AND coalesce(is_archived, 0) = 0');
       stmt.bind([Number(id)]);
@@ -1759,11 +1776,48 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
+  // Record logout in blacklist so other devices with the same token get rejected
+  try {
+    const authHeader = req.headers && req.headers.authorization;
+    const token = authHeader && typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.split(' ')[1]
+      : req.cookies?.token;
+    if (token) {
+      try {
+        const payload = jwt.verify(token, JWT_SECRET);
+        if (payload && payload.id) {
+          sessionBlacklist.set(String(payload.id), Date.now());
+          console.log(`[Logout] User ${payload.id} added to session blacklist — cross-device sessions will be invalidated`);
+        }
+      } catch (e) { /* token already invalid, ignore */ }
+    }
+  } catch (e) { /* ignore */ }
+
   // Clear the cookie for both possible parameter sets used during login to ensure the browser strictly removes it.
   res.clearCookie('token', { path: '/', httpOnly: true, secure: true, sameSite: 'none' });
   res.clearCookie('token', { path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' });
   res.clearCookie('token', { path: '/' });
   return success(res, null, 'Logged out');
+});
+
+// New endpoint: poll for cross-device session status
+app.get('/api/auth/session-check', (req, res) => {
+  try {
+    const authHeader = req.headers && req.headers.authorization;
+    const token = authHeader && typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.split(' ')[1]
+      : req.cookies?.token;
+    if (!token) return success(res, { valid: false }, 'No token');
+    let payload;
+    try { payload = jwt.verify(token, JWT_SECRET); } catch (e) { return success(res, { valid: false }, 'Invalid'); }
+    const logoutTime = sessionBlacklist.get(String(payload.id));
+    if (logoutTime && (payload.iat || 0) * 1000 < logoutTime) {
+      return success(res, { valid: false, reason: 'logged_out_elsewhere' }, 'Session invalidated');
+    }
+    return success(res, { valid: true }, 'Active');
+  } catch (e) {
+    return success(res, { valid: false }, 'Error');
+  }
 });
 
 // Users CRUD API
