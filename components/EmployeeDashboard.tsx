@@ -76,8 +76,15 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   const isClockedIn = !!activeLog;
   const isShiftComplete = dayLogs.length > 0 && !isClockedIn; 
 
-  // Total hours for today from all sessions
-  const todayDuration = dayLogs.reduce((sum, l) => sum + (l.durationHours || 0), 0);
+  // Total hours for today from all sessions (use clockIn/clockOut as fallback if durationHours is missing)
+  const todayDuration = dayLogs.reduce((sum, l) => {
+    if (l.durationHours && l.durationHours > 0) return sum + l.durationHours;
+    if (l.clockIn && l.clockOut) {
+      const ms = new Date(l.clockOut).getTime() - new Date(l.clockIn).getTime();
+      if (ms > 0) return sum + ms / 3600000;
+    }
+    return sum;
+  }, 0);
   const isAnyLogToday = dayLogs.length > 0;
   const sessionCount = dayLogs.length;              // how many sessions used today
   const MAX_SESSIONS = 2;                            // max allowed sessions per day
@@ -492,7 +499,9 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                     <div className="bg-emerald-50 border border-emerald-200/80 p-4 rounded-xl text-center">
                                         <CheckCircle size={24} className="text-emerald-500 mx-auto mb-2" />
                                         <p className="text-emerald-900 font-bold text-sm">Shift Completed</p>
-                                        <p className="text-emerald-700 text-xs mt-1">Total: {todayDuration.toFixed(2)} Hrs · {MAX_SESSIONS}/{MAX_SESSIONS} sessions used</p>
+                                        <p className="text-emerald-700 text-xs mt-1">
+                                          Total: {(todayDuration > 0 ? todayDuration : elapsed / 3600).toFixed(2)} Hrs · {MAX_SESSIONS}/{MAX_SESSIONS} sessions used
+                                        </p>
                                     </div>
                                 ) : isClockedIn ? (
                                     /* Currently clocked in — show End Session */

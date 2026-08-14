@@ -169,13 +169,28 @@ const App: React.FC = () => {
             // Instant active log restoration from localStorage cache on session restore
             try {
               const uKey = meUser.employeeId || String(meUser.id);
-              const localLogRaw = localStorage.getItem(`kbt_active_log_${uKey}`) || (meUser.id ? localStorage.getItem(`kbt_active_log_${meUser.id}`) : null);
+              const todayKey = new Date().toISOString().split('T')[0]; // YYYY-MM-DD in UTC
+              // Also try local date key in IST/local timezone
+              const localToday = formatDateKey(new Date());
+              const localLogRaw = localStorage.getItem(`kbt_active_log_${uKey}`) || (meUser.id ? localStorage.getItem(`kbt_active_log_${String(meUser.id)}`) : null);
               if (localLogRaw) {
                 const localLog = JSON.parse(localLogRaw);
                 if (localLog && localLog.clockIn && !localLog.clockOut) {
-                  // Ensure userId is always set so applyTimelogs maps it correctly
-                  const logWithUser = { ...localLog, userId: localLog.userId || uKey };
-                  applyTimelogs([logWithUser]);
+                  const logDate = localLog.clockIn.split('T')[0]; // UTC date
+                  const logLocalDate = localLog.date || logDate;
+                  // Only restore active logs from TODAY — discard stale logs from previous days
+                  const isToday = logDate === todayKey || logLocalDate === localToday;
+                  if (isToday) {
+                    const logWithUser = { ...localLog, userId: localLog.userId || uKey };
+                    applyTimelogs([logWithUser]);
+                  } else {
+                    // Stale log from a previous day — clear it
+                    console.log('[Init] Clearing stale localStorage active log from', logDate);
+                    try {
+                      localStorage.removeItem(`kbt_active_log_${uKey}`);
+                      if (meUser.id) localStorage.removeItem(`kbt_active_log_${String(meUser.id)}`);
+                    } catch (e2) { /* ignore */ }
+                  }
                 }
               }
             } catch (e) { /* ignore */ }
@@ -947,8 +962,10 @@ const App: React.FC = () => {
     const currentLog = allUserLogs.find(l => !l.clockOut);
 
     if (!currentLog?.clockIn) return;
-    const diffMinutes = differenceInMinutes(now, new Date(currentLog.clockIn));
-    const hoursWorked = diffMinutes / 60;
+    const clockInMs = new Date(currentLog.clockIn).getTime();
+    const diffMs = isNaN(clockInMs) ? 0 : now.getTime() - clockInMs;
+    const diffMinutes = Math.max(0, diffMs / 60000);
+    const hoursWorked = Math.max(0, diffMinutes / 60);
 
     const tId = currentLog.id || `TL-${empId}-${dateKey}`;
     const aId = `A-${empId}-${dateKey}`;
