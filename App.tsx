@@ -165,6 +165,18 @@ const App: React.FC = () => {
             ]).catch(err => {
               console.warn('Master data preloading encountered errors', err);
             });
+
+            // Instant active log restoration from localStorage cache on session restore
+            try {
+              const uKey = meUser.employeeId || meUser.id;
+              const localLogRaw = localStorage.getItem(`kbt_active_log_${uKey}`) || (meUser.id ? localStorage.getItem(`kbt_active_log_${meUser.id}`) : null);
+              if (localLogRaw) {
+                const localLog = JSON.parse(localLogRaw);
+                if (localLog && localLog.clockIn && !localLog.clockOut) {
+                  applyTimelogs([localLog]);
+                }
+              }
+            } catch (e) { /* ignore */ }
           } else {
             setUsers(INITIAL_USERS);
           }
@@ -867,6 +879,10 @@ const App: React.FC = () => {
     if (currentUser?.id) updateTargetKeys.add(String(currentUser.id));
 
     // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
+    try {
+      updateTargetKeys.forEach(k => localStorage.setItem(`kbt_active_log_${k}`, JSON.stringify(newLog)));
+    } catch (e) { /* ignore */ }
+
     setTimeLogs(prev => {
       const next = { ...prev };
       updateTargetKeys.forEach(k => {
@@ -922,6 +938,10 @@ const App: React.FC = () => {
     const updateTargetKeys = new Set<string>([empId]);
     if (currentUser?.employeeId) updateTargetKeys.add(currentUser.employeeId);
     if (currentUser?.id) updateTargetKeys.add(String(currentUser.id));
+
+    try {
+      updateTargetKeys.forEach(k => localStorage.removeItem(`kbt_active_log_${k}`));
+    } catch (e) { /* ignore */ }
 
     // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
     setTimeLogs(prev => {

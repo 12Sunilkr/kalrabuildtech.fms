@@ -5703,27 +5703,48 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     if (check.step()) { check.free(); return failure(res, 'TimeLog ID already exists', 409); }
     check.free();
 
-    // Prevent duplicate open timelogs or duplicate clock-ins within 2 minutes for the same user
-    const existingStmt = db.prepare('SELECT id, startTime, endTime FROM timelogs WHERE userId = ? ORDER BY createdAt DESC');
-    existingStmt.bind([userId]);
+    // Auto-close any stale unclosed timelogs from past days (> 16 hours old or different date) for this user
     const reqTime = new Date(startTime).getTime();
-    let isDuplicate = false;
-    let existingId = null;
-    while (existingStmt.step()) {
-      const row = existingStmt.getAsObject();
-      const exTime = row.startTime ? new Date(row.startTime).getTime() : 0;
-      if (!row.endTime || (reqTime && exTime && Math.abs(reqTime - exTime) < 120000)) {
-        isDuplicate = true;
-        existingId = row.id;
-        break;
+    const reqDateKey = new Date(startTime).toISOString().split('T')[0];
+
+    const openStmt = db.prepare('SELECT id, startTime FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL)) AND endTime IS NULL');
+    openStmt.bind([userId, userId]);
+    while (openStmt.step()) {
+      const row = openStmt.getAsObject();
+      if (row.id && row.startTime) {
+        const rowTime = new Date(row.startTime).getTime();
+        const rowDateKey = new Date(row.startTime).toISOString().split('T')[0];
+        const ageHours = (reqTime - rowTime) / 3600000;
+        if (ageHours > 16 || rowDateKey !== reqDateKey) {
+          console.log(`[TIMELOGS] Auto-closing stale past timelog id=${row.id} for userId=${userId}`);
+          const closeUpd = db.prepare('UPDATE timelogs SET endTime = ? WHERE id = ?');
+          closeUpd.run([row.startTime, row.id]);
+          closeUpd.free && closeUpd.free();
+        }
       }
     }
-    existingStmt.free();
+    openStmt.free();
 
-    if (isDuplicate) {
-      console.log(`[TIMELOGS] POST skip duplicate insert for userId=${userId} startTime=${startTime}, reusing existingId=${existingId}`);
+    // Check if an active open log ALREADY exists for TODAY
+    const activeTodayStmt = db.prepare('SELECT id, startTime FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL)) AND endTime IS NULL');
+    activeTodayStmt.bind([userId, userId]);
+    let existingTodayId = null;
+    while (activeTodayStmt.step()) {
+      const row = activeTodayStmt.getAsObject();
+      if (row.id && row.startTime) {
+        const rowDateKey = new Date(row.startTime).toISOString().split('T')[0];
+        if (rowDateKey === reqDateKey) {
+          existingTodayId = row.id;
+          break;
+        }
+      }
+    }
+    activeTodayStmt.free();
+
+    if (existingTodayId) {
+      console.log(`[TIMELOGS] Reusing active open timelog for today userId=${userId}, existingId=${existingTodayId}`);
       cacheInvalidate('timelogs');
-      return success(res, { id: existingId || id }, 'Duplicate session skipped');
+      return success(res, { id: existingTodayId }, 'Active session reused');
     }
 
     const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
@@ -5731,7 +5752,7 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     insert.free && insert.free();
     persistDB();
     cacheInvalidate('timelogs');
-    return success(res, null, 'Created', 201);
+    return success(res, { id }, 'Created', 201);
   } catch (err) {
     console.error('Timelogs POST error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
