@@ -405,7 +405,7 @@ const App: React.FC = () => {
           duration = Math.max(0, (new Date(t.endTime).getTime() - new Date(t.startTime).getTime()) / 3600000);
         }
 
-        const tStartMs = t.startTime ? new Date(t.startTime).getTime() : 0;
+        const tStartMs = t.startTime ? new Date(t.startTime).getTime() : (t.clockIn ? new Date(t.clockIn).getTime() : 0);
 
         targetUserIds.forEach(uId => {
           if (!next[uId]) next[uId] = {};
@@ -423,7 +423,8 @@ const App: React.FC = () => {
           const newLogEntry: TimeLog = {
             id: t.id,
             date: dateKey,
-            clockIn: t.startTime || t.createdAt,
+            // Support both server format (startTime) and localStorage format (clockIn)
+            clockIn: t.startTime || t.clockIn || t.createdAt,
             clockOut: t.endTime ? t.endTime : undefined,
             durationHours: duration
           };

@@ -84,17 +84,21 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   const sessionsLeft = MAX_SESSIONS - sessionCount;
 
   // First clock-in time for the day (official login time)
+  const isValidDate = (d: any): d is Date => d instanceof Date && !isNaN(d.getTime());
   const firstLogToday = dayLogs.length > 0
-    ? [...dayLogs].sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime())[0]
+    ? [...dayLogs]
+        .filter(l => l.clockIn && !isNaN(new Date(l.clockIn).getTime()))
+        .sort((a, b) => new Date(a.clockIn!).getTime() - new Date(b.clockIn!).getTime())[0]
     : null;
-  const firstLoginTime = firstLogToday ? new Date(firstLogToday.clockIn) : null;
+  const firstLoginTime = firstLogToday ? new Date(firstLogToday.clockIn!) : null;
+  const validFirstLoginTime = firstLoginTime && isValidDate(firstLoginTime) ? firstLoginTime : null;
 
   // Late login: first login after 10:15 AM is considered late
   const LATE_CUTOFF_HOUR = 10;
   const LATE_CUTOFF_MINUTE = 15;
-  const isLateLogin = firstLoginTime
-    ? firstLoginTime.getHours() > LATE_CUTOFF_HOUR ||
-      (firstLoginTime.getHours() === LATE_CUTOFF_HOUR && firstLoginTime.getMinutes() > LATE_CUTOFF_MINUTE)
+  const isLateLogin = validFirstLoginTime
+    ? validFirstLoginTime.getHours() > LATE_CUTOFF_HOUR ||
+      (validFirstLoginTime.getHours() === LATE_CUTOFF_HOUR && validFirstLoginTime.getMinutes() > LATE_CUTOFF_MINUTE)
     : false;
 
   // 2-minute cooldown after clock-out when sessions remain
@@ -428,10 +432,10 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                         </div>
 
                         {/* Official first-login time + late indicator */}
-                        {firstLoginTime && (
+                        {validFirstLoginTime && (
                           <div className={`text-xs font-semibold mb-4 flex items-center justify-center gap-1.5 ${isLateLogin ? 'text-rose-500' : 'text-emerald-600'}`}>
                             <Clock size={12} />
-                            Login: {format(firstLoginTime, 'hh:mm:ss a')}
+                            Login: {format(validFirstLoginTime, 'hh:mm:ss a')}
                             {isLateLogin ? (
                               <span className="ml-1 text-[10px] bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-black uppercase">LATE</span>
                             ) : (
@@ -526,7 +530,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                         {sessionCount === 0 ? 'Begin Shift' : `Resume Session (${sessionCount + 1}/${MAX_SESSIONS})`}
                                     </button>
                                 )}
-                                {isClockedIn && activeLog?.clockIn && (
+                                {isClockedIn && activeLog?.clockIn && !isNaN(new Date(activeLog.clockIn).getTime()) && (
                                     <p className="text-[11px] font-semibold text-slate-400 mt-2">Session started at {format(new Date(activeLog.clockIn), 'hh:mm:ss a')}</p>
                                 )}
                             </div>
