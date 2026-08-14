@@ -64,7 +64,15 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   const userLogMap = timeLogs[empId] || (userEmployeeId ? timeLogs[userEmployeeId] : undefined) || (userIdStr ? timeLogs[userIdStr] : undefined) || {};
   const dayLogs = userLogMap[dateKey] || [];
   const allUserLogs = Object.values(userLogMap).flat();
-  const activeLog = allUserLogs.find(l => !l.clockOut);
+  // Filter activeLog: must have no clockOut AND must be started within last 16 hours to ignore stale unclosed sessions from past days
+  const activeLog = allUserLogs.find(l => {
+    if (l.clockOut) return false;
+    if (!l.clockIn) return false;
+    const startMs = new Date(l.clockIn).getTime();
+    if (isNaN(startMs)) return false;
+    const ageHours = (Date.now() - startMs) / 3600000;
+    return ageHours >= 0 && ageHours < 16;
+  });
   const isClockedIn = !!activeLog;
   const isShiftComplete = dayLogs.length > 0 && !isClockedIn; 
 
@@ -175,13 +183,15 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   useEffect(() => {
     let interval: any;
     if (isClockedIn && activeLog?.clockIn) {
-      interval = setInterval(() => {
+      const tick = () => {
         const start = new Date(activeLog.clockIn);
         const now = new Date();
-        const activeElapsed = differenceInSeconds(now, start);
+        const activeElapsed = Math.max(0, differenceInSeconds(now, start));
         const prevElapsed = dayLogs.filter(l => l.id !== activeLog.id).reduce((sum, l) => sum + (l.durationHours || 0) * 3600, 0);
         setElapsed(prevElapsed + activeElapsed);
-      }, 1000);
+      };
+      tick();
+      interval = setInterval(tick, 1000);
     } else if (isAnyLogToday) {
       setElapsed(todayDuration * 3600);
     } else {
@@ -378,62 +388,73 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
             {/* Left Column: Shift & Quick Stats */}
             <div className="lg:col-span-4 space-y-6">
                         {/* Structured Shift Tracker */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden flex flex-col transition-all duration-300 hover:shadow-md">
                     {/* Header */}
-                    <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4 flex items-center justify-between">
-                        <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm"><Clock size={16} className="text-indigo-500" /> Time &amp; Attendance</h3>
+                    <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-4 flex items-center justify-between">
+                        <h3 className="font-bold text-slate-800 flex items-center gap-2.5 text-sm">
+                            <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg border border-indigo-100/50">
+                                <Clock size={16} />
+                            </span>
+                            Time &amp; Attendance
+                        </h3>
                         <div className="flex items-center gap-2">
                            {/* Late Login Badge */}
                            {isLateLogin && (
-                             <span className="flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 text-red-600 rounded-full text-[10px] font-black uppercase tracking-wider">
+                             <span className="flex items-center gap-1 px-2.5 py-0.5 bg-rose-50 border border-rose-200/80 text-rose-600 rounded-full text-[10px] font-black uppercase tracking-wider">
                                <AlertCircle size={10} /> Late
                              </span>
                            )}
                            {/* Session counter */}
                            {isAnyLogToday && (
-                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${sessionsLeft === 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-slate-100 border-slate-200 text-slate-500'}`}>
+                             <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${sessionsLeft === 0 ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-slate-100 border-slate-200 text-slate-600'}`}>
                                {sessionCount}/{MAX_SESSIONS} sessions
                              </span>
                            )}
-                           <span className={`w-2 h-2 rounded-full ${isClockedIn ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`}></span>
-                           <span className="text-xs font-medium text-slate-500">{isClockedIn ? 'Active' : 'Offline'}</span>
+                           <span className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[11px] font-bold ${
+                             isClockedIn 
+                               ? 'bg-emerald-50 border-emerald-200 text-emerald-700' 
+                               : 'bg-slate-100 border-slate-200 text-slate-500'
+                           }`}>
+                             <span className={`w-2 h-2 rounded-full ${isClockedIn ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`}></span>
+                             {isClockedIn ? 'Active' : 'Offline'}
+                           </span>
                         </div>
                     </div>
                     
-                    <div className="p-6 text-center flex-1 flex flex-col justify-center">
+                    <div className="p-6 text-center flex-1 flex flex-col justify-center bg-gradient-to-b from-white to-slate-50/30">
                         {/* Timer display */}
-                        <div className="font-mono text-4xl sm:text-5xl font-semibold text-slate-800 tracking-tight mb-2">
+                        <div className="font-mono text-4xl sm:text-5xl font-black text-slate-800 tracking-tight mb-2 selection:bg-indigo-100">
                             {formatTime(elapsed)}
                         </div>
 
                         {/* Official first-login time + late indicator */}
                         {firstLoginTime && (
-                          <div className={`text-xs font-semibold mb-4 flex items-center justify-center gap-1.5 ${isLateLogin ? 'text-red-500' : 'text-emerald-600'}`}>
-                            <Clock size={11} />
+                          <div className={`text-xs font-semibold mb-4 flex items-center justify-center gap-1.5 ${isLateLogin ? 'text-rose-500' : 'text-emerald-600'}`}>
+                            <Clock size={12} />
                             Login: {format(firstLoginTime, 'hh:mm:ss a')}
                             {isLateLogin ? (
-                              <span className="ml-1 text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-black">LATE</span>
+                              <span className="ml-1 text-[10px] bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full font-black uppercase">LATE</span>
                             ) : (
-                              <span className="ml-1 text-[10px] bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded font-black">ON TIME</span>
+                              <span className="ml-1 text-[10px] bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-black uppercase">ON TIME</span>
                             )}
                           </div>
                         )}
                         
                         <div className="grid grid-cols-2 gap-3 mb-6">
-                            <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Target</p>
-                                <p className="font-semibold text-slate-700 text-sm">08:00h</p>
+                            <div className="bg-white p-3.5 rounded-xl border border-slate-200/70 shadow-2xs">
+                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1 tracking-wider">Target</p>
+                                <p className="font-bold text-slate-800 text-sm">08:00h</p>
                             </div>
-                            <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1">Overtime</p>
-                                <p className="font-semibold text-emerald-600 text-sm">{overtime.toFixed(2)}h</p>
+                            <div className="bg-white p-3.5 rounded-xl border border-slate-200/70 shadow-2xs">
+                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1 tracking-wider">Overtime</p>
+                                <p className="font-bold text-emerald-600 text-sm">+{overtime.toFixed(2)}h</p>
                             </div>
                         </div>
 
                         {/* Shift Controls */}
                         {isSunday && !isClockedIn && !isShiftComplete ? (
                             <div className="space-y-3">
-                              <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-center">
+                              <div className="bg-amber-50/80 border border-amber-200/80 p-3.5 rounded-xl text-center">
                                   <AlertTriangle size={18} className="text-amber-500 mx-auto mb-1" />
                                   <h3 className="text-amber-900 font-bold text-xs mb-1">Sunday Work</h3>
                                   <p className="text-amber-700 text-[10px] leading-relaxed">Attendance will be marked. Any leave taken this week can be treated as <strong>Compensate</strong>.</p>
@@ -441,7 +462,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                               {sessionsLeft > 0 && cooldownSecs === 0 && (
                                 <button
                                     onClick={onClockIn}
-                                    className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
+                                    className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 active:scale-95 text-white font-bold py-3.5 rounded-xl shadow-md shadow-indigo-500/20 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
                                 >
                                     <PlayCircle size={18} /> Begin Shift
                                 </button>
@@ -449,7 +470,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                               {!existingSundayReq && (
                                 <button
                                     onClick={() => setShowSundayReqModal(true)}
-                                    className="w-full border border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 font-semibold py-2 rounded-xl transition-all text-xs flex items-center justify-center gap-1"
+                                    className="w-full border border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 font-semibold py-2.5 rounded-xl transition-all text-xs flex items-center justify-center gap-1.5 cursor-pointer"
                                 >
                                     <AlertTriangle size={14} /> Notify Admin (Optional)
                                 </button>
@@ -464,7 +485,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                             <div className="space-y-3">
                                 {/* All sessions used — shift complete */}
                                 {sessionsLeft === 0 && !isClockedIn ? (
-                                    <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl text-center">
+                                    <div className="bg-emerald-50 border border-emerald-200/80 p-4 rounded-xl text-center">
                                         <CheckCircle size={24} className="text-emerald-500 mx-auto mb-2" />
                                         <p className="text-emerald-900 font-bold text-sm">Shift Completed</p>
                                         <p className="text-emerald-700 text-xs mt-1">Total: {todayDuration.toFixed(2)} Hrs · {MAX_SESSIONS}/{MAX_SESSIONS} sessions used</p>
@@ -473,14 +494,14 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                     /* Currently clocked in — show End Session */
                                     <button
                                         onClick={onClockOut}
-                                        className="w-full bg-red-600 hover:bg-red-700 active:scale-95 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
+                                        className="w-full bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 active:scale-[0.98] text-white font-bold py-3.5 rounded-xl shadow-md shadow-red-500/20 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
                                     >
                                         <LogOut size={18} /> End Session
                                     </button>
                                 ) : cooldownSecs > 0 ? (
                                     /* 2-minute cooldown between sessions */
                                     <div className="space-y-3">
-                                      <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl text-center">
+                                      <div className="bg-blue-50/80 border border-blue-200/80 p-4 rounded-xl text-center">
                                           <div className="flex items-center justify-center gap-2 mb-2">
                                             <div className="w-8 h-8 rounded-full border-2 border-blue-400 flex items-center justify-center animate-pulse">
                                               <Clock size={14} className="text-blue-500" />
@@ -490,7 +511,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                           <p className="font-mono text-2xl font-black text-blue-700 mt-1">
                                             {cooldownMins}:{cooldownSecsDisplay.toString().padStart(2, '0')}
                                           </p>
-                                          <p className="text-blue-600 text-[10px] mt-1">
+                                          <p className="text-blue-600 text-[10px] mt-1 font-medium">
                                             Session {sessionCount + 1} of {MAX_SESSIONS} available after cooldown
                                           </p>
                                       </div>
@@ -499,14 +520,14 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                     /* Ready to start next session (or first session) */
                                     <button
                                         onClick={onClockIn}
-                                        className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-semibold py-3 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center gap-2"
+                                        className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 active:scale-[0.98] text-white font-bold py-3.5 rounded-xl shadow-md shadow-indigo-500/20 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
                                     >
                                         <PlayCircle size={18} />
                                         {sessionCount === 0 ? 'Begin Shift' : `Resume Session (${sessionCount + 1}/${MAX_SESSIONS})`}
                                     </button>
                                 )}
                                 {isClockedIn && activeLog?.clockIn && (
-                                    <p className="text-[10px] font-medium text-slate-400">Session started at {format(new Date(activeLog.clockIn), 'HH:mm:ss')}</p>
+                                    <p className="text-[11px] font-semibold text-slate-400 mt-2">Session started at {format(new Date(activeLog.clockIn), 'hh:mm:ss a')}</p>
                                 )}
                             </div>
                         )}
