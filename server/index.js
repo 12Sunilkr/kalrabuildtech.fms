@@ -1706,11 +1706,6 @@ app.post('/api/auth/reset-password-otp', (req, res) => {
 });
 
 // Auth helpers
-// In-memory session blacklist for cross-device logout.
-// Maps userId (string) -> timestamp (ms) of last logout.
-// Any token issued (iat) BEFORE this timestamp is considered invalid.
-const sessionBlacklist = new Map();
-
 app.get('/api/auth/me', (req, res) => {
   console.log('GET /api/auth/me from', req.ip, 'origin', req.headers.origin || 'no-origin');
 
@@ -1743,18 +1738,6 @@ app.get('/api/auth/me', (req, res) => {
     }
 
     const id = payload.id;
-
-    // Cross-device logout check: if this user has logged out AFTER the token was issued, reject it
-    const logoutTime = sessionBlacklist.get(String(id));
-    if (logoutTime) {
-      const tokenIat = (payload.iat || 0) * 1000; // iat is in seconds, convert to ms
-      if (tokenIat < logoutTime) {
-        console.log(`Auth/me: token for user ${id} was issued before logout — rejecting (cross-device logout)`);
-        res.clearCookie('token', { path: '/' });
-        return failure(res, 'Session expired. Please log in again.', 401);
-      }
-    }
-
     try {
       const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE id = ? AND coalesce(is_archived, 0) = 0');
       stmt.bind([Number(id)]);
@@ -1776,48 +1759,11 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  // Record logout in blacklist so other devices with the same token get rejected
-  try {
-    const authHeader = req.headers && req.headers.authorization;
-    const token = authHeader && typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')
-      ? authHeader.split(' ')[1]
-      : req.cookies?.token;
-    if (token) {
-      try {
-        const payload = jwt.verify(token, JWT_SECRET);
-        if (payload && payload.id) {
-          sessionBlacklist.set(String(payload.id), Date.now());
-          console.log(`[Logout] User ${payload.id} added to session blacklist — cross-device sessions will be invalidated`);
-        }
-      } catch (e) { /* token already invalid, ignore */ }
-    }
-  } catch (e) { /* ignore */ }
-
   // Clear the cookie for both possible parameter sets used during login to ensure the browser strictly removes it.
   res.clearCookie('token', { path: '/', httpOnly: true, secure: true, sameSite: 'none' });
   res.clearCookie('token', { path: '/', httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' });
   res.clearCookie('token', { path: '/' });
   return success(res, null, 'Logged out');
-});
-
-// New endpoint: poll for cross-device session status
-app.get('/api/auth/session-check', (req, res) => {
-  try {
-    const authHeader = req.headers && req.headers.authorization;
-    const token = authHeader && typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')
-      ? authHeader.split(' ')[1]
-      : req.cookies?.token;
-    if (!token) return success(res, { valid: false }, 'No token');
-    let payload;
-    try { payload = jwt.verify(token, JWT_SECRET); } catch (e) { return success(res, { valid: false }, 'Invalid'); }
-    const logoutTime = sessionBlacklist.get(String(payload.id));
-    if (logoutTime && (payload.iat || 0) * 1000 < logoutTime) {
-      return success(res, { valid: false, reason: 'logged_out_elsewhere' }, 'Session invalidated');
-    }
-    return success(res, { valid: true }, 'Active');
-  } catch (e) {
-    return success(res, { valid: false }, 'Error');
-  }
 });
 
 // Users CRUD API
@@ -2932,7 +2878,6 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
 
 app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, res) => {
   try {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     // Query filters: userId, date, month (YYYY-MM), startDate, endDate
     const { userId, date, month, startDate, endDate } = req.query || {};
     let q = 'SELECT id, userId, date, clockIn, clockOut, value, location, notes, createdAt FROM attendance';
@@ -3002,16 +2947,12 @@ app.delete('/api/attendance/:id', requireAuth, (req, res) => {
 // Time logs endpoints
 app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) => {
   try {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const { userId, startDate, endDate, month } = req.query || {};
     let q = 'SELECT id, userId, startTime, endTime, task, notes, createdAt FROM timelogs';
     const clauses = [];
     const params = [];
 
-    if (userId) {
-      clauses.push('(userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL) OR userId = (SELECT id FROM users WHERE employeeId = ?))');
-      params.push(userId, userId, userId);
-    }
+    if (userId) { clauses.push('userId = ?'); params.push(userId); }
     if (month) { clauses.push('startTime LIKE ?'); params.push(`${month}%`); }
     if (startDate) { clauses.push('startTime >= ?'); params.push(startDate); }
     if (endDate) { clauses.push('startTime <= ?'); params.push(endDate); }
@@ -3030,12 +2971,9 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
     stmt.free();
 
     const out = [];
-    const seenIds = new Set();
+    const userDateMap = new Map();
 
     for (const record of rawLogs) {
-      if (!record || !record.id || seenIds.has(record.id)) continue;
-      seenIds.add(record.id);
-
       if (record.startTime && record.endTime) {
         const start = new Date(record.startTime);
         const end = new Date(record.endTime);
@@ -3043,7 +2981,28 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
         record.durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
       }
 
-      out.push(record);
+      const dateKey = record.startTime ? record.startTime.split('T')[0] : (record.createdAt ? record.createdAt.split('T')[0] : 'nodate');
+      const uKey = `${record.userId}_${dateKey}`;
+
+      if (!userDateMap.has(uKey)) {
+        userDateMap.set(uKey, [record]);
+        out.push(record);
+      } else {
+        const existingList = userDateMap.get(uKey);
+        const recordTime = record.startTime ? new Date(record.startTime).getTime() : 0;
+        const isDup = existingList.some(ex => {
+          if (ex.id === record.id) return true;
+          const exTime = ex.startTime ? new Date(ex.startTime).getTime() : 0;
+          if (recordTime && exTime && Math.abs(recordTime - exTime) < 120000) {
+            return true;
+          }
+          return false;
+        });
+        if (!isDup) {
+          existingList.push(record);
+          out.push(record);
+        }
+      }
     }
     return success(res, out);
   } catch (err) {
@@ -5757,48 +5716,27 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     if (check.step()) { check.free(); return failure(res, 'TimeLog ID already exists', 409); }
     check.free();
 
-    // Auto-close any stale unclosed timelogs from past days (> 16 hours old or different date) for this user
+    // Prevent duplicate open timelogs or duplicate clock-ins within 2 minutes for the same user
+    const existingStmt = db.prepare('SELECT id, startTime, endTime FROM timelogs WHERE userId = ? ORDER BY createdAt DESC');
+    existingStmt.bind([userId]);
     const reqTime = new Date(startTime).getTime();
-    const reqDateKey = new Date(startTime).toISOString().split('T')[0];
-
-    const openStmt = db.prepare('SELECT id, startTime FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL)) AND endTime IS NULL');
-    openStmt.bind([userId, userId]);
-    while (openStmt.step()) {
-      const row = openStmt.getAsObject();
-      if (row.id && row.startTime) {
-        const rowTime = new Date(row.startTime).getTime();
-        const rowDateKey = new Date(row.startTime).toISOString().split('T')[0];
-        const ageHours = (reqTime - rowTime) / 3600000;
-        if (ageHours > 16 || rowDateKey !== reqDateKey) {
-          console.log(`[TIMELOGS] Auto-closing stale past timelog id=${row.id} for userId=${userId}`);
-          const closeUpd = db.prepare('UPDATE timelogs SET endTime = ? WHERE id = ?');
-          closeUpd.run([row.startTime, row.id]);
-          closeUpd.free && closeUpd.free();
-        }
+    let isDuplicate = false;
+    let existingId = null;
+    while (existingStmt.step()) {
+      const row = existingStmt.getAsObject();
+      const exTime = row.startTime ? new Date(row.startTime).getTime() : 0;
+      if (!row.endTime || (reqTime && exTime && Math.abs(reqTime - exTime) < 120000)) {
+        isDuplicate = true;
+        existingId = row.id;
+        break;
       }
     }
-    openStmt.free();
+    existingStmt.free();
 
-    // Check if an active open log ALREADY exists for TODAY
-    const activeTodayStmt = db.prepare('SELECT id, startTime FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL)) AND endTime IS NULL');
-    activeTodayStmt.bind([userId, userId]);
-    let existingTodayId = null;
-    while (activeTodayStmt.step()) {
-      const row = activeTodayStmt.getAsObject();
-      if (row.id && row.startTime) {
-        const rowDateKey = new Date(row.startTime).toISOString().split('T')[0];
-        if (rowDateKey === reqDateKey) {
-          existingTodayId = row.id;
-          break;
-        }
-      }
-    }
-    activeTodayStmt.free();
-
-    if (existingTodayId) {
-      console.log(`[TIMELOGS] Reusing active open timelog for today userId=${userId}, existingId=${existingTodayId}`);
+    if (isDuplicate) {
+      console.log(`[TIMELOGS] POST skip duplicate insert for userId=${userId} startTime=${startTime}, reusing existingId=${existingId}`);
       cacheInvalidate('timelogs');
-      return success(res, { id: existingTodayId }, 'Active session reused');
+      return success(res, { id: existingId || id }, 'Duplicate session skipped');
     }
 
     const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
@@ -5806,7 +5744,7 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     insert.free && insert.free();
     persistDB();
     cacheInvalidate('timelogs');
-    return success(res, { id }, 'Created', 201);
+    return success(res, null, 'Created', 201);
   } catch (err) {
     console.error('Timelogs POST error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
