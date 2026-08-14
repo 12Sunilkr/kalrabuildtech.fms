@@ -168,12 +168,14 @@ const App: React.FC = () => {
 
             // Instant active log restoration from localStorage cache on session restore
             try {
-              const uKey = meUser.employeeId || meUser.id;
+              const uKey = meUser.employeeId || String(meUser.id);
               const localLogRaw = localStorage.getItem(`kbt_active_log_${uKey}`) || (meUser.id ? localStorage.getItem(`kbt_active_log_${meUser.id}`) : null);
               if (localLogRaw) {
                 const localLog = JSON.parse(localLogRaw);
                 if (localLog && localLog.clockIn && !localLog.clockOut) {
-                  applyTimelogs([localLog]);
+                  // Ensure userId is always set so applyTimelogs maps it correctly
+                  const logWithUser = { ...localLog, userId: localLog.userId || uKey };
+                  applyTimelogs([logWithUser]);
                 }
               }
             } catch (e) { /* ignore */ }
@@ -370,24 +372,32 @@ const App: React.FC = () => {
     setTimeLogs(prev => {
       const next = { ...prev };
       incoming.forEach((t: any) => {
-        if (!t || !t.userId) return;
+        // Allow logs with a clockIn but missing userId (from localStorage cache)
+        if (!t || (!t.userId && !t.clockIn)) return;
 
         let dateKey = t.date;
         if (!dateKey) {
-          const dt = t.startTime ? new Date(t.startTime) : (t.createdAt ? new Date(t.createdAt) : null);
+          const dt = t.startTime ? new Date(t.startTime) : (t.clockIn ? new Date(t.clockIn) : (t.createdAt ? new Date(t.createdAt) : null));
           if (dt && !isNaN(dt.getTime())) {
             dateKey = formatDateKey(dt);
           } else {
-            dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
+            dateKey = t.startTime ? t.startTime.split('T')[0] : (t.clockIn?.split('T')[0] || t.createdAt?.split('T')[0] || '');
           }
         }
         if (!dateKey) return;
 
         const targetUserIds = new Set<string>();
         if (t.userId) targetUserIds.add(String(t.userId));
-        if (currentUser && (currentUser.employeeId === t.userId || String(currentUser.id) === String(t.userId))) {
-          if (currentUser.employeeId) targetUserIds.add(currentUser.employeeId);
-          if (currentUser.id) targetUserIds.add(String(currentUser.id));
+        // ALWAYS add both ID forms for the current user if this log belongs to them
+        if (currentUser) {
+          const empId = currentUser.employeeId;
+          const numId = String(currentUser.id);
+          const tUid = String(t.userId || '');
+          if (!t.userId || tUid === empId || tUid === numId) {
+            // This log belongs to current user — register under both ID forms
+            if (empId) targetUserIds.add(empId);
+            if (numId) targetUserIds.add(numId);
+          }
         }
 
         let duration = t.durationHours;
@@ -879,8 +889,10 @@ const App: React.FC = () => {
     if (currentUser?.id) updateTargetKeys.add(String(currentUser.id));
 
     // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
+    // Save with userId so applyTimelogs can restore it on refresh
+    const logForStorage = { ...newLog, userId: empId };
     try {
-      updateTargetKeys.forEach(k => localStorage.setItem(`kbt_active_log_${k}`, JSON.stringify(newLog)));
+      updateTargetKeys.forEach(k => localStorage.setItem(`kbt_active_log_${k}`, JSON.stringify(logForStorage)));
     } catch (e) { /* ignore */ }
 
     setTimeLogs(prev => {
@@ -902,16 +914,26 @@ const App: React.FC = () => {
     addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
     addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
 
-    // --- Background server sync (non-blocking) ---
+    // --- Background server sync then re-fetch to get authoritative state ---
     try {
       await api.post('/timelogs', { id: tId, userId: empId, startTime: now.toISOString() }, { withCredentials: true });
       if (existingDayLogs.length === 0) {
         await api.post('/attendance', { id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null }, { withCredentials: true });
       }
+      // Re-fetch fresh timelogs from server to sync the canonical timelog ID (handles "existing session reused" case)
+      const freshRes = await safeGet(`/timelogs?userId=${encodeURIComponent(empId)}`, { cacheBust: true });
+      const freshLogs = ensureArray(extractPayload(freshRes));
+      if (freshLogs.length > 0) applyTimelogs(freshLogs);
+      // Update localStorage with authoritative active log from server
+      const serverActiveLog = freshLogs.find((l: any) => !l.endTime);
+      if (serverActiveLog) {
+        const serverLog = { id: serverActiveLog.id, date: dateKey, clockIn: serverActiveLog.startTime, userId: empId };
+        try { updateTargetKeys.forEach(k => localStorage.setItem(`kbt_active_log_${k}`, JSON.stringify(serverLog))); } catch (e) { /* ignore */ }
+      }
     } catch (err) {
       console.warn('[ClockIn] Background server sync failed (optimistic update already applied)', err);
     }
-  }, [currentUser, sundayRequests, timeLogs, addNotification]);
+  }, [currentUser, sundayRequests, timeLogs, addNotification, applyTimelogs, safeGet, extractPayload, ensureArray]);
 
   const handleClockOut = useCallback(async () => {
     const empId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
