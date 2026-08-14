@@ -55,11 +55,16 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   const isSunday = isDateSunday(today);
   const currentYear = today.getFullYear().toString();
 
-  const empId = user.employeeId || '';
-  const empAttendance = attendanceData[empId] || {};
+  const empId = user.employeeId || String(user.id) || '';
+  const userEmployeeId = user.employeeId || '';
+  const userIdStr = String(user.id || '');
+
+  const empAttendance = attendanceData[empId] || (userEmployeeId ? attendanceData[userEmployeeId] : undefined) || (userIdStr ? attendanceData[userIdStr] : undefined) || {};
   const todayAttVal = empAttendance[dateKey];
-  const dayLogs = timeLogs[empId]?.[dateKey] || [];
-  const activeLog = dayLogs.find(l => !l.clockOut);
+  const userLogMap = timeLogs[empId] || (userEmployeeId ? timeLogs[userEmployeeId] : undefined) || (userIdStr ? timeLogs[userIdStr] : undefined) || {};
+  const dayLogs = userLogMap[dateKey] || [];
+  const allUserLogs = Object.values(userLogMap).flat();
+  const activeLog = allUserLogs.find(l => !l.clockOut);
   const isClockedIn = !!activeLog;
   const isShiftComplete = dayLogs.length > 0 && !isClockedIn; 
 

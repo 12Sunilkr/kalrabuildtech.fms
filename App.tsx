@@ -146,6 +146,14 @@ const App: React.FC = () => {
                 })
                 .catch(err => console.warn('Background employees fetch failed', err)),
 
+              safeGet(`/attendance?userId=${encodeURIComponent(meUser.employeeId || meUser.id)}`, { cacheBust: true })
+                .then(res => applyAttendance(ensureArray(extractPayload(res))))
+                .catch(err => console.warn('Background attendance fetch failed', err)),
+
+              safeGet(`/timelogs?userId=${encodeURIComponent(meUser.employeeId || meUser.id)}`, { cacheBust: true })
+                .then(res => applyTimelogs(ensureArray(extractPayload(res))))
+                .catch(err => console.warn('Background timelogs fetch failed', err)),
+
               meUser.role === 'ADMIN'
                 ? safeGet('/employees?archived=1')
                     .then(res => {
@@ -351,12 +359,24 @@ const App: React.FC = () => {
       const next = { ...prev };
       incoming.forEach((t: any) => {
         if (!t || !t.userId) return;
-        const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
+
+        let dateKey = t.date;
+        if (!dateKey) {
+          const dt = t.startTime ? new Date(t.startTime) : (t.createdAt ? new Date(t.createdAt) : null);
+          if (dt && !isNaN(dt.getTime())) {
+            dateKey = formatDateKey(dt);
+          } else {
+            dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt?.split('T')[0] || '');
+          }
+        }
         if (!dateKey) return;
 
-        if (!next[t.userId]) next[t.userId] = {};
-        const userLogs = { ...next[t.userId] };
-        const dayLogs = [...(userLogs[dateKey] || [])];
+        const targetUserIds = new Set<string>();
+        if (t.userId) targetUserIds.add(String(t.userId));
+        if (currentUser && (currentUser.employeeId === t.userId || String(currentUser.id) === String(t.userId))) {
+          if (currentUser.employeeId) targetUserIds.add(currentUser.employeeId);
+          if (currentUser.id) targetUserIds.add(String(currentUser.id));
+        }
 
         let duration = t.durationHours;
         if (!duration && t.startTime && t.endTime) {
@@ -365,42 +385,47 @@ const App: React.FC = () => {
 
         const tStartMs = t.startTime ? new Date(t.startTime).getTime() : 0;
 
-        // Check matching index by ID or close startTime (within 2 min) or exact startTime string
-        const existingIndex = dayLogs.findIndex(item => {
-          if (t.id && item.id === t.id) return true;
-          const itemStartMs = item.clockIn ? new Date(item.clockIn).getTime() : 0;
-          if (tStartMs && itemStartMs && Math.abs(tStartMs - itemStartMs) < 120000) return true;
-          if (item.clockIn === t.startTime) return true;
-          return false;
-        });
+        targetUserIds.forEach(uId => {
+          if (!next[uId]) next[uId] = {};
+          const userLogs = { ...next[uId] };
+          const dayLogs = [...(userLogs[dateKey] || [])];
 
-        const newLogEntry: TimeLog = {
-          id: t.id,
-          date: dateKey,
-          clockIn: t.startTime || t.createdAt,
-          clockOut: t.endTime || undefined,
-          durationHours: duration
-        };
+          const existingIndex = dayLogs.findIndex(item => {
+            if (t.id && item.id === t.id) return true;
+            const itemStartMs = item.clockIn ? new Date(item.clockIn).getTime() : 0;
+            if (tStartMs && itemStartMs && Math.abs(tStartMs - itemStartMs) < 120000) return true;
+            if (item.clockIn === t.startTime) return true;
+            return false;
+          });
 
-        if (existingIndex >= 0) {
-          const oldLog = dayLogs[existingIndex];
-          dayLogs[existingIndex] = {
-            ...oldLog,
-            ...newLogEntry,
-            id: t.id || oldLog.id,
-            clockOut: newLogEntry.clockOut || oldLog.clockOut,
-            durationHours: newLogEntry.durationHours ?? oldLog.durationHours
+          const newLogEntry: TimeLog = {
+            id: t.id,
+            date: dateKey,
+            clockIn: t.startTime || t.createdAt,
+            clockOut: t.endTime ? t.endTime : undefined,
+            durationHours: duration
           };
-        } else {
-          dayLogs.push(newLogEntry);
-        }
 
-        userLogs[dateKey] = dayLogs;
-        next[t.userId] = userLogs;
+          if (existingIndex >= 0) {
+            const oldLog = dayLogs[existingIndex];
+            dayLogs[existingIndex] = {
+              ...oldLog,
+              ...newLogEntry,
+              id: t.id || oldLog.id,
+              clockOut: t.endTime ? t.endTime : undefined,
+              durationHours: newLogEntry.durationHours ?? oldLog.durationHours
+            };
+          } else {
+            dayLogs.push(newLogEntry);
+          }
+
+          userLogs[dateKey] = dayLogs;
+          next[uId] = userLogs;
+        });
       });
       return next;
     });
-  }, []);
+  }, [currentUser]);
 
   // Fetch data specific to the current view ON DEMAND (lazy loading, stale-while-revalidate)
   useEffect(() => {
@@ -824,33 +849,46 @@ const App: React.FC = () => {
   }, [currentUser, extractPayload, ensureArray, safeGet, showToast]);
 
   const handleClockIn = useCallback(async () => {
-    if (!currentUser?.employeeId) return;
-    const empId = currentUser.employeeId;
+    const empId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
+    if (!empId) return;
     const now = new Date();
     const dateKey = formatDateKey(now);
 
-    // Enforce max 2 sessions per day
-    const existingDayLogs = timeLogs[empId]?.[dateKey] || [];
+    const userLogMap = timeLogs[empId] || (currentUser?.employeeId ? timeLogs[currentUser.employeeId] : undefined) || (currentUser?.id ? timeLogs[String(currentUser.id)] : undefined) || {};
+    const existingDayLogs = userLogMap[dateKey] || [];
     if (existingDayLogs.length >= 2) return;
 
     const tId = `TL-${empId}-${Date.now()}`;
     const aId = `A-${empId}-${dateKey}`;
     const newLog: TimeLog = { id: tId, date: dateKey, clockIn: now.toISOString() };
 
+    const updateTargetKeys = new Set<string>([empId]);
+    if (currentUser?.employeeId) updateTargetKeys.add(currentUser.employeeId);
+    if (currentUser?.id) updateTargetKeys.add(String(currentUser.id));
+
     // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
     setTimeLogs(prev => {
-      const userLogs = prev[empId] || {};
-      const dayLogs = userLogs[dateKey] || [];
-      return { ...prev, [empId]: { ...userLogs, [dateKey]: [...dayLogs, newLog] } };
+      const next = { ...prev };
+      updateTargetKeys.forEach(k => {
+        const uLogs = next[k] || {};
+        const dLogs = uLogs[dateKey] || [];
+        next[k] = { ...uLogs, [dateKey]: [...dLogs, newLog] };
+      });
+      return next;
     });
-    setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: 1 } }));
+    setAttendanceData(prev => {
+      const next = { ...prev };
+      updateTargetKeys.forEach(k => {
+        next[k] = { ...(next[k] || {}), [dateKey]: 1 };
+      });
+      return next;
+    });
     addNotification('Attendance', `Shift started at ${now.toLocaleTimeString()}`, 'SYSTEM', String(empId));
     addNotification('System Alert', `${currentUser.name} clocked in at ${now.toLocaleTimeString()}`, 'SYSTEM', 'ADMIN');
 
     // --- Background server sync (non-blocking) ---
     try {
       await api.post('/timelogs', { id: tId, userId: empId, startTime: now.toISOString() }, { withCredentials: true });
-      // Only create attendance record for the first session of the day
       if (existingDayLogs.length === 0) {
         await api.post('/attendance', { id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null }, { withCredentials: true });
       }
@@ -860,12 +898,14 @@ const App: React.FC = () => {
   }, [currentUser, sundayRequests, timeLogs, addNotification]);
 
   const handleClockOut = useCallback(async () => {
-    if (!currentUser?.employeeId) return;
-    const empId = currentUser.employeeId;
+    const empId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
+    if (!empId) return;
     const now = new Date();
     const dateKey = formatDateKey(now);
-    const dayLogs = timeLogs[empId]?.[dateKey] || [];
-    const currentLog = dayLogs.find(l => !l.clockOut);
+
+    const userLogMap = timeLogs[empId] || (currentUser?.employeeId ? timeLogs[currentUser.employeeId] : undefined) || (currentUser?.id ? timeLogs[String(currentUser.id)] : undefined) || {};
+    const allUserLogs = Object.values(userLogMap).flat();
+    const currentLog = allUserLogs.find(l => !l.clockOut);
 
     if (!currentLog?.clockIn) return;
     const diffMinutes = differenceInMinutes(now, new Date(currentLog.clockIn));
@@ -874,19 +914,34 @@ const App: React.FC = () => {
     const tId = currentLog.id || `TL-${empId}-${dateKey}`;
     const aId = `A-${empId}-${dateKey}`;
 
-    // Compute day total hours for attendance value
+    const dayLogs = userLogMap[dateKey] || [];
     const otherLogsHours = dayLogs.filter(l => l.id !== currentLog.id).reduce((sum, l) => sum + (l.durationHours || 0), 0);
     const totalDayHours = otherLogsHours + hoursWorked;
     const computedVal: AttendanceValue = totalDayHours >= 7.5 ? 1 : (totalDayHours >= 6 ? 0.75 : (totalDayHours >= 4 ? 0.5 : (totalDayHours >= 2 ? 0.25 : 0)));
 
+    const updateTargetKeys = new Set<string>([empId]);
+    if (currentUser?.employeeId) updateTargetKeys.add(currentUser.employeeId);
+    if (currentUser?.id) updateTargetKeys.add(String(currentUser.id));
+
     // --- OPTIMISTIC UPDATE FIRST: UI responds instantly ---
     setTimeLogs(prev => {
-      const userLogs = prev[empId] || {};
-      const dLogs = userLogs[dateKey] || [];
-      const updatedLogs = dLogs.map(l => l.id === currentLog.id ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
-      return { ...prev, [empId]: { ...userLogs, [dateKey]: updatedLogs } };
+      const next = { ...prev };
+      updateTargetKeys.forEach(k => {
+        const uLogs = next[k] || {};
+        const logDateKey = currentLog.date || dateKey;
+        const dLogs = uLogs[logDateKey] || [];
+        const updatedLogs = dLogs.map(l => (l.id === currentLog.id || l.clockIn === currentLog.clockIn) ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
+        next[k] = { ...uLogs, [logDateKey]: updatedLogs };
+      });
+      return next;
     });
-    setAttendanceData(prev => ({ ...prev, [empId]: { ...(prev[empId] || {}), [dateKey]: computedVal } }));
+    setAttendanceData(prev => {
+      const next = { ...prev };
+      updateTargetKeys.forEach(k => {
+        next[k] = { ...(next[k] || {}), [dateKey]: computedVal };
+      });
+      return next;
+    });
     addNotification('Attendance', `Shift ended. Total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', String(empId));
     addNotification('System Alert', `${currentUser.name} clocked out. Shift total: ${formatDecimalHours(totalDayHours)}`, 'SYSTEM', 'ADMIN');
 

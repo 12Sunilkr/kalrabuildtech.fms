@@ -2878,6 +2878,7 @@ app.put('/api/attendance*', requireAuth, (req, res) => {
 
 app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     // Query filters: userId, date, month (YYYY-MM), startDate, endDate
     const { userId, date, month, startDate, endDate } = req.query || {};
     let q = 'SELECT id, userId, date, clockIn, clockOut, value, location, notes, createdAt FROM attendance';
@@ -2947,12 +2948,16 @@ app.delete('/api/attendance/:id', requireAuth, (req, res) => {
 // Time logs endpoints
 app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const { userId, startDate, endDate, month } = req.query || {};
     let q = 'SELECT id, userId, startTime, endTime, task, notes, createdAt FROM timelogs';
     const clauses = [];
     const params = [];
 
-    if (userId) { clauses.push('userId = ?'); params.push(userId); }
+    if (userId) {
+      clauses.push('(userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL) OR userId = (SELECT id FROM users WHERE employeeId = ?))');
+      params.push(userId, userId, userId);
+    }
     if (month) { clauses.push('startTime LIKE ?'); params.push(`${month}%`); }
     if (startDate) { clauses.push('startTime >= ?'); params.push(startDate); }
     if (endDate) { clauses.push('startTime <= ?'); params.push(endDate); }
@@ -2971,9 +2976,12 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
     stmt.free();
 
     const out = [];
-    const userDateMap = new Map();
+    const seenIds = new Set();
 
     for (const record of rawLogs) {
+      if (!record || !record.id || seenIds.has(record.id)) continue;
+      seenIds.add(record.id);
+
       if (record.startTime && record.endTime) {
         const start = new Date(record.startTime);
         const end = new Date(record.endTime);
@@ -2981,28 +2989,7 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
         record.durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
       }
 
-      const dateKey = record.startTime ? record.startTime.split('T')[0] : (record.createdAt ? record.createdAt.split('T')[0] : 'nodate');
-      const uKey = `${record.userId}_${dateKey}`;
-
-      if (!userDateMap.has(uKey)) {
-        userDateMap.set(uKey, [record]);
-        out.push(record);
-      } else {
-        const existingList = userDateMap.get(uKey);
-        const recordTime = record.startTime ? new Date(record.startTime).getTime() : 0;
-        const isDup = existingList.some(ex => {
-          if (ex.id === record.id) return true;
-          const exTime = ex.startTime ? new Date(ex.startTime).getTime() : 0;
-          if (recordTime && exTime && Math.abs(recordTime - exTime) < 120000) {
-            return true;
-          }
-          return false;
-        });
-        if (!isDup) {
-          existingList.push(record);
-          out.push(record);
-        }
-      }
+      out.push(record);
     }
     return success(res, out);
   } catch (err) {
