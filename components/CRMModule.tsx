@@ -32,7 +32,7 @@ export interface CRMLead {
 export interface User {
   id?: string | number;
   employeeId?: string;
-  role: 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN';
+  role: 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN' | 'PC';
   name?: string;
   initials?: string;
 }

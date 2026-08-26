@@ -34,7 +34,7 @@ export const ReadMe: React.FC<ReadMeProps> = ({ role }) => {
                 <User size={18}/> Team Member Guide
             </button>
             
-            {role === 'ADMIN' && (
+            {(role === 'ADMIN' || role === 'PC') && (
                 <button 
                     onClick={() => setActiveTab('ADMIN')}
                     className={`px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all ${activeTab === 'ADMIN' ? 'bg-indigo-600 text-white shadow-lg' : 'bg-white text-slate-500 hover:bg-slate-100'}`}
@@ -184,7 +184,7 @@ export const ReadMe: React.FC<ReadMeProps> = ({ role }) => {
             )}
 
             {/* ADMIN TAB */}
-            {activeTab === 'ADMIN' && role === 'ADMIN' && (
+            {activeTab === 'ADMIN' && (role === 'ADMIN' || role === 'PC') && (
                  <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
                     <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl text-indigo-800 text-sm mb-6">
                         <strong>Administrator Control Panel</strong> allows full oversight of the organization.

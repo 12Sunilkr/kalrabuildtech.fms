@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { safeWriteFileSync } from './utils/dbPersist.js';
 
 // Simple, idempotent migrations helper for the embedded sql.js DB
 // Exports runMigrations({ db, dbFile }) which ensures tables and columns exist and writes the DB file when changes occur.
@@ -402,21 +403,8 @@ export async function runMigrations({ db, dbFile }) {
   if (changed) {
     try {
       const buff = Buffer.from(db.export());
-      const tmpDbFile = dbFile + '.tmp';
-      fs.writeFileSync(tmpDbFile, buff);
-      fs.renameSync(tmpDbFile, dbFile);
+      safeWriteFileSync(dbFile, buff);
       console.log('Migration: DB file persisted with changes');
-      
-      // Keep root database file in sync if it exists
-      try {
-        const rootDbFile = path.resolve(path.dirname(dbFile), '..', 'database.sqlite');
-        if (fs.existsSync(rootDbFile)) {
-          const tmpRootDbFile = rootDbFile + '.tmp';
-          fs.writeFileSync(tmpRootDbFile, buff);
-          fs.renameSync(tmpRootDbFile, rootDbFile);
-          console.log('Migration: Root DB file synchronized');
-        }
-      } catch (err) { /* ignore */ }
     } catch (e) {
       console.error('Migration: failed to persist DB file', e && (e.stack || e.message || e));
     }

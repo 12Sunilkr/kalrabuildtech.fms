@@ -118,8 +118,9 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         return emp ? emp.name : String(id);
     }, [employees]);
 
+    const canSeeAllChecklists = currentUser.role === 'ADMIN' || currentUser.role === 'PC';
     const [activeTab, setActiveTab] = useState<'AGENDA' | 'COMPLETED' | 'MONITOR' | 'MISSED' | 'MASTER'>(
-        currentUser.role === 'ADMIN' ? 'MONITOR' : 'AGENDA'
+        currentUser.role === 'ADMIN' || currentUser.role === 'PC' ? 'MONITOR' : 'AGENDA'
     );
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -172,7 +173,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
 
     // Monitor filters
     const [monitorLeadId, setMonitorLeadId] = useState<string>(
-        currentUser.role === 'ADMIN' ? 'ALL' : (currentUser.employeeId || String(currentUser.id) || 'ALL')
+        canSeeAllChecklists ? 'ALL' : (currentUser.employeeId || String(currentUser.id) || 'ALL')
     );
     const [monitorStatus, setMonitorStatus] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED' | 'EXCUSE_REQUESTED' | 'MISSED_EXCUSED'>('ALL');
     const [monitorSearchInput, setMonitorSearchInput] = useState('');
@@ -1026,8 +1027,8 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             const name = (i.taskName || t?.taskName || '').toLowerCase();
             const matchSearch = !monitorSearch || name.includes(monitorSearch.toLowerCase());
 
-            if (!isAdmin) {
-                // Non-admin: show only tasks where they are the doer or buddy
+            if (!canSeeAllChecklists) {
+                // Non-admin & Non-PC: show only tasks where they are the doer or buddy
                 const isMe = doesDoerMatch(instanceDoerId, currentUser) || doesDoerMatch(instanceBuddyId, currentUser);
                 return isMe && matchStatus && matchSearch;
             }
@@ -1257,7 +1258,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                         )}
 
                         {/* Employee-only: Request Task Transfer button (only on pending tasks) */}
-                        {isActionable && !isAdmin && (
+                        {isActionable && !isAdmin && currentUser.role !== 'PC' && (
                             <button
                                 onClick={() => {
                                     const curDoer = item.doerId || tpl?.doerId || '';
@@ -2008,7 +2009,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                             <span>{isLoading ? 'Syncing...' : 'Sync Data'}</span>
                         </button>
 
-                        {isAdmin && (
+                        {canSeeAllChecklists && (
                             <button
                                 onClick={() => setShowCreateModal(true)}
                                 className="flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-5 py-2.5 rounded-xl font-bold text-xs transition-all shadow-md hover:-translate-y-0.5 active:scale-95 w-full sm:w-auto text-center"
@@ -2059,7 +2060,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
 
                 <div className="border-b border-slate-200/60 pb-px">
                     <div className="flex gap-6 overflow-x-auto flex-nowrap scrollbar-none">
-                        {(isAdmin 
+                        {(canSeeAllChecklists 
                             ? (['MONITOR', 'COMPLETED', 'MISSED', 'MASTER'] as const)
                             : (['AGENDA', 'COMPLETED', 'MONITOR', 'MISSED'] as const)
                         ).map(tab => {
@@ -2710,22 +2711,24 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                                         </div>
                                                     </div>
 
-                                                    <div className="flex items-center gap-1.5">
-                                                        <button
-                                                            onClick={() => handleOpenEditFreq(t)}
-                                                            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 border border-transparent hover:border-indigo-100 transition-all active:scale-95 shrink-0"
-                                                            title="Edit Recurrence Rules / Reassign"
-                                                        >
-                                                            <Pencil size={13} />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleDeleteTemplate(t.id)}
-                                                            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-rose-500 hover:bg-rose-50 border border-transparent hover:border-rose-100 transition-all active:scale-95 shrink-0"
-                                                            title="Permanently Delete Automation"
-                                                        >
-                                                            <Trash2 size={13} />
-                                                        </button>
-                                                    </div>
+                                                    {isAdmin && (
+                                                        <div className="flex items-center gap-1.5">
+                                                            <button
+                                                                onClick={() => handleOpenEditFreq(t)}
+                                                                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 border border-transparent hover:border-indigo-100 transition-all active:scale-95 shrink-0"
+                                                                title="Edit Recurrence Rules / Reassign"
+                                                            >
+                                                                <Pencil size={13} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleDeleteTemplate(t.id)}
+                                                                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-rose-500 hover:bg-rose-50 border border-transparent hover:border-rose-100 transition-all active:scale-95 shrink-0"
+                                                                title="Permanently Delete Automation"
+                                                            >
+                                                                <Trash2 size={13} />
+                                                            </button>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         );

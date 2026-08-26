@@ -13,7 +13,7 @@ import { success, failure } from './utils/respond.js';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import { startPeriodicSync, syncToGoogleSheets } from './googleSheetsSync.js';
-import { createDebouncedPersist } from './utils/dbPersist.js';
+import { createDebouncedPersist, safeWriteFileSync } from './utils/dbPersist.js';
 import { cacheGet, cacheSet, cacheInvalidate, withCache } from './utils/apiCache.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
@@ -160,6 +160,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_FILENAME = process.env.DB_FILE || 'database.sqlite';
 const dbFile = path.resolve(__dirname, DB_FILENAME);
 let isWritingRootDb = false;
+let lastInternalWriteMs = Date.now();
+let lastKnownDbMtime = fs.existsSync(dbFile) ? fs.statSync(dbFile).mtimeMs : 0;
+
+function updateLastInternalWrite() {
+  lastInternalWriteMs = Date.now();
+  try {
+    if (fs.existsSync(dbFile)) {
+      lastKnownDbMtime = fs.statSync(dbFile).mtimeMs;
+    }
+  } catch (e) {}
+}
+
 // Prevent accidental writes outside the server directory (avoid path traversal or absolute paths elsewhere)
 if (!dbFile.startsWith(__dirname + path.sep) && dbFile !== path.join(__dirname, DB_FILENAME)) {
   throw new Error(`DB file must be inside server directory: ${dbFile}`);
@@ -181,30 +193,22 @@ function isDbValidFile(filePath) {
   }
 }
 
-// --- Database Sync Logic: automatically synchronize root and server database files ---
-try {
-  const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-  if (fs.existsSync(rootDbFile) && isDbValidFile(rootDbFile)) {
-    const rootStats = fs.statSync(rootDbFile);
-    let copyRoot = false;
-    if (fs.existsSync(dbFile)) {
-      const serverStats = fs.statSync(dbFile);
-      // If root database has a different size or is newer, copy it over!
-      if (rootStats.size !== serverStats.size || rootStats.mtimeMs > serverStats.mtimeMs) {
-        copyRoot = true;
-      }
-    } else {
-      copyRoot = true;
-    }
-    if (copyRoot && rootStats.size > 0) {
-      console.log(`[Database Sync] Found different/newer root database.sqlite (${(rootStats.size / 1024 / 1024).toFixed(2)} MB). Syncing to ${dbFile}...`);
-      fs.copyFileSync(rootDbFile, dbFile);
-    }
-  } else if (fs.existsSync(rootDbFile)) {
-    console.warn('[Database Sync] Skipped initial sync: root database.sqlite file is invalid or malformed.');
+// Helper to check if a file on disk is stable (not actively being written to by FileZilla / FTP)
+async function isFileFullyWritten(filePath, checkDelayMs = 1500) {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const stat1 = fs.statSync(filePath);
+    if (stat1.size < 1024) return false;
+    
+    // Wait to verify file size and modification time stopped changing (FileZilla finished transfer)
+    await new Promise(r => setTimeout(r, checkDelayMs));
+    if (!fs.existsSync(filePath)) return false;
+    const stat2 = fs.statSync(filePath);
+    
+    return stat1.size > 0 && stat1.size === stat2.size && stat1.mtimeMs === stat2.mtimeMs;
+  } catch (e) {
+    return false;
   }
-} catch (err) {
-  console.warn('[Database Sync] Failed to sync root database.sqlite to server directory:', err);
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret_change_me';
@@ -357,6 +361,28 @@ try {
         persistDB();
         console.log('Ensure Users: dynamically added plain_password column and migrated defaults');
       }
+
+      // Ensure PC User (PC101@gmail.com / PC@KBT101) exists in DB
+      try {
+        const chkPC = db.prepare('SELECT id FROM users WHERE lower(email) = ?');
+        chkPC.bind(['pc101@gmail.com']);
+        if (!chkPC.step()) {
+          chkPC.free();
+          const insPC = db.prepare('INSERT INTO users (name, email, password, plain_password, role, employeeId) VALUES (?,?,?,?,?,?)');
+          insPC.run(['Process Coordinator (PC)', 'PC101@gmail.com', bcrypt.hashSync('PC@KBT101', 10), 'PC@KBT101', 'PC', 'E-PC101']);
+          insPC.free && insPC.free();
+          persistDB();
+          console.log('Ensure Users: created default PC user (PC101@gmail.com / PC@KBT101)');
+        } else {
+          chkPC.free();
+          const updPC = db.prepare("UPDATE users SET role = 'PC', password = ?, plain_password = 'PC@KBT101', employeeId = coalesce(employeeId, 'E-PC101') WHERE lower(email) = 'pc101@gmail.com'");
+          updPC.run([bcrypt.hashSync('PC@KBT101', 10)]);
+          updPC.free && updPC.free();
+          persistDB();
+        }
+      } catch (pcErr) {
+        console.warn('Ensure Users: PC user check/creation failed', pcErr);
+      }
     } catch (err) {
       console.warn('Users table check failed', err);
     }
@@ -385,6 +411,24 @@ try {
         )`);
         persistDB();
         console.log('Ensure Employees: created employees table');
+      }
+
+      // Ensure E-PC101 employee record exists in employees table
+      try {
+        const chkEmp = db.prepare('SELECT id FROM employees WHERE id = ?');
+        chkEmp.bind(['E-PC101']);
+        if (!chkEmp.step()) {
+          chkEmp.free();
+          const insEmp = db.prepare('INSERT INTO employees (id, name, department, designation, joiningDate, createdAt) VALUES (?,?,?,?,?,?)');
+          insEmp.run(['E-PC101', 'Process Coordinator (PC)', 'Operations', 'Process Coordinator', '2026-01-01', new Date().toISOString()]);
+          insEmp.free && insEmp.free();
+          persistDB();
+          console.log('Ensure Employees: created default PC employee E-PC101');
+        } else {
+          chkEmp.free();
+        }
+      } catch (empErr) {
+        console.warn('Ensure Employees: PC employee check/creation failed', empErr);
       }
     } catch (err) {
       console.warn('Employees table check failed', err);
@@ -763,20 +807,11 @@ try {
   dbPersistCtl = createDebouncedPersist(
     () => Buffer.from(db.export()),
     (buff) => {
-      isWritingRootDb = true;
       try {
-        const tmpDbFile = dbFile + '.tmp';
-        fs.writeFileSync(tmpDbFile, buff);
-        fs.renameSync(tmpDbFile, dbFile);
-
-        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-        const tmpRootDbFile = rootDbFile + '.tmp';
-        fs.writeFileSync(tmpRootDbFile, buff);
-        fs.renameSync(tmpRootDbFile, rootDbFile);
+        safeWriteFileSync(dbFile, buff);
+        updateLastInternalWrite();
       } catch (err) {
         console.error('Failed to write database file asynchronously:', err);
-      } finally {
-        setTimeout(() => { isWritingRootDb = false; }, 1500);
       }
     }
   );
@@ -785,50 +820,45 @@ try {
   const sheetsInterval = Number(process.env.GOOGLE_SHEETS_SYNC_MS || 300000);
   startPeriodicSync(() => db, sheetsInterval);
 
-  // Watch root database.sqlite for external changes (e.g. user overrides/pastes a live database.sqlite)
-  try {
-    const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-    if (fs.existsSync(rootDbFile)) {
-      console.log(`[Database Sync] Setting up filesystem watcher on root database.sqlite...`);
-      let watchTimeout = null;
-      fs.watch(rootDbFile, (eventType) => {
-        if (eventType === 'change') {
-          if (isWritingRootDb) return;
-          
-          // Debounce watcher triggering to let copy complete completely
-          if (watchTimeout) clearTimeout(watchTimeout);
-          watchTimeout = setTimeout(async () => {
-            try {
-              if (!fs.existsSync(rootDbFile)) return;
-              const stats = fs.statSync(rootDbFile);
-              if (stats.size === 0) return;
-              if (!isDbValidFile(rootDbFile)) {
-                console.warn('[Database Sync] Ignored external modification: root database file is invalid or malformed.');
-                return;
-              }
-              
-              const activeStats = fs.existsSync(dbFile) ? fs.statSync(dbFile) : null;
-              if (activeStats && stats.size === activeStats.size && stats.mtimeMs <= activeStats.mtimeMs) {
-                // If it is the same size or older than active DB, skip to avoid duplicate reloads
-                return;
-              }
-              
-              console.log(`[Database Sync] External modification detected on root database.sqlite (${(stats.size / 1024 / 1024).toFixed(2)} MB). Syncing and hot-reloading DB...`);
-              fs.copyFileSync(rootDbFile, dbFile);
-              const success = await reloadDatabaseFromDisk();
-              if (success) {
-                console.log(`[Database Sync] SQLite hot-reload completed successfully.`);
-              }
-            } catch (watchErr) {
-              console.warn('[Database Sync] Failed to hot-reload database from watched file:', watchErr);
-            }
-          }, 300);
+  // Automatic external database file watcher (detects FileZilla / FTP uploads & auto reloads when transfer completes)
+  let isCheckingFile = false;
+  setInterval(async () => {
+    if (isCheckingFile) return;
+    isCheckingFile = true;
+    try {
+      const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
+      // Case 1: External database uploaded to root directory via FileZilla / FTP
+      if (fs.existsSync(rootDbFile) && isDbValidFile(rootDbFile)) {
+        const ready = await isFileFullyWritten(rootDbFile, 2000);
+        if (ready) {
+          console.log('[Disk Sync] Complete database file detected in root folder (FileZilla upload). Hot-reloading into server/database.sqlite...');
+          const success = await reloadDatabaseFromDisk(rootDbFile);
+          if (!success) {
+            console.warn('[Disk Sync] Root database file verification failed or incomplete. Will retry on transfer completion.');
+          }
         }
-      });
+        isCheckingFile = false;
+        return;
+      }
+
+      // Case 2: External database uploaded directly to server/database.sqlite via FileZilla / FTP
+      if (fs.existsSync(dbFile) && isDbValidFile(dbFile)) {
+        const stats = fs.statSync(dbFile);
+        const isExternalWrite = (Date.now() - lastInternalWriteMs > 6000) && (Math.abs(stats.mtimeMs - lastKnownDbMtime) > 1000);
+        if (isExternalWrite) {
+          const ready = await isFileFullyWritten(dbFile, 2000);
+          if (ready) {
+            console.log('[Disk Sync] External database modification detected on server/database.sqlite (FileZilla upload). Hot reloading into memory...');
+            await reloadDatabaseFromDisk(dbFile);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore transient file lock errors while FileZilla is mid-transfer
+    } finally {
+      isCheckingFile = false;
     }
-  } catch (watcherErr) {
-    console.warn('[Database Sync] Failed to initialize root database file watcher:', watcherErr);
-  }
+  }, 3000);
 
 } catch (err) {
   console.error('Failed to initialize SQL.js or DB:', err && (err.stack || err.message || err));
@@ -837,24 +867,36 @@ try {
   throw err;
 }
 
-// Global helper to safely hot-reload active SQLite references and clear API caches
-async function reloadDatabaseFromDisk() {
+// Global helper to safely hot-reload active SQLite references from a verified file and clear API caches
+async function reloadDatabaseFromDisk(targetFilePath = dbFile) {
   try {
-    if (!fs.existsSync(dbFile)) {
-      console.warn('[Database Sync] Active database.sqlite file does not exist on disk during reload.');
+    if (!fs.existsSync(targetFilePath)) {
+      console.warn('[Database Sync] Target database file does not exist on disk during reload:', targetFilePath);
       return false;
     }
     
-    // Read the database bytes from the active disk file
-    const buff = fs.readFileSync(dbFile);
+    // Read the database bytes from target file
+    const buff = fs.readFileSync(targetFilePath);
     let testDb;
     try {
       testDb = new SQL.Database(new Uint8Array(buff));
       testDb.exec("SELECT name FROM sqlite_master WHERE type='table'");
     } catch (e) {
       if (testDb) { try { testDb.close(); } catch {} }
-      console.error('[Database Sync] Failed to parse or verify reloaded database file structure:', e);
+      // Mid-transfer or incomplete file — suppress loud error until transfer is 100% finished
       return false;
+    }
+
+    // If reloading from external file (e.g. rootDbFile), copy over dbFile atomically
+    if (targetFilePath !== dbFile) {
+      try {
+        fs.copyFileSync(targetFilePath, dbFile);
+        try { fs.unlinkSync(targetFilePath); } catch (e) {}
+      } catch (copyErr) {
+        console.error('[Database Sync] Failed to overwrite server/database.sqlite with uploaded file:', copyErr);
+        if (testDb) { try { testDb.close(); } catch {} }
+        return false;
+      }
     }
     
     // Close the old database reference
@@ -865,6 +907,7 @@ async function reloadDatabaseFromDisk() {
     }
     
     db = testDb;
+    updateLastInternalWrite();
     await ensureSchemaAndIndexes();
     
     // Invalidate API caches
@@ -888,7 +931,7 @@ async function reloadDatabaseFromDisk() {
       console.warn('[Database Sync] Cache invalidation warning after DB reload:', e);
     }
     
-    console.log('[Database Sync] Database successfully reloaded and memory/disk sync complete.');
+    console.log('[Database Sync] Database successfully verified, updated, and reloaded into memory.');
     global.dbChanged = true;
     return true;
   } catch (err) {
@@ -907,11 +950,9 @@ function persistDB() {
     } else {
       const buff = Buffer.from(db.export());
       isWritingRootDb = true;
-      fs.writeFileSync(dbFile, buff);
-      try {
-        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-        fs.writeFileSync(rootDbFile, buff);
-      } catch (e) { /* ignore */ }
+      safeWriteFileSync(dbFile, buff);
+      updateLastInternalWrite();
+
       setTimeout(() => { isWritingRootDb = false; }, 500);
     }
     return true;
@@ -931,11 +972,9 @@ function persistDBNow() {
     } else {
       const buff = Buffer.from(db.export());
       isWritingRootDb = true;
-      fs.writeFileSync(dbFile, buff);
-      try {
-        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-        fs.writeFileSync(rootDbFile, buff);
-      } catch (e) { /* ignore */ }
+      safeWriteFileSync(dbFile, buff);
+      updateLastInternalWrite();
+
       setTimeout(() => { isWritingRootDb = false; }, 500);
     }
     return true;
@@ -1724,7 +1763,7 @@ app.get('/api/auth/me', (req, res) => {
       : req.cookies?.token;
 
     if (!token) {
-      console.warn('Auth/me: missing token', { path: req.path, ip: req.ip, origin: req.headers.origin || null });
+      console.log('Auth/me: missing token', { path: req.path, ip: req.ip, origin: req.headers.origin || null });
       return failure(res, 'No token provided', 401);
     }
 
@@ -1747,14 +1786,39 @@ app.get('/api/auth/me', (req, res) => {
       row.role = row.role || 'EMPLOYEE';
       return success(res, { authenticated: true, user: row }, 'Authenticated');
     } catch (err) {
-      // Log full DB error stack and return a safe 500
       console.error('Auth/me: DB error', err && (err.stack || err.message || err));
       return failure(res, 'Internal server error', 500);
     }
   } catch (err) {
-    // Log full error with stack for easier debugging in production logs (but do not leak to clients)
     console.error('Auth/me unexpected error', err && (err.stack || err.message || err));
     return failure(res, 'Internal server error', 500);
+  }
+});
+
+// Endpoint: GET /api/auth/session-check
+// Validates session status without full user master fetch for polling watchers
+app.get('/api/auth/session-check', (req, res) => {
+  try {
+    const authHeader = req.headers && req.headers.authorization;
+    let token = authHeader && typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.split(' ')[1]
+      : req.cookies?.token;
+
+    if (!token) {
+      return success(res, { valid: false }, 'No token provided');
+    }
+
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      if (!payload || !payload.id) {
+        return success(res, { valid: false }, 'Invalid session payload');
+      }
+      return success(res, { valid: true }, 'Session valid');
+    } catch (e) {
+      return success(res, { valid: false }, 'Token invalid or expired');
+    }
+  } catch (err) {
+    return success(res, { valid: false }, 'Session check error');
   }
 });
 
@@ -1949,28 +2013,7 @@ app.post('/api/admin/reload-db', requireAuth, async (req, res) => {
 
     console.log('Admin triggered SQLite database reload from disk...');
 
-    // Sync from root database.sqlite if it exists and is different/newer
-    try {
-      const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-      if (fs.existsSync(rootDbFile) && isDbValidFile(rootDbFile)) {
-        const rootStats = fs.statSync(rootDbFile);
-        let copyRoot = false;
-        if (fs.existsSync(dbFile)) {
-          const serverStats = fs.statSync(dbFile);
-          if (rootStats.size !== serverStats.size || rootStats.mtimeMs > serverStats.mtimeMs) {
-            copyRoot = true;
-          }
-        } else {
-          copyRoot = true;
-        }
-        if (copyRoot && rootStats.size > 0) {
-          console.log(`[Database Sync] Reload-db found different/newer root database.sqlite (${(rootStats.size / 1024 / 1024).toFixed(2)} MB). Syncing to ${dbFile}...`);
-          fs.copyFileSync(rootDbFile, dbFile);
-        }
-      }
-    } catch (syncErr) {
-      console.warn('[Database Sync] Reload-db failed to sync root database.sqlite:', syncErr);
-    }
+
 
     if (!fs.existsSync(dbFile)) {
       return failure(res, 'Database file not found on disk', 404);
@@ -2030,11 +2073,7 @@ app.post('/api/admin/upload-db', requireAuth, uploadDb.single('dbFile'), async (
     // Overwrite the primary database file with the uploaded one
     try {
       fs.copyFileSync(tempFilePath, dbFile);
-      // Keep root database file in sync if it exists or in parent directory
-      try {
-        const rootDbFile = path.resolve(__dirname, '..', 'database.sqlite');
-        fs.copyFileSync(tempFilePath, rootDbFile);
-      } catch (rootErr) { /* ignore */ }
+
       fs.unlinkSync(tempFilePath);
     } catch (fsErr) {
       console.error('Failed to swap database files on disk', fsErr);
@@ -2220,7 +2259,7 @@ app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res)
   try {
     ensureEmployeesTable();
     const archived = req.query.archived === '1' || req.query.archived === 'true';
-    const isAdmin = req.user && req.user.role === 'ADMIN';
+    const isAdmin = req.user && (req.user.role === 'ADMIN' || req.user.role === 'PC');
 
     // DEBUG: log who is requesting the employees list and query params
     try { console.log('GET /api/employees requested', { path: req.path, isAdmin, user: req.user && { id: req.user.id, role: req.user.role, employeeId: req.user.employeeId }, archived }); } catch (e) { }
@@ -2276,7 +2315,7 @@ app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res)
 app.get('/api/employees/:id', requireAuth, (req, res) => {
   try {
     ensureEmployeesTable();
-    const isAdmin = req.user && req.user.role === 'ADMIN';
+    const isAdmin = req.user && (req.user.role === 'ADMIN' || req.user.role === 'PC');
     const id = req.params.id;
     if (!isAdmin && (!req.user || req.user.employeeId !== id)) return failure(res, 'Forbidden', 403);
 
@@ -2884,7 +2923,10 @@ app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, re
     const clauses = [];
     const params = [];
 
-    if (userId) { clauses.push('userId = ?'); params.push(userId); }
+    if (userId) {
+      clauses.push('(userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL) OR userId = (SELECT id FROM users WHERE employeeId = ?))');
+      params.push(String(userId), String(userId), String(userId));
+    }
     if (date) { clauses.push('date = ?'); params.push(date); }
     if (month) { clauses.push('date LIKE ?'); params.push(`${month}%`); }
     if (startDate) { clauses.push('date >= ?'); params.push(startDate); }
@@ -2911,17 +2953,39 @@ app.post('/api/attendance', requireAuth, (req, res) => {
   try {
     const { id, userId, date, clockIn, clockOut, value, location, notes } = req.body || {};
     if (!id || !userId || !date) return failure(res, 'Missing fields', 400);
-    const check = db.prepare('SELECT id FROM attendance WHERE id = ?');
-    check.bind([id]);
-    if (check.step()) { check.free(); return failure(res, 'Attendance ID already exists', 409); }
+    
+    // Check by id or (userId, date)
+    const check = db.prepare('SELECT id, clockIn, clockOut, value, location, notes FROM attendance WHERE id = ? OR (userId = ? AND date = ?)');
+    check.bind([id, userId, date]);
+    let existing = null;
+    if (check.step()) {
+      existing = check.getAsObject();
+    }
     check.free();
+
+    if (existing) {
+      // Record already exists — update existing record cleanly (UPSERT pattern)
+      const targetId = existing.id || id;
+      const newClockIn = clockIn || existing.clockIn || null;
+      const newClockOut = clockOut || existing.clockOut || null;
+      const newValue = value !== undefined ? (value == null ? null : value) : existing.value;
+      const newLoc = location || existing.location || null;
+      const newNotes = notes || existing.notes || null;
+
+      const update = db.prepare('UPDATE attendance SET clockIn = ?, clockOut = ?, value = ?, location = ?, notes = ? WHERE id = ?');
+      update.run([newClockIn, newClockOut, newValue, newLoc, newNotes, targetId]);
+      update.free && update.free();
+      persistDB();
+      cacheInvalidate('attendance');
+      return success(res, { id: targetId }, 'Attendance updated');
+    }
 
     const insert = db.prepare('INSERT INTO attendance (id, userId, date, clockIn, clockOut, value, location, notes, createdAt) VALUES (?,?,?,?,?,?,?,?,?)');
     insert.run([id, userId, date, clockIn || null, clockOut || null, value == null ? null : value, location || null, notes || null, new Date().toISOString()]);
     insert.free && insert.free();
     persistDB();
     cacheInvalidate('attendance');
-    return success(res, null, 'Created', 201);
+    return success(res, { id }, 'Created', 201);
   } catch (err) {
     console.error('Attendance POST error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
@@ -2952,7 +3016,10 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
     const clauses = [];
     const params = [];
 
-    if (userId) { clauses.push('userId = ?'); params.push(userId); }
+    if (userId) {
+      clauses.push('(userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL) OR userId = (SELECT id FROM users WHERE employeeId = ?))');
+      params.push(String(userId), String(userId), String(userId));
+    }
     if (month) { clauses.push('startTime LIKE ?'); params.push(`${month}%`); }
     if (startDate) { clauses.push('startTime >= ?'); params.push(startDate); }
     if (endDate) { clauses.push('startTime <= ?'); params.push(endDate); }
@@ -3053,7 +3120,7 @@ try {
 app.post('/api/tasks', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
 
     const { title, description, assignedTo, assigned_to, assigned_by, dueDate, priority } = req.body || {};
     console.log('Tasks POST by', req.user && (req.user.id || req.user.name || req.user.role), 'payload', { title, assignedTo, assigned_to, dueDate });
@@ -3187,7 +3254,7 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
 
-    const isAdmin = req.user.role === 'ADMIN';
+    const isAdmin = req.user.role === 'ADMIN' || req.user.role === 'PC';
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limitParam = req.query.limit;
     // Default to 0 (return ALL tasks) unless an explicit numeric limit is specified
@@ -3313,7 +3380,7 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
     stmt.free();
 
     // Authorization: admin OR assigned_to numeric owner
-    const isAdmin = req.user.role === 'ADMIN';
+    const isAdmin = req.user.role === 'ADMIN' || req.user.role === 'PC';
     const isAssignee = r.assigned_to && Number(r.assigned_to) === Number(req.user.id);
     if (!isAdmin && !isAssignee) return failure(res, 'Forbidden', 403);
 
@@ -3645,7 +3712,7 @@ app.delete('/api/finance/client', requireAuth, (req, res) => {
     const id = (req.query && req.query.id) || (req.body && req.body.id);
     console.log('DELETE /api/finance/client requested', { id: id || null, user: req.user });
 
-    if (!req.user || req.user.role !== 'ADMIN') {
+    if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'PC')) {
       console.warn('Finance DELETE client: forbidden attempt', { user: req.user, id });
       return failure(res, 'Forbidden', 403);
     }
@@ -4112,6 +4179,7 @@ console.log('Registered API routes: /api/checklists (POST/GET/PUT/DELETE)');
 // Checklist templates endpoints
 app.post('/api/checklist-templates', requireAuth, (req, res) => {
   try {
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
     const { id, taskName, doerId, department, startDate, config, active } = req.body || {};
     if (!taskName || !doerId || !startDate) return failure(res, 'Missing fields', 400);
     try {
@@ -4151,6 +4219,7 @@ app.get('/api/checklist-templates', requireAuth, withCache('checklist-templates'
 // PUT /api/checklist-templates/:id - update a checklist template
 app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
   try {
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Admin only', 403);
     const id = req.params.id;
     const { taskName, doerId, department, startDate, config, active, transferEffectiveDate } = req.body || {};
 
@@ -4222,6 +4291,7 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
 // DELETE /api/checklist-templates/:id - delete a checklist template and all its instances
 app.delete('/api/checklist-templates/:id', requireAuth, (req, res) => {
   try {
+    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Admin only', 403);
     console.log('DELETE checklist-template endpoint called', { id: req.params.id });
     const id = req.params.id;
 
@@ -5711,10 +5781,15 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     const { id, userId, startTime, endTime, task, notes } = req.body || {};
     if (!id || !userId || !startTime) return failure(res, 'Missing fields', 400);
 
-    const check = db.prepare('SELECT id FROM timelogs WHERE id = ?');
-    check.bind([id]);
-    if (check.step()) { check.free(); return failure(res, 'TimeLog ID already exists', 409); }
-    check.free();
+    // Check if ID already exists (same request sent twice — network retry)
+    const checkById = db.prepare('SELECT id FROM timelogs WHERE id = ?');
+    checkById.bind([id]);
+    if (checkById.step()) {
+      checkById.free();
+      cacheInvalidate('timelogs');
+      return success(res, { id }, 'Timelog already exists');
+    }
+    checkById.free();
 
     // Prevent duplicate open timelogs or duplicate clock-ins within 2 minutes for the same user
     const existingStmt = db.prepare('SELECT id, startTime, endTime FROM timelogs WHERE userId = ? ORDER BY createdAt DESC');
@@ -5722,16 +5797,47 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     const reqTime = new Date(startTime).getTime();
     let isDuplicate = false;
     let existingId = null;
+    const staleLogsToClose = [];
+
     while (existingStmt.step()) {
       const row = existingStmt.getAsObject();
       const exTime = row.startTime ? new Date(row.startTime).getTime() : 0;
-      if (!row.endTime || (reqTime && exTime && Math.abs(reqTime - exTime) < 120000)) {
-        isDuplicate = true;
-        existingId = row.id;
-        break;
+      const exEndTime = row.endTime ? new Date(row.endTime).getTime() : 0;
+      const ageHours = (reqTime && exTime) ? (reqTime - exTime) / 3600000 : 0;
+
+      if (!row.endTime) {
+        if (ageHours >= 0 && ageHours < 16) {
+          // Open session started within last 16 hours — active session for today
+          isDuplicate = true;
+          existingId = row.id;
+          break;
+        } else if (ageHours >= 16) {
+          // Stale unclosed log from a past day — collect to auto-close
+          staleLogsToClose.push({ id: row.id, startTime: row.startTime });
+        }
+      } else {
+        // Cooldown check (within 2 minutes of previous start or end time)
+        if ((reqTime && exTime && Math.abs(reqTime - exTime) < 120000) || (reqTime && exEndTime && Math.abs(reqTime - exEndTime) < 120000)) {
+          isDuplicate = true;
+          existingId = row.id;
+          break;
+        }
       }
     }
     existingStmt.free();
+
+    // Auto-close any stale unclosed logs from past days for this user
+    if (staleLogsToClose.length > 0) {
+      staleLogsToClose.forEach(stale => {
+        try {
+          const sTimeMs = stale.startTime ? new Date(stale.startTime).getTime() : 0;
+          const autoEndTime = sTimeMs ? new Date(sTimeMs + 8 * 3600000).toISOString() : new Date().toISOString();
+          const autoCloseStmt = db.prepare('UPDATE timelogs SET endTime = ? WHERE id = ? AND endTime IS NULL');
+          autoCloseStmt.run([autoEndTime, stale.id]);
+          autoCloseStmt.free && autoCloseStmt.free();
+        } catch (e) { /* ignore */ }
+      });
+    }
 
     if (isDuplicate) {
       console.log(`[TIMELOGS] POST skip duplicate insert for userId=${userId} startTime=${startTime}, reusing existingId=${existingId}`);
@@ -5744,7 +5850,7 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     insert.free && insert.free();
     persistDB();
     cacheInvalidate('timelogs');
-    return success(res, null, 'Created', 201);
+    return success(res, { id }, 'Created', 201);
   } catch (err) {
     console.error('Timelogs POST error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
@@ -5755,16 +5861,45 @@ app.put('/api/timelogs/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
     const { startTime, endTime, task, notes } = req.body || {};
+    const empId = req.user ? (req.user.employeeId || String(req.user.id || '')) : null;
+    const uIdStr = req.user ? String(req.user.id || '') : null;
+
+    let targetId = id;
     const stmt = db.prepare('SELECT id FROM timelogs WHERE id = ?');
     stmt.bind([id]);
-    if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
+    let found = stmt.step();
     stmt.free();
+
+    // Fallback 1: If passed ID wasn't found by exact string, look for an open session (endTime IS NULL) for this user
+    if (!found && (empId || uIdStr)) {
+      const openStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = ?) AND endTime IS NULL ORDER BY createdAt DESC');
+      openStmt.bind([empId || '', uIdStr || '']);
+      if (openStmt.step()) {
+        targetId = openStmt.getAsObject().id;
+        found = true;
+      }
+      openStmt.free();
+    }
+
+    // Fallback 2: Look for the most recent timelog for this user
+    if (!found && (empId || uIdStr)) {
+      const recentStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = ?) ORDER BY createdAt DESC');
+      recentStmt.bind([empId || '', uIdStr || '']);
+      if (recentStmt.step()) {
+        targetId = recentStmt.getAsObject().id;
+        found = true;
+      }
+      recentStmt.free();
+    }
+
+    if (!found) return failure(res, 'Not found', 404);
+
     const update = db.prepare('UPDATE timelogs SET startTime = coalesce(?, startTime), endTime = coalesce(?, endTime), task = coalesce(?, task), notes = coalesce(?, notes) WHERE id = ?');
-    update.run([startTime || null, endTime || null, task || null, notes || null, id]);
+    update.run([startTime || null, endTime || null, task || null, notes || null, targetId]);
     update.free && update.free();
     persistDB();
     cacheInvalidate('timelogs');
-    return success(res, null, 'Updated');
+    return success(res, { id: targetId }, 'Updated');
   } catch (err) {
     console.error('Timelogs PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
@@ -7369,7 +7504,7 @@ app.get('/api/system-master/sheets', requireAuth, (req, res) => {
       
       // Admin sees everything; Employees only see sheets where they are assigned (case-insensitive check)
       const isAssigned = assigned.some(email => email.toLowerCase() === userEmail.toLowerCase());
-      if (req.user.role === 'ADMIN' || isAssigned) {
+      if (req.user.role === 'ADMIN' || req.user.role === 'PC' || isAssigned) {
         sheets.push({
           ...s,
           assignedUsers: assigned // Map back to frontend naming convention
@@ -7389,7 +7524,7 @@ app.get('/api/system-master/sheets', requireAuth, (req, res) => {
 app.post('/api/system-master/sheets', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
 
     const { id, name, department, purpose, url, responsible_person, frequency, status, notes, assignedUsers } = req.body || {};
     if (!name || !url) return failure(res, 'Missing sheet name or URL', 400);
@@ -7467,7 +7602,7 @@ app.post('/api/system-master/sheets', requireAuth, (req, res) => {
 app.put('/api/system-master/sheets/:id', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
 
     const sheetId = req.params.id;
     const { name, department, purpose, url, responsible_person, frequency, status, notes, assignedUsers } = req.body || {};
@@ -7555,7 +7690,7 @@ app.delete('/api/system-master/sheets/:id', requireAuth, (req, res) => {
 app.get('/api/system-master/activities', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
 
     const stmt = db.prepare('SELECT * FROM kbt_activities ORDER BY timestamp DESC LIMIT 500');
     const logs = [];
@@ -7575,7 +7710,7 @@ app.get('/api/system-master/activities', requireAuth, (req, res) => {
 app.get('/api/system-master/users', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
 
     const stmt = db.prepare(`
       SELECT u.id, u.name, u.email, u.role, u.employeeId, e.department
@@ -7600,7 +7735,7 @@ app.get('/api/system-master/users', requireAuth, (req, res) => {
 app.post('/api/system-master/users', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
-    if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
 
     const { name, email, role, department } = req.body || {};
     if (!name || !email) return failure(res, 'Missing user name or email', 400);

@@ -58,7 +58,9 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   const [currentPage, setCurrentPage] = useState(1);
   const [tasksPerPage, setTasksPerPage] = useState(20);
 
+  const canSeeAllTasks = currentUser.role === 'ADMIN' || currentUser.role === 'PC';
   const isAdmin = currentUser.role === 'ADMIN';
+  const isPC = currentUser.role === 'PC';
 
   // Close mobile menu when clicking outside
   useEffect(() => {
@@ -621,8 +623,8 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
         assignedByName === currentUser.name
       );
 
-      // Admins should see all tasks; non-admins see tasks assigned TO them or assigned BY them
-      if (isAdmin) return true;
+      // Admins and PC see all tasks; non-admins see tasks assigned TO them or assigned BY them
+      if (canSeeAllTasks) return true;
       return Boolean(matchesAssignedTo || matchesAssignedBy);
     });
 
@@ -715,9 +717,9 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
       }
     }
 
-    // 4. Member filter (admin only)
+    // 4. Member filter (admin and PC)
     let matchesMember = true;
-    if (isAdmin && selectedMemberId !== 'ALL') {
+    if (canSeeAllTasks && selectedMemberId !== 'ALL') {
       const assignedToId = (t.assignedTo || (t as any).assignedToEmployeeId || '').toString();
       matchesMember = assignedToId === selectedMemberId;
     }
@@ -726,7 +728,7 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   });
 
   // Apply member filter for tab counts so numbers match the filtered view
-  const memberFilteredTasks = (isAdmin && selectedMemberId !== 'ALL')
+  const memberFilteredTasks = (canSeeAllTasks && selectedMemberId !== 'ALL')
     ? relevant.filter(t => (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === selectedMemberId)
     : relevant;
 
@@ -842,6 +844,8 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
       ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 hover:bg-slate-50 rounded-lg transition-colors text-slate-700"
       : "w-full py-2 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors";
 
+    if (isPC) return null;
+
     return (
       <>
         {/* Completion Actions (For Assignee) */}
@@ -949,25 +953,25 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
         </div>
 
         <div className="flex flex-row md:flex-col lg:flex-row gap-2 md:gap-4 w-full md:w-auto">
-          {isAdmin && (
-            <>
-              <button
-                onClick={handleExportTasks}
-                className="flex-1 md:flex-none bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-700 px-3 md:px-6 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 transition-all hover:bg-white hover:shadow-lg active:scale-95 font-bold text-sm"
-              >
-                <Download size={16} />
-                <span className="hidden sm:inline">Export Data</span>
-                <span className="sm:hidden">Export</span>
-              </button>
-              <button
-                onClick={() => setShowAssignModal(true)}
-                className="flex-1 md:flex-none bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-3 md:px-8 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold text-sm"
-              >
-                <Plus size={18} />
-                <span className="hidden sm:inline">Assign New Task</span>
-                <span className="sm:hidden">New Task</span>
-              </button>
-            </>
+          {canSeeAllTasks && (
+            <button
+              onClick={handleExportTasks}
+              className="flex-1 md:flex-none bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-700 px-3 md:px-6 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 transition-all hover:bg-white hover:shadow-lg active:scale-95 font-bold text-sm"
+            >
+              <Download size={16} />
+              <span className="hidden sm:inline">Export Data</span>
+              <span className="sm:hidden">Export</span>
+            </button>
+          )}
+          {canSeeAllTasks && (
+            <button
+              onClick={() => setShowAssignModal(true)}
+              className="flex-1 md:flex-none bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-3 md:px-8 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold text-sm"
+            >
+              <Plus size={18} />
+              <span className="hidden sm:inline">Assign New Task</span>
+              <span className="sm:hidden">New Task</span>
+            </button>
           )}
         </div>
       </div>
@@ -1022,8 +1026,8 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
             />
           </div>
 
-          {/* Member Filter — Admin only */}
-          {isAdmin && (
+          {/* Member Filter — Admin & PC */}
+          {canSeeAllTasks && (
             <div className="relative w-full md:w-56">
               <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
               <select
@@ -1097,7 +1101,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
         </div>
 
         {/* Active member filter badge */}
-        {isAdmin && selectedMemberId !== 'ALL' && (() => {
+        {canSeeAllTasks && selectedMemberId !== 'ALL' && (() => {
           const emp = employees.find(e => e.id === selectedMemberId);
           const memberTaskCount = filteredTasks.length;
           return emp ? (
@@ -1256,7 +1260,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                             <p className="text-purple-700 mb-2">Team Member requested new date: <span className="font-bold">{task.extensionRequest?.requestedDate}</span></p>
                             <p className="text-purple-600 italic break-words">Reason: "{task.extensionRequest?.reason}"</p>
 
-                            {(isAdmin || isCreator) && (
+                            {(isAdmin || isCreator) && !isPC && (
                               <div className="flex gap-2 mt-3">
                                 <button
                                   onClick={() => handleExtensionResponse(task.id, true)}

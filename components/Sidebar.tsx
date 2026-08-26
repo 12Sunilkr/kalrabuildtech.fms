@@ -55,6 +55,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
       { id: ViewMode.EMPLOYEE_TASKS, label: 'My Tasks', icon: ClipboardList },
       { id: ViewMode.PMS_EMPLOYEE, label: 'PMS', icon: BarChart3 },
       { id: ViewMode.EMPLOYEE_ORDERS, label: 'O2D', icon: Package },
+      { id: ViewMode.TIME_LOGS, label: 'Shift Logs', icon: Clock },
       { id: ViewMode.LEAVES, label: 'Leave Application', icon: FileBarChart },
       { id: ViewMode.EMPLOYEE_CHAT, label: 'Team Chat', icon: MessageCircle }, 
       { id: ViewMode.EMPLOYEE_QUERIES, label: 'Raise Query', icon: HelpCircle }, 
@@ -73,7 +74,20 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
     return baseEmployeeItems;
   }, [role, isFinanceOrSales]);
 
-  const menuItems = role === 'ADMIN' ? adminItems : employeeMenuItems;
+  const menuItems = useMemo(() => {
+    if (role === 'ADMIN') return adminItems;
+    if (role === 'PC') {
+      const hiddenForPC = new Set([
+        ViewMode.ATTENDANCE,
+        ViewMode.EMPLOYEES,
+        ViewMode.ARCHIVED_STAFF,
+        ViewMode.DATABASE,
+        ViewMode.TIME_LOGS
+      ]);
+      return adminItems.filter(item => !hiddenForPC.has(item.id));
+    }
+    return employeeMenuItems;
+  }, [role, employeeMenuItems]);
 
   return (
     <>
@@ -88,7 +102,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
           </button>
           <button 
             onClick={() => {
-              onNavigate(role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+              onNavigate(role === 'ADMIN' || role === 'PC' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
               onClose();
             }}
             className="flex items-center gap-3 mb-1 text-left w-full hover:opacity-80 transition-opacity focus:outline-none"

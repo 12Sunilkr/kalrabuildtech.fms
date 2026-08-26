@@ -28,7 +28,7 @@ export interface Employee {
   archived_at?: string;
 }
 
-export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN';
+export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN' | 'PC';
 
 export interface User {
   id?: any;

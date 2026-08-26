@@ -26,7 +26,8 @@ export function cacheInvalidate(prefix) {
 
 export function withCache(prefix, ttlMs, handler) {
   return (req, res, next) => {
-    const key = `${prefix}:${req.originalUrl || req.url}`;
+    const userPart = req.user ? `:${req.user.id}:${req.user.role}` : '';
+    const key = `${prefix}:${req.originalUrl || req.url}${userPart}`;
     const hit = cacheGet(key);
     if (hit) {
       res.setHeader('X-Cache', 'HIT');

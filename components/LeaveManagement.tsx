@@ -46,7 +46,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
     const [singleDate, setSingleDate] = useState('');
 
     const currentYear = new Date().getFullYear().toString();
-    const isAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPER_ADMIN';
+    const isAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPER_ADMIN' || currentUser?.role === 'PC';
     // Use employeeId if present, otherwise fallback to User ID or 'ADMIN'
     const myEmpId = currentUser?.employeeId || currentUser?.id || 'ADMIN';
 

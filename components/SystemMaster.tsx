@@ -220,7 +220,7 @@ export const SystemMaster: React.FC<SystemMasterProps> = ({ currentView, onNavig
 
   // Administrative testing toggle
   const [isAdminPreviewMode, setIsAdminPreviewMode] = useState(false);
-  const isActualAdmin = currentUser?.role === 'ADMIN';
+  const isActualAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'PC';
   const showAdminLayout = isActualAdmin && !isAdminPreviewMode;
 
   // Sheets filters & search

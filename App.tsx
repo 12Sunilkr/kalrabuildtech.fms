@@ -34,7 +34,7 @@ import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIA
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
 import { differenceInMinutes } from 'date-fns';
 import { Menu, Bell, CheckCircle, AlertCircle, Info, X, AlertTriangle, MessageCircle } from 'lucide-react';
-import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, safeGetSwr } from './src/utils/api';
+import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, safeGetSwr, invalidateCache } from './src/utils/api';
 
 const App: React.FC = () => {
   // 1. AUTH STATE (Primary Authority)
@@ -92,12 +92,13 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // One-time migration: if client-side localStorage contains data, send it to backend then clear it.
-  // Migration removed from app code to avoid further localStorage access.
-  // Run the migration manually from browser Console using the script shown in README or via the DevTools snippet provided earlier.
+  const hasInitializedRef = React.useRef(false);
 
   // Restore session and load users from the server on startup
   useEffect(() => {
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+
     const init = async () => {
       // Helper: normalize server responses (handles both fetch-json and axios response shapes)
       const extractPayload = (resp: any) => {
@@ -115,12 +116,10 @@ const App: React.FC = () => {
         // (this avoids restoring sessions on refresh if logout didn't fully invalidate cookies).
         if (sessionStorage.getItem('kbt_session_logout')) {
           console.log('Skipping session restore due to recent logout');
-          // DO NOT remove kbt_session_logout here. Keep it until explicit login,
-          // to completely prevent auto-restore on subsequent refreshes.
           setCurrentUser(null);
           setUsers(INITIAL_USERS);
         } else {
-          // Fetch /auth/me with cache busting to resolve current session status immediately
+          // Always attempt to restore session via /auth/me
           const meRes = await safeGet('/auth/me', { cacheBust: true });
           const mePayload = extractPayload(meRes);
           meUser = mePayload && (mePayload.user || mePayload) ? (mePayload.user || mePayload) : null;
@@ -150,11 +149,15 @@ const App: React.FC = () => {
                 .then(res => applyAttendance(ensureArray(extractPayload(res))))
                 .catch(err => console.warn('Background attendance fetch failed', err)),
 
-              safeGet(`/timelogs?userId=${encodeURIComponent(meUser.employeeId || meUser.id)}`, { cacheBust: true })
-                .then(res => applyTimelogs(ensureArray(extractPayload(res))))
-                .catch(err => console.warn('Background timelogs fetch failed', err)),
+              (meUser.role === 'ADMIN' || meUser.role === 'PC')
+                ? safeGet(`/timelogs`, { cacheBust: true })
+                    .then(res => applyTimelogs(ensureArray(extractPayload(res))))
+                    .catch(err => console.warn('Background timelogs fetch failed', err))
+                : safeGet(`/timelogs?userId=${encodeURIComponent(meUser.employeeId || meUser.id)}`, { cacheBust: true })
+                    .then(res => applyTimelogs(ensureArray(extractPayload(res))))
+                    .catch(err => console.warn('Background timelogs fetch failed', err)),
 
-              meUser.role === 'ADMIN'
+              (meUser.role === 'ADMIN' || meUser.role === 'PC')
                 ? safeGet('/employees?archived=1')
                     .then(res => {
                       const archivedArr = ensureArray(extractPayload(res)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
@@ -198,8 +201,14 @@ const App: React.FC = () => {
             setUsers(INITIAL_USERS);
           }
         }
-      } catch (err) {
-        console.warn('Auth/me session restoration failed', err);
+      } catch (err: any) {
+        if (err?.response?.status === 401) {
+          // Token expired or invalid — clear token quietly
+          localStorage.removeItem('kbt_token');
+          setCurrentUser(null);
+        } else {
+          console.warn('Auth/me session restoration failed', err?.message || err);
+        }
         setUsers(INITIAL_USERS);
       } finally {
         setIsAuthChecking(false);
@@ -223,28 +232,26 @@ const App: React.FC = () => {
     setIsSidebarOpen(false);
   }, []);
 
-  // SECURITY GUARD: Clear hash immediately if no user session found on load
+  // SECURITY GUARD: Clear hash immediately ONLY if auth check is complete and no user session exists
   useLayoutEffect(() => {
-    if (!currentUser && window.location.hash !== '') {
+    if (!isAuthChecking && !currentUser && window.location.hash !== '') {
       // Strips the #HASH from the address bar to prevent deep-linking while logged out
       window.history.replaceState(null, '', window.location.pathname);
     }
-  }, [currentUser]);
+  }, [isAuthChecking, currentUser]);
 
-  // INITIALIZE VIEW: Only sync view state with role/hash AFTER login
+  // INITIALIZE VIEW: Only sync view state with role/hash AFTER auth check finishes
   useEffect(() => {
-    if (currentUser) {
+    if (!isAuthChecking && currentUser) {
       const hash = window.location.hash.replace('#', '');
       if (Object.values(ViewMode).includes(hash as ViewMode)) {
         setCurrentView(hash as ViewMode);
       } else {
         // Default to Dashboard for admins and profile for employees on session restore
-        setCurrentView(currentUser.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+        setCurrentView((currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
       }
-      // Clear any deep-link hash on session restore so refreshing doesn't reopen demo/deep-linked pages
-      if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
     }
-  }, [currentUser]);
+  }, [isAuthChecking, currentUser]);
 
   // SYNC VIEW TO HASH: Only if authenticated
   useEffect(() => {
@@ -324,7 +331,7 @@ const App: React.FC = () => {
 
   const myNotifications = useMemo(() => {
     if (!currentUser) return [];
-    return notifications.filter(n => currentUser.role === 'ADMIN' || n.targetUser === currentUser.employeeId || n.targetUser === 'ALL');
+    return notifications.filter(n => currentUser.role === 'ADMIN' || currentUser.role === 'PC' || n.targetUser === currentUser.employeeId || n.targetUser === 'ALL');
   }, [notifications, currentUser]);
 
   const unreadCount = useMemo(() => myNotifications.filter(n => !n.read).length, [myNotifications]);
@@ -441,7 +448,21 @@ const App: React.FC = () => {
         if (!dateKey) return;
 
         const targetUserIds = new Set<string>();
-        if (t.userId) targetUserIds.add(String(t.userId));
+        if (t.userId) {
+          const tUid = String(t.userId);
+          targetUserIds.add(tUid);
+          // Look up user in users list to resolve both employeeId and numeric id
+          const matchedUser = users.find(u => String(u.id) === tUid || u.employeeId === tUid);
+          if (matchedUser) {
+            if (matchedUser.employeeId) targetUserIds.add(matchedUser.employeeId);
+            if (matchedUser.id) targetUserIds.add(String(matchedUser.id));
+          }
+          // Also look up employee in employees list
+          const matchedEmp = employees.find(e => e.id === tUid || String(e.id) === tUid);
+          if (matchedEmp && matchedEmp.id) {
+            targetUserIds.add(matchedEmp.id);
+          }
+        }
         // ALWAYS add both ID forms for the current user if this log belongs to them
         if (currentUser) {
           const empId = currentUser.employeeId;
@@ -502,7 +523,7 @@ const App: React.FC = () => {
       });
       return next;
     });
-  }, [currentUser]);
+  }, [currentUser, users, employees]);
 
   // ── Cross-device timelog sync ────────────────────────────────────────────────
   // Polls the server every 30 seconds for the current user's timelogs.
@@ -608,7 +629,7 @@ const App: React.FC = () => {
       try {
         switch (currentView) {
           case ViewMode.DASHBOARD: {
-            if (currentUser.role === 'ADMIN') {
+            if (currentUser.role === 'ADMIN' || currentUser.role === 'PC') {
               await Promise.all([
                 safeGetSwr('/tasks', (fresh) => setTasks(ensureArray(extractPayload(fresh)))),
                 safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
@@ -719,7 +740,7 @@ const App: React.FC = () => {
           }
           case ViewMode.LEAVES: {
             const qUser = currentUser && (currentUser.employeeId || currentUser.id);
-            const leavesUrl = currentUser.role === 'ADMIN' ? '/leave' : (qUser ? `/leave?userId=${encodeURIComponent(qUser)}` : '/leave');
+            const leavesUrl = (currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? '/leave' : (qUser ? `/leave?userId=${encodeURIComponent(qUser)}` : '/leave');
             const lv = await safeGetSwr(leavesUrl, (fresh) => setLeaveRequests(ensureArray(extractPayload(fresh))));
             setLeaveRequests(ensureArray(extractPayload(lv)));
             break;
@@ -728,7 +749,7 @@ const App: React.FC = () => {
             const [eRes, uRes, aRes] = await Promise.all([
               safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
               safeGetSwr('/users', (fresh) => setUsers(ensureArray(extractPayload(fresh)))),
-              currentUser.role === 'ADMIN'
+              (currentUser.role === 'ADMIN' || currentUser.role === 'PC')
                 ? safeGetSwr('/employees?archived=1', (fresh) => setArchivedEmployees(ensureArray(extractPayload(fresh))))
                 : Promise.resolve(null)
             ]);
@@ -861,7 +882,7 @@ const App: React.FC = () => {
         // Clear any deep-link hash left from prior sessions to avoid unexpected demo page on login
         if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
         // Default to profile (EMPLOYEE_HOME) for employees, Dashboard for admins
-        setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+        setCurrentView((user.role === 'ADMIN' || user.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
         return;
       }
       setAuthError('Invalid credentials. Access Denied.');
@@ -890,7 +911,7 @@ const App: React.FC = () => {
         // Clear any deep-link hash left from prior sessions to avoid unexpected demo page on login
         if (window.location.hash) window.history.replaceState(null, '', window.location.pathname);
         // Force initial view after login: profile for employees, dashboard for admins
-        setCurrentView(user.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
+        setCurrentView((user.role === 'ADMIN' || user.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
       } else {
         setAuthError('Invalid credentials. Access Denied.');
       }
@@ -938,7 +959,7 @@ const App: React.FC = () => {
         await api.post('/notifications', { userId: targetUser, message, meta: { title, type, targetUser, time: newNote.time } }, { withCredentials: true });
         // If the notification targets the current user or is global, refresh notifications for current user
         if (!currentUser) return;
-        if (targetUser === 'ALL' || targetUser === currentUser.employeeId || targetUser === String(currentUser.id) || currentUser.role === 'ADMIN') {
+        if (targetUser === 'ALL' || targetUser === currentUser.employeeId || targetUser === String(currentUser.id) || currentUser.role === 'ADMIN' || currentUser.role === 'PC') {
           try {
             const res = await safeGet(`/notifications/${encodeURIComponent(currentUser.employeeId || currentUser.id)}`, { cacheBust: true });
             const payload = extractPayload(res);
@@ -960,6 +981,18 @@ const App: React.FC = () => {
     const userLogMap = timeLogs[empId] || (currentUser?.employeeId ? timeLogs[currentUser.employeeId] : undefined) || (currentUser?.id ? timeLogs[String(currentUser.id)] : undefined) || {};
     const existingDayLogs = userLogMap[dateKey] || [];
     if (existingDayLogs.length >= 2) return;
+
+    // Check 2-minute cooldown from last clockOut
+    const lastCompleted = existingDayLogs
+      .filter(l => l.clockOut && !isNaN(new Date(l.clockOut).getTime()))
+      .sort((a, b) => new Date(b.clockOut!).getTime() - new Date(a.clockOut!).getTime())[0];
+    if (lastCompleted?.clockOut) {
+      const outAgeSecs = (now.getTime() - new Date(lastCompleted.clockOut).getTime()) / 1000;
+      if (outAgeSecs >= 0 && outAgeSecs < 120) {
+        showToast('Please wait for the 2-minute cooldown before resuming session', 'warning');
+        return;
+      }
+    }
 
     const tId = `TL-${empId}-${Date.now()}`;
     const aId = `A-${empId}-${dateKey}`;
@@ -1074,6 +1107,7 @@ const App: React.FC = () => {
     try {
       await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: now.toISOString() }, { withCredentials: true });
       await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: now.toISOString(), value: computedVal }, { withCredentials: true });
+      invalidateCache('/timelogs');
     } catch (err) {
       console.warn('[ClockOut] Background server sync failed (optimistic update already applied)', err);
     }
@@ -1187,9 +1221,20 @@ const App: React.FC = () => {
       onNavigate: setCurrentView
     };
 
-    if (currentUser.role === 'ADMIN') {
+    if (currentUser.role === 'ADMIN' || currentUser.role === 'PC') {
+      if (currentUser.role === 'PC') {
+        if (
+          currentView === ViewMode.ATTENDANCE ||
+          currentView === ViewMode.EMPLOYEES ||
+          currentView === ViewMode.ARCHIVED_STAFF ||
+          currentView === ViewMode.DATABASE ||
+          currentView === ViewMode.TIME_LOGS
+        ) {
+          return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} />;
+        }
+      }
       switch (currentView) {
-        case ViewMode.DASHBOARD: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} />;
+        case ViewMode.DASHBOARD: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} />;
         case ViewMode.CALENDAR: return <CalendarView {...commonProps} leaves={leaveRequests} reminders={reminders} setReminders={setReminders} />;
         case ViewMode.ATTENDANCE: return <AttendanceSheet {...commonProps} />;
         case ViewMode.EMPLOYEES: return <EmployeeMaster {...commonProps} onSwitchUser={setCurrentUser} />;
@@ -1198,7 +1243,7 @@ const App: React.FC = () => {
         case ViewMode.MATERIAL_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.PMS_ADMIN: return <PMSDashboard />;
         case ViewMode.FINANCE: return <FinanceDashboard {...commonProps} clientFinancials={clientFinancials} setClientFinancials={setClientFinancials} vendorFinancials={vendorFinancials} setVendorFinancials={setVendorFinancials} />;
-        case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} />;
+        case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} currentUser={currentUser} />;
         case ViewMode.PERFORMANCE: return <PerformanceReport {...commonProps} checklistInstances={checklistInstances} checklistTemplates={checklistTemplates} />;
         case ViewMode.QUERIES: return <QuerySystem queries={queries} setQueries={setQueries} {...commonProps} />;
         case ViewMode.CHAT: return <ChatSystem messages={chatMessages} setMessages={setChatMessages} groups={chatGroups} setGroups={setChatGroups} {...commonProps} />;
@@ -1211,14 +1256,15 @@ const App: React.FC = () => {
         case ViewMode.LEAVES: return <LeaveManagement {...commonProps} />;
         case ViewMode.DATABASE: return <DatabaseManager allData={{ ...commonProps, users }} onRestore={(d) => { }} onReset={() => { }} />;
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
-        case ViewMode.README: return <ReadMe role="ADMIN" />;
+        case ViewMode.README: return <ReadMe role={currentUser.role} />;
         case ViewMode.SYSTEM_MASTER: return <SystemMaster currentView={currentView} onNavigate={setCurrentView} currentUser={currentUser} showToast={showToast} />;
-        default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} />;
+        default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} />;
       }
     } else {
       switch (currentView) {
         case ViewMode.EMPLOYEE_HOME:
-          return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
+          return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} onNavigate={setCurrentView} {...commonProps} />;
+        case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} currentUser={currentUser} />;
         case ViewMode.EMPLOYEE_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.EMPLOYEE_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.PMS_EMPLOYEE: return <PMSDashboard />;
@@ -1234,7 +1280,7 @@ const App: React.FC = () => {
         case ViewMode.README: return <ReadMe role="EMPLOYEE" />;
         case ViewMode.PLAYBOOK: return <Playbook currentUser={currentUser} employees={employees} />;
         case ViewMode.SYSTEM_MASTER: return <SystemMaster currentView={currentView} onNavigate={setCurrentView} currentUser={currentUser} showToast={showToast} />;
-        default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} {...commonProps} />;
+        default: return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} onNavigate={setCurrentView} {...commonProps} />;
       }
     }
   };
@@ -1262,7 +1308,7 @@ const App: React.FC = () => {
         <header className="bg-white/80 backdrop-blur-md px-3 py-2 md:px-4 md:py-4 flex justify-between items-center shadow-sm z-30 border-b border-white/20 print:hidden">
           <button
             className="flex items-center gap-2 md:hidden hover:opacity-80 transition-opacity focus:outline-none text-left"
-            onClick={() => setCurrentView(currentUser.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)}
+            onClick={() => setCurrentView((currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)}
           >
             <img src={COMPANY_LOGO} alt="Logo" className="w-7 h-7 bg-white rounded-lg shadow-sm" />
             <span className="font-extrabold text-xs uppercase tracking-tight">Kalra FMS</span>

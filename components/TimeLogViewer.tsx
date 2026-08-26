@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
-import { TimeLog, Employee, AttendanceRecord, AttendanceValue } from '../types';
-import { Clock, Search, Download, CalendarDays, User, Save, X, LogOut, BarChart3, AlertTriangle, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { TimeLog, Employee, AttendanceRecord, AttendanceValue, User } from '../types';
+import { Clock, Search, Download, CalendarDays, User as UserIcon, Save, X, LogOut, BarChart3, AlertTriangle, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { format, differenceInMinutes } from 'date-fns';
 import { formatDecimalHours } from '../utils/dateUtils';
 import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
@@ -12,10 +12,12 @@ interface TimeLogViewerProps {
     employees: Employee[];
     attendanceData: Record<string, AttendanceRecord>;
     setAttendanceData: React.Dispatch<React.SetStateAction<Record<string, AttendanceRecord>>>;
+    currentUser?: User;
+    users?: User[];
 }
 
 const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
-    timeLogs, setTimeLogs, employees, attendanceData, setAttendanceData
+    timeLogs, setTimeLogs, employees, attendanceData, setAttendanceData, currentUser, users
 }) => {
     const [searchTermInput, setSearchTermInput] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
@@ -43,16 +45,119 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         setCurrentPage(1);
     }, [searchTerm, focusedEmployeeId]);
 
+    // Auto-fetch fresh timelogs on mount to ensure shift logs are immediately visible
+    React.useEffect(() => {
+        let isMounted = true;
+        const fetchFreshLogs = async () => {
+            try {
+                const isEmployee = currentUser?.role === 'EMPLOYEE';
+                const userEmpId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
+                const url = isEmployee && userEmpId ? `/timelogs?userId=${encodeURIComponent(userEmpId)}` : '/timelogs';
+                const res = await safeGet(url, { cacheBust: true });
+                const arr = ensureArray(extractPayload(res));
+                if (!isMounted || arr.length === 0) return;
+
+                const tlMap: Record<string, Record<string, TimeLog[]>> = {};
+                arr.forEach((t: any) => {
+                    if (!t || !t.userId) return;
+                    const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.date || (t.createdAt ? t.createdAt.split('T')[0] : ''));
+                    if (!dateKey) return;
+                    const uId = String(t.userId);
+                    if (!tlMap[uId]) tlMap[uId] = {};
+                    if (!tlMap[uId][dateKey]) tlMap[uId][dateKey] = [];
+                    
+                    let duration = t.durationHours;
+                    if (!duration && t.startTime && t.endTime) {
+                        const start = new Date(t.startTime).getTime();
+                        const end = new Date(t.endTime).getTime();
+                        if (end > start) duration = (end - start) / 3600000;
+                    }
+                    
+                    const exists = tlMap[uId][dateKey].some(ex => (t.id && ex.id === t.id) || (ex.clockIn === t.startTime && ex.clockOut === t.endTime));
+                    if (!exists) {
+                        tlMap[uId][dateKey].push({
+                            id: t.id,
+                            date: dateKey,
+                            clockIn: t.startTime || t.clockIn,
+                            clockOut: t.endTime || t.clockOut,
+                            durationHours: duration
+                        });
+                    }
+                });
+
+                setTimeLogs(prev => {
+                    const merged = { ...prev };
+                    Object.entries(tlMap).forEach(([k, dMap]) => {
+                        if (!merged[k]) merged[k] = {};
+                        Object.entries(dMap).forEach(([dKey, logs]) => {
+                            if (!merged[k][dKey]) {
+                                merged[k][dKey] = logs;
+                            } else {
+                                const currentLogs = [...merged[k][dKey]];
+                                logs.forEach(l => {
+                                    const idx = currentLogs.findIndex(ex => (l.id && ex.id === l.id) || ex.clockIn === l.clockIn);
+                                    if (idx >= 0) {
+                                        currentLogs[idx] = { ...currentLogs[idx], ...l };
+                                    } else {
+                                        currentLogs.push(l);
+                                    }
+                                });
+                                merged[k][dKey] = currentLogs;
+                            }
+                        });
+                    });
+                    return merged;
+                });
+            } catch (e) {
+                console.warn('TimeLogViewer: initial fetch warning', e);
+            }
+        };
+        fetchFreshLogs();
+        return () => { isMounted = false; };
+    }, [currentUser]);
+
     // 1. Flatten logs into a workable array
     const allLogs = useMemo(() => {
         const logs: (TimeLog & { empName: string, empId: string, department: string, avatar?: string })[] = [];
         const seenKeys = new Set<string>();
 
+        // Process logs by inspecting all keys in timeLogs
+        Object.entries(timeLogs || {}).forEach(([uKey, dayMap]) => {
+            if (!dayMap) return;
+            // Match employee by id or numeric string or users list
+            const matchedUser = users?.find?.(u => String(u.id) === uKey || u.employeeId === uKey);
+            const emp = employees.find(e => e.id === uKey || String(e.id) === uKey || (matchedUser && e.id === matchedUser.employeeId));
+            const targetEmpId = emp?.id || matchedUser?.employeeId || uKey;
+            const targetEmpName = emp?.name || matchedUser?.name || `Staff (${uKey})`;
+            const targetDept = emp?.department || 'General';
+
+            Object.values(dayMap).forEach(dayLogs => {
+                ensureArray(dayLogs).forEach(log => {
+                    if (!log) return;
+                    const timeMs = log.clockIn ? Math.floor(new Date(log.clockIn).getTime() / 120000) : 0;
+                    const uniqueKey = log.id ? `${targetEmpId}_${log.id}` : `${targetEmpId}_${log.date}_${timeMs}`;
+                    if (!seenKeys.has(uniqueKey)) {
+                        seenKeys.add(uniqueKey);
+                        logs.push({
+                            ...log,
+                            empName: targetEmpName,
+                            empId: targetEmpId,
+                            department: targetDept,
+                            avatar: emp?.avatar
+                        });
+                    }
+                });
+            });
+        });
+
+        // Also check employees list in case any user logs weren't captured by top-level keys
         employees.forEach(emp => {
+            if (!emp.id) return;
             const empLogsMap = timeLogs[emp.id];
             if (empLogsMap) {
                 Object.values(empLogsMap).forEach(dayLogs => {
                     ensureArray(dayLogs).forEach(log => {
+                        if (!log) return;
                         const timeMs = log.clockIn ? Math.floor(new Date(log.clockIn).getTime() / 120000) : 0;
                         const uniqueKey = log.id ? `${emp.id}_${log.id}` : `${emp.id}_${log.date}_${timeMs}`;
                         if (!seenKeys.has(uniqueKey)) {
@@ -69,11 +174,19 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                 });
             }
         });
-        // Sort by Time (Clock In) Descending initially to ensure within-day sort
-        return logs.sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
-    }, [timeLogs, employees]);
+
+        // Sort by Time (Clock In) Descending initially
+        return logs.sort((a, b) => {
+            const aTime = a.clockIn ? new Date(a.clockIn).getTime() : 0;
+            const bTime = b.clockIn ? new Date(b.clockIn).getTime() : 0;
+            return bTime - aTime;
+        });
+    }, [timeLogs, employees, users]);
 
     // 2. Filter
+    const userEmpId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
+    const isEmployeeRole = currentUser?.role === 'EMPLOYEE';
+
     const filteredLogs = allLogs.filter(log => {
         const matchesSearch = log.empName.toLowerCase().includes(searchTerm.toLowerCase()) ||
             log.empId.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -81,7 +194,13 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
 
         const matchesEmployee = !focusedEmployeeId || log.empId === focusedEmployeeId;
 
-        return matchesSearch && matchesEmployee;
+        const matchesUser = !isEmployeeRole || (
+            log.empId === userEmpId ||
+            log.empId === currentUser?.employeeId ||
+            log.empId === String(currentUser?.id)
+        );
+
+        return matchesSearch && matchesEmployee && matchesUser;
     });
 
     // 3. Analysis Logic for Professional Report
@@ -283,10 +402,11 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         document.body.removeChild(link);
     };
 
-    // --- Manual Out Logic ---
+    // --- Manual Out & Edit Logic ---
 
     const startEditing = (log: any) => {
-        setEditingKey(`${log.empId}-${log.date}`);
+        const uniqueKey = log.id || `${log.empId}-${log.date}-${log.clockIn}`;
+        setEditingKey(uniqueKey);
         if (log.clockOut) {
             setManualTime(format(new Date(log.clockOut), 'HH:mm'));
         } else {
@@ -303,42 +423,24 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
     const saveManualOut = async (log: any) => {
         if (!manualTime || !manualTime.trim()) return;
 
-        const start = new Date(log.clockIn);
-        // Preserve seconds from clock-in time for accurate duration calculation
-        const seconds = start.getSeconds().toString().padStart(2, '0');
-
-        // Ensure manualTime is in HH:mm format from the time input
         const timeValue = manualTime.trim();
-
-        const clockOutIso = `${log.date}T${timeValue}:${seconds}`;
-        const end = new Date(clockOutIso);
-
-        // Debug logging to identify the issue
-        console.log('[Manual Out Debug]', {
-            date: log.date,
-            clockIn: log.clockIn,
-            manualTime: timeValue,
-            clockOut: clockOutIso,
-            start: start.toISOString(),
-            end: end.toISOString(),
-            diffMs: end.getTime() - start.getTime()
-        });
+        const [hours, mins] = timeValue.split(':').map(Number);
+        const [year, month, day] = log.date.split('-').map(Number);
+        const end = new Date(year, month - 1, day, hours, mins, 0);
+        const start = new Date(log.clockIn);
 
         // Validation: End must be after Start
-        if (end <= start) {
+        if (end.getTime() <= start.getTime()) {
             alert("Clock Out time must be after Clock In time.");
             return;
         }
 
-        // Calculate duration in milliseconds, then convert to hours
+        const clockOutIso = end.toISOString();
         const diffMs = end.getTime() - start.getTime();
         const durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
 
-        console.log('[Manual Out Result]', { durationHours, formatted: `${Math.floor(durationHours)}h ${Math.round((durationHours - Math.floor(durationHours)) * 60)}m` });
-
         // Calculate Attendance Value based on Hours (Matching App.tsx logic)
         let attendanceVal: AttendanceValue = 0;
-
         if (durationHours >= 7.5) {
             attendanceVal = 1;
         } else if (durationHours >= 6) {
@@ -351,63 +453,65 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
             attendanceVal = 0; // Absent
         }
 
-        const tId = log.id;
+        const tId = log.id || `TL-${log.empId}-${log.date}`;
         const aId = `A-${log.empId}-${log.date}`;
         try {
-            await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: clockOutIso }, { withCredentials: true });
-            await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: clockOutIso, value: attendanceVal }, { withCredentials: true });
+            if (log.id) {
+                await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: clockOutIso }, { withCredentials: true });
+            }
+            await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: clockOutIso, value: attendanceVal, userId: log.empId, date: log.date }, { withCredentials: true });
 
-            // Refresh timelogs and attendance from server (Task pattern: write then re-fetch authoritative data)
+            // Refresh timelogs and attendance from server
             try {
-                const tlRes = await safeGet('/timelogs');
+                const tlRes = await safeGet('/timelogs', { cacheBust: true });
                 const tlPayload = extractPayload(tlRes);
                 const tlArr = ensureArray(tlPayload);
                 const tlMap: Record<string, Record<string, TimeLog[]>> = {};
                 tlArr.forEach((t: any) => {
-                    if (!t) return;
-                    const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.createdAt ? t.createdAt.split('T')[0] : '');
-                    if (!tlMap[t.userId]) tlMap[t.userId] = {};
-                    if (!tlMap[t.userId][dateKey]) tlMap[t.userId][dateKey] = [];
+                    if (!t || !t.userId) return;
+                    const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.date || (t.createdAt ? t.createdAt.split('T')[0] : ''));
+                    if (!dateKey) return;
+                    const uId = String(t.userId);
+                    if (!tlMap[uId]) tlMap[uId] = {};
+                    if (!tlMap[uId][dateKey]) tlMap[uId][dateKey] = [];
 
-                    // Calculate duration if not provided by server
                     let duration = t.durationHours;
                     if (!duration && t.startTime && t.endTime) {
-                        const start = new Date(t.startTime).getTime();
-                        const end = new Date(t.endTime).getTime();
-                        const diffMs = end - start;
-                        duration = Math.max(0, diffMs / (1000 * 60 * 60));
+                        const sTime = new Date(t.startTime).getTime();
+                        const eTime = new Date(t.endTime).getTime();
+                        if (eTime > sTime) duration = (eTime - sTime) / 3600000;
                     }
 
-                    const exists = tlMap[t.userId][dateKey].some(item =>
-                        (t.id && item.id === t.id) || (item.clockIn === t.startTime && item.clockOut === t.endTime)
-                    );
-                    if (!exists) {
-                        tlMap[t.userId][dateKey].push({ id: t.id, date: dateKey, clockIn: t.startTime, clockOut: t.endTime, durationHours: duration } as TimeLog);
-                    }
+                    tlMap[uId][dateKey].push({
+                        id: t.id,
+                        date: dateKey,
+                        clockIn: t.startTime || t.clockIn,
+                        clockOut: t.endTime || t.clockOut,
+                        durationHours: duration
+                    });
                 });
-                setTimeLogs(tlMap);
-            } catch (e) { console.warn('Failed to refresh timelogs after manual out', e && (e.stack || e.message || e)); }
+                setTimeLogs(prev => ({ ...prev, ...tlMap }));
+            } catch (e) { console.warn('Failed to refresh timelogs after manual out', e); }
 
             try {
-                const aRes = await safeGet('/attendance');
+                const aRes = await safeGet('/attendance', { cacheBust: true });
                 const aPayload = extractPayload(aRes);
                 const aArr = ensureArray(aPayload);
                 const ag: Record<string, AttendanceRecord> = {};
                 aArr.forEach((a: any) => {
-                    if (!a) return;
+                    if (!a || !a.userId || !a.date) return;
                     if (!ag[a.userId]) ag[a.userId] = {};
                     ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
                 });
                 setAttendanceData(ag);
-            } catch (e) { console.warn('Failed to refresh attendance after manual out', e && (e.stack || e.message || e)); }
+            } catch (e) { console.warn('Failed to refresh attendance after manual out', e); }
 
         } catch (err) {
             console.warn('Manual out update failed, falling back to local update', err);
-            // Fallback behavior: map over the array rather than overwriting it with an object
             setTimeLogs(prev => {
                 const userLogs = prev[log.empId] || {};
                 const dLogs = userLogs[log.date] || [];
-                const updatedLogs = dLogs.map(l => l.id === log.id ? { ...l, clockOut: clockOutIso, durationHours: durationHours } : l);
+                const updatedLogs = dLogs.map(l => (l.id === log.id || l.clockIn === log.clockIn) ? { ...l, clockOut: clockOutIso, durationHours: durationHours } : l);
                 return {
                     ...prev,
                     [log.empId]: {
@@ -506,7 +610,7 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                         paginatedDates.map(dateKey => {
                             const dayLogs = logsByDate[dateKey];
                             const stats = calculateDailyStats(dayLogs);
-                            const dateObj = new Date(dateKey);
+                            const dateObj = new Date(dateKey + 'T00:00:00');
 
                             return (
                                 <div key={dateKey} className="animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -518,9 +622,9 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                                 <span className="text-xl font-black leading-none">{format(dateObj, 'd')}</span>
                                             </div>
                                             <div>
-                                                <h3 className="text-lg font-bold text-slate-800">{format(dateObj, 'EEEE, yyyy')}</h3>
+                                                <h3 className="text-lg font-bold text-slate-800">{format(dateObj, 'EEEE, MMMM d, yyyy')}</h3>
                                                 <div className="flex gap-3 text-xs font-medium text-slate-500">
-                                                    <span className="flex items-center gap-1"><User size={12} /> {stats.total} Present</span>
+                                                    <span className="flex items-center gap-1"><UserIcon size={12} /> {stats.total} Present</span>
                                                     {stats.running > 0 && <span className="flex items-center gap-1 text-green-600 animate-pulse"><Clock size={12} /> {stats.running} Active</span>}
                                                     <span>Total Hours: {formatDecimalHours(stats.totalHours)}</span>
                                                 </div>
@@ -543,9 +647,10 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                             </thead>
                                             <tbody className="divide-y divide-slate-50">
                                                 {dayLogs.map((log, index) => {
-                                                    const isEditing = editingKey === `${log.empId}-${log.date}`;
+                                                    const logUniqueKey = log.id || `${log.empId}-${log.date}-${log.clockIn}`;
+                                                    const isEditing = editingKey === logUniqueKey;
                                                     return (
-                                                        <tr key={`${log.empId}-${log.clockIn}`} className="hover:bg-slate-50/50 transition-colors group">
+                                                        <tr key={logUniqueKey} className="hover:bg-slate-50/50 transition-colors group">
                                                             <td className="p-4 text-xs font-mono text-slate-400">{index + 1}</td>
                                                             <td className="p-4">
                                                                 <div className="flex items-center gap-3">
@@ -576,13 +681,22 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                                                             value={manualTime}
                                                                             onChange={(e) => setManualTime(e.target.value)}
                                                                         />
-                                                                        <button onClick={() => saveManualOut(log)} className="p-1 bg-green-100 text-green-700 rounded hover:bg-green-200"><Save size={14} /></button>
-                                                                        <button onClick={cancelEditing} className="p-1 bg-red-100 text-red-700 rounded hover:bg-red-200"><X size={14} /></button>
+                                                                        <button onClick={() => saveManualOut(log)} className="p-1 bg-green-100 text-green-700 rounded hover:bg-green-200" title="Save"><Save size={14} /></button>
+                                                                        <button onClick={cancelEditing} className="p-1 bg-red-100 text-red-700 rounded hover:bg-red-200" title="Cancel"><X size={14} /></button>
                                                                     </div>
                                                                 ) : (
                                                                     log.clockOut ? (
-                                                                        <div className="inline-block px-1">
+                                                                        <div className="inline-flex items-center gap-1 group/out">
                                                                             <span className="font-mono text-xs font-bold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-100">{formatTime(log.clockOut)}</span>
+                                                                            {currentUser?.role === 'ADMIN' && (
+                                                                                <button
+                                                                                    onClick={() => startEditing(log)}
+                                                                                    className="opacity-0 group-hover/out:opacity-100 p-0.5 text-slate-400 hover:text-indigo-600 transition-opacity"
+                                                                                    title="Edit Clock Out"
+                                                                                >
+                                                                                    <Clock size={12} />
+                                                                                </button>
+                                                                            )}
                                                                         </div>
                                                                     ) : (
                                                                         <button
@@ -833,7 +947,7 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                 ) : (
                                     <div className="h-full flex flex-col items-center justify-center text-center p-12 bg-white rounded-[3rem] border-2 border-dashed border-slate-200">
                                         <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mb-6">
-                                            <User size={40} className="text-slate-200" />
+                                            <UserIcon size={40} className="text-slate-200" />
                                         </div>
                                         <h4 className="text-lg font-black text-slate-800 mb-2">Configure Analysis Parameters</h4>
                                         <p className="text-sm text-slate-400 max-w-sm font-medium">Please select a team member and define a date range to generate a professional performance audit report.</p>

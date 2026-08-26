@@ -35,7 +35,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   const safeNotifications = ensureArray(notifications);
 
   const myNotifications = safeNotifications.filter(n => {
-    const isForMe = currentUser.role === 'ADMIN'
+    const isForMe = currentUser.role === 'ADMIN' || currentUser.role === 'PC'
         ? true
         : (n.targetUser === currentUser.employeeId || n.targetUser === 'ALL');
     const matchesSearch = (n.title || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -213,7 +213,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       <div className={`flex flex-col md:flex-row justify-between items-start md:items-end gap-4 ${isOverlay ? 'p-6 border-b' : 'mb-8'}`}>
         <div>
            {onNavigate && !isOverlay && (
-              <button onClick={() => onNavigate(currentUser.role === 'ADMIN' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)} className="flex items-center gap-1 text-slate-400 hover:text-slate-800 text-xs font-bold uppercase mb-2">
+              <button onClick={() => onNavigate((currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)} className="flex items-center gap-1 text-slate-400 hover:text-slate-800 text-xs font-bold uppercase mb-2">
                  <ArrowLeft size={14}/> Back to Dashboard
               </button>
            )}

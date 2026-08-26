@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Employee, AttendanceRecord, ViewMode } from '../types';
+import { Employee, AttendanceRecord, ViewMode, User } from '../types';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, AreaChart, Area, Legend } from 'recharts';
 import { Users, AlertTriangle, CheckCircle2, Clock, ChevronRight, Download, RefreshCw, UserCog, Cake, TrendingUp, Activity, Target, Zap } from 'lucide-react';
 import { formatDateKey, isDateSunday } from '../utils/dateUtils';
@@ -11,9 +11,10 @@ interface DashboardProps {
   employees: Employee[];
   attendanceData: Record<string, AttendanceRecord>;
   onNavigate: (view: ViewMode) => void;
+  currentUser?: User | null;
 }
 
-const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceData, onNavigate }) => {
+const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceData, onNavigate, currentUser }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const currentDate = new Date();
   const dateKey = formatDateKey(currentDate);
@@ -249,8 +250,8 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
             </div>
           </div>
           
-          <div className="h-80 w-full">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-80 w-full min-w-0 min-h-[320px]">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={chartData} margin={{top: 10, right: 10, left: -20, bottom: 0}}>
                 <defs>
                     <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
@@ -330,21 +331,23 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
                   <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />
                 </button>
 
-                <button 
-                  onClick={() => onNavigate(ViewMode.EMPLOYEES)}
-                  className="w-full flex items-center justify-between p-5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 text-white hover:bg-white/20 transition-all group/item"
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-500/20 transition-transform duration-300 group-hover/item:scale-110">
-                      <UserCog size={20} />
+                {currentUser?.role !== 'PC' && (
+                  <button 
+                    onClick={() => onNavigate(ViewMode.EMPLOYEES)}
+                    className="w-full flex items-center justify-between p-5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 text-white hover:bg-white/20 transition-all group/item"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-500/20 transition-transform duration-300 group-hover/item:scale-110">
+                        <UserCog size={20} />
+                      </div>
+                      <div className="text-left">
+                        <span className="block text-sm font-black tracking-tight leading-none mb-1">Team Control</span>
+                        <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Employee Master</span>
+                      </div>
                     </div>
-                    <div className="text-left">
-                      <span className="block text-sm font-black tracking-tight leading-none mb-1">Team Control</span>
-                      <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Employee Master</span>
-                    </div>
-                  </div>
-                  <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />
-                </button>
+                    <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />
+                  </button>
+                )}
             </div>
           </div>
           
