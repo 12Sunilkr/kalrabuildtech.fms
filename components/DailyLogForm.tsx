@@ -226,20 +226,20 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
       {/* Header Toolbar */}
       <div className="p-4 sm:p-8 border-b border-slate-50 flex flex-col sm:flex-row gap-4 sm:gap-6">
         <div className="flex items-center gap-3 sm:gap-10">
-          <button onClick={() => onDone && onDone()} className="p-2 sm:p-2.5 hover:bg-slate-50 rounded-xl transition-all text-slate-400 hover:text-slate-800 flex-shrink-0">
+          <button onClick={() => onDone && onDone()} className="btn btn-ghost btn-icon-sm text-muted hover:text-primary flex-shrink-0" title="Back">
             <ChevronLeft size={20} className="sm:w-6 sm:h-6" />
           </button>
 
           <div className="space-y-0.5 sm:space-y-1 min-w-0">
-            <p className="text-[9px] sm:text-[10px] font-black text-slate-300 uppercase tracking-widest sm:tracking-[0.2em]">DATE</p>
+            <p className="text-[9px] sm:text-[10px] font-black text-muted uppercase tracking-widest sm:tracking-[0.2em]">DATE</p>
             <div className="flex items-center gap-2 sm:gap-3">
               <input
                 type="date"
                 value={date}
                 onChange={e => setDate(e.target.value)}
-                className="text-lg sm:text-xl font-black text-slate-800 focus:outline-none bg-transparent cursor-pointer"
+                className="text-lg sm:text-xl font-black text-primary focus:outline-none bg-transparent cursor-pointer"
               />
-              <Calendar size={18} className="text-slate-400 flex-shrink-0 sm:w-5 sm:h-5" />
+              <Calendar size={18} className="text-muted flex-shrink-0 sm:w-5 sm:h-5" />
             </div>
           </div>
         </div>
@@ -249,7 +249,7 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
             <button
               type="button"
               onClick={() => onDone && onDone()}
-              className="flex-1 sm:flex-none px-3 sm:px-6 py-2.5 sm:py-3 bg-slate-50 text-slate-600 rounded-lg sm:rounded-2xl font-bold text-xs sm:text-sm hover:bg-slate-100 transition-all"
+              className="btn btn-secondary flex-1 sm:flex-none"
             >
               Back
             </button>
@@ -257,7 +257,7 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
               type="button"
               onClick={submit}
               disabled={submitting}
-              className="flex-1 sm:flex-none px-4 sm:px-8 py-2.5 sm:py-3 bg-indigo-600 text-white rounded-lg sm:rounded-2xl font-black text-xs sm:text-sm shadow-lg shadow-indigo-600/30 hover:bg-indigo-700 active:scale-95 transition-all disabled:opacity-50 uppercase tracking-wider"
+              className="btn btn-primary flex-1 sm:flex-none"
             >
               {submitting ? 'Saving...' : 'Save'}
             </button>
@@ -275,12 +275,12 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
             <div key={s.key} className="p-4 sm:p-6">
               {/* Session header with time + photo button */}
               <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-black text-indigo-600 tracking-tight">{s.label}</span>
+                <span className="text-sm font-black text-link tracking-tight">{s.label}</span>
                 <label
                   onClick={() => {
                     if (hasPhotoUrl) window.open(hasPhotoUrl.startsWith('http') ? hasPhotoUrl : `/uploads/${hasPhotoUrl}`, '_blank');
                   }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer transition-all text-[10px] font-black uppercase tracking-wide ${hasPhoto || hasPhotoUrl ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-slate-50 border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-200'}`}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer transition-all text-[10px] font-black uppercase tracking-wide ${hasPhoto || hasPhotoUrl ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-slate-50 border-slate-200 text-muted hover:text-link hover:border-indigo-200'}`}
                 >
                   <input type="file" className="hidden" accept="image/*" onChange={(e) => handlePhotoChange(s.key as any, e.target.files?.[0] || null)} />
                   {hasPhoto ? <Camera size={13} /> : <ImageIcon size={13} />}
@@ -301,7 +301,7 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
                       onKeyDown={e => handleAutoListKeyDown(e, 'planned', s.key as 'first' | 'second', r.planned)}
                       placeholder="Write planned work..."
                       rows={6}
-                      className="bg-transparent text-slate-700 font-semibold focus:outline-none w-full placeholder:text-blue-200 text-sm overflow-hidden resize-none"
+                      className="bg-transparent text-primary font-semibold focus:outline-none w-full placeholder:text-blue-200 text-sm overflow-hidden resize-none"
                     />
                   </div>
                 </div>
@@ -317,7 +317,7 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
                       onKeyDown={e => handleAutoListKeyDown(e, 'actual', s.key as 'first' | 'second', r.actual)}
                       placeholder="Write actual output..."
                       rows={6}
-                      className="bg-transparent text-slate-700 font-semibold focus:outline-none w-full placeholder:text-emerald-200 text-sm overflow-hidden resize-none"
+                      className="bg-transparent text-primary font-semibold focus:outline-none w-full placeholder:text-emerald-200 text-sm overflow-hidden resize-none"
                     />
                   </div>
                 </div>
@@ -352,7 +352,8 @@ export default function DailyLogForm({ projectId, weeklyTaskId, userId, onDone, 
             </div>
             <button 
               onClick={() => setNotification(null)}
-              className="p-1 hover:bg-black/5 rounded-lg transition-colors shrink-0"
+              className="btn btn-ghost btn-icon-sm"
+              title="Dismiss"
             >
               <X size={16} className="opacity-40" />
             </button>

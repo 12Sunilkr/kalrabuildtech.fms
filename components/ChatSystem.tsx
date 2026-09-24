@@ -255,17 +255,17 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                   </div>
                   <div className="flex-1 text-left overflow-hidden">
                     <div className="flex justify-between items-baseline">
-                      <p className={`text-sm truncate ${unread > 0 ? 'font-bold text-gray-900' : 'font-semibold text-gray-800'}`}>{grp.name}</p>
-                      {lastMsg && <span className="text-xs shrink-0 ml-1" style={{ color: unread > 0 ? '#00a884' : '#667781' }}>{formatTime(lastMsg.timestamp)}</span>}
+                      <p className={`text-sm truncate ${unread > 0 ? 'font-bold text-primary' : 'font-semibold text-primary'}`}>{grp.name}</p>
+                      {lastMsg && <span className="text-xs shrink-0 ml-1" style={{ color: unread > 0 ? '#00a884' : 'var(--color-text-secondary)' }}>{formatTime(lastMsg.timestamp)}</span>}
                     </div>
-                    <p className={`text-xs truncate ${unread > 0 ? 'font-semibold text-gray-700' : 'text-gray-400'}`}>{lastMsg ? lastMsg.content : `${grp.members.length} members`}</p>
+                    <p className={`text-xs truncate ${unread > 0 ? 'font-semibold text-secondary' : 'text-muted'}`}>{lastMsg ? lastMsg.content : `${grp.members.length} members`}</p>
                   </div>
                 </button>
               );
             })}
 
           {/* Separator */}
-          {!search && filteredGroups.length > 0 && <div className="px-4 py-1.5 text-[10px] font-bold text-gray-400 uppercase tracking-widest" style={{ background: '#f0f2f5' }}>Direct Messages</div>}
+          {!search && filteredGroups.length > 0 && <div className="px-4 py-1.5 text-[10px] font-bold text-muted uppercase tracking-widest" style={{ background: '#f0f2f5' }}>Direct Messages</div>}
 
           {/* Employees sorted by latest message */}
           {filteredEmployees
@@ -291,10 +291,10 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                   </div>
                   <div className="flex-1 text-left overflow-hidden">
                     <div className="flex justify-between items-baseline">
-                      <p className={`text-sm truncate ${unread > 0 ? 'font-bold text-gray-900' : 'font-semibold text-gray-700'}`}>{emp.name}</p>
-                      {lastMsg && <span className="text-[11px] shrink-0 ml-1" style={{ color: unread > 0 ? '#00a884' : '#667781' }}>{formatTime(lastMsg.timestamp)}</span>}
+                      <p className={`text-sm truncate ${unread > 0 ? 'font-bold text-primary' : 'font-semibold text-primary'}`}>{emp.name}</p>
+                      {lastMsg && <span className="text-[11px] shrink-0 ml-1" style={{ color: unread > 0 ? '#00a884' : 'var(--color-text-secondary)' }}>{formatTime(lastMsg.timestamp)}</span>}
                     </div>
-                    <p className={`text-xs truncate ${unread > 0 ? 'font-semibold text-gray-800' : 'text-gray-400'}`}>
+                    <p className={`text-xs truncate ${unread > 0 ? 'font-semibold text-primary' : 'text-muted'}`}>
                       {lastMsg ? (lastMsg.senderId === myId ? `You: ${lastMsg.content}` : lastMsg.content) : emp.designation || emp.department || ''}
                     </p>
                   </div>
@@ -309,15 +309,15 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
         <div className="flex-1 flex flex-col h-full" style={{ background: '#efeae2' }}>
           {/* Chat Header */}
           <div className="flex items-center gap-3 px-4 py-3 shadow-sm z-10" style={{ background: '#f0f2f5' }}>
-            <button onClick={() => setSelectedChatId(null)} className="md:hidden p-1 text-gray-500 hover:text-gray-800">
+            <button onClick={() => setSelectedChatId(null)} className="md:hidden p-1 text-muted hover:text-primary">
               <ArrowLeft size={22} />
             </button>
             <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 text-white font-bold text-sm" style={{ background: activeGroup ? '#7c3aed' : activePartner ? getColor(activePartner.id) : '#00a884' }}>
               {activeGroup ? <Users size={18} /> : getInitials(chatName)}
             </div>
             <div className="flex-1">
-              <p className="font-semibold text-gray-900 text-sm">{chatName}</p>
-              <p className="text-xs text-gray-500">{activeGroup ? `${activeGroup.members.length} members` : activePartner ? activePartner.designation || activePartner.department || 'Employee' : 'Administrator'}</p>
+              <p className="font-semibold text-primary text-sm">{chatName}</p>
+              <p className="text-xs text-secondary">{activeGroup ? `${activeGroup.members.length} members` : activePartner ? activePartner.designation || activePartner.department || 'Employee' : 'Administrator'}</p>
             </div>
           </div>
 
@@ -327,7 +327,7 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
             {isLoading ? (
               <div className="flex justify-center mt-20"><div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#00a884', borderTopColor: 'transparent' }} /></div>
             ) : chatHistory.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3 mt-20">
+              <div className="flex flex-col items-center justify-center h-full text-muted gap-3 mt-20">
                 <div className="w-20 h-20 rounded-full flex items-center justify-center" style={{ background: '#d9fdd3' }}>
                   <MessageCircle size={36} style={{ color: '#00a884' }} />
                 </div>
@@ -339,7 +339,7 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                 <div key={gi}>
                   {/* Date separator */}
                   <div className="flex justify-center my-3">
-                    <span className="text-xs px-3 py-1 rounded-full font-medium shadow-sm" style={{ background: '#fff', color: '#667781' }}>{group.date}</span>
+                    <span className="text-xs px-3 py-1 rounded-full font-medium shadow-sm" style={{ background: '#fff', color: 'var(--color-text-secondary)' }}>{group.date}</span>
                   </div>
                   {group.messages.map((msg, mi) => {
                     const isMe = msg.senderId === myId;
@@ -359,7 +359,7 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                         )}
 
                         <div className={`relative max-w-[70%] group`}>
-                          <div className={`px-3 py-2 rounded-2xl shadow-sm text-sm leading-relaxed ${isMe ? 'rounded-tr-sm text-gray-900' : 'rounded-tl-sm text-gray-900'}`}
+                          <div className={`px-3 py-2 rounded-2xl shadow-sm text-sm leading-relaxed ${isMe ? 'rounded-tr-sm text-primary' : 'rounded-tl-sm text-primary'}`}
                             style={{ background: isMe ? '#d9fdd3' : '#fff' }}>
                             {showName && !isSameGroup && (
                               <p className="text-xs font-bold mb-1" style={{ color: senderIsAdmin ? '#7c3aed' : getColor(msg.senderId) }}>
@@ -371,10 +371,10 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                               <div className="flex gap-2 items-center">
                                 <input value={editText} onChange={e => setEditText(e.target.value)} className="flex-1 border rounded px-2 py-1 text-sm outline-none" style={{ borderColor: '#00a884' }} autoFocus />
                                 <button onClick={async () => { try { await api.put(`/chat/${msg.id}`, { message: editText }); await loadMessages(selectedChatId); } catch {} setEditingId(null); }} className="text-xs font-bold text-white px-2 py-1 rounded" style={{ background: '#00a884' }}>Save</button>
-                                <button onClick={() => setEditingId(null)} className="text-xs text-gray-500">✕</button>
+                                <button onClick={() => setEditingId(null)} className="text-xs text-muted">✕</button>
                               </div>
                             ) : (
-                              <p className={msg.isDeleted ? 'italic text-gray-400' : ''}>{msg.isDeleted ? 'This message was deleted' : msg.content}</p>
+                              <p className={msg.isDeleted ? 'italic text-muted' : ''}>{msg.isDeleted ? 'This message was deleted' : msg.content}</p>
                             )}
 
                             {msg.attachment && (
@@ -384,11 +384,11 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                             )}
 
                             <div className="flex items-center justify-end gap-1 mt-0.5">
-                              <span className="text-xs" style={{ color: '#667781', fontSize: '10px' }}>{formatTime(msg.timestamp)}</span>
+                              <span className="text-xs text-secondary" style={{ fontSize: '10px' }}>{formatTime(msg.timestamp)}</span>
                               {isMe && (
                                 (msg as any).isSeen
                                   ? <CheckCheck size={14} style={{ color: '#53bdeb' }} />
-                                  : <Check size={14} style={{ color: '#667781' }} />
+                                  : <Check size={14} style={{ color: 'var(--color-text-secondary)' }} />
                               )}
                             </div>
                           </div>
@@ -401,7 +401,7 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                           {/* Context menu trigger */}
                           {!msg.isDeleted && (
                             <button onClick={e => { e.stopPropagation(); setMenuMsgId(menuMsgId === msg.id ? null : msg.id); }}
-                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-gray-700">
+                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-muted hover:text-primary">
                               <ChevronDown size={14} />
                             </button>
                           )}
@@ -409,7 +409,7 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
                           {menuMsgId === msg.id && (
                             <div className={`absolute ${isMe ? 'right-0' : 'left-0'} top-8 z-50 bg-white rounded-xl shadow-xl border py-1 w-40 text-sm`} style={{ borderColor: '#e9edef' }} onClick={e => e.stopPropagation()}>
                               {(isMe || isAdmin) && <button onClick={() => { setEditingId(msg.id); setEditText(msg.content || ''); setMenuMsgId(null); }} className="w-full text-left px-4 py-2 hover:bg-gray-50">Edit</button>}
-                              {(isMe || isAdmin) && <button onClick={async () => { setMenuMsgId(null); try { await api.delete(`/chat/${msg.id}`); await loadMessages(selectedChatId); } catch {} }} className="w-full text-left px-4 py-2 hover:bg-gray-50 text-red-500">Delete</button>}
+                              {(isMe || isAdmin) && <button onClick={async () => { setMenuMsgId(null); try { await api.delete(`/chat/${msg.id}`); await loadMessages(selectedChatId); } catch {} }} className="w-full text-left px-4 py-2 hover:bg-gray-50 text-state-danger">Delete</button>}
                               <button onClick={() => { navigator.clipboard.writeText(msg.content || '').catch(() => {}); setMenuMsgId(null); }} className="w-full text-left px-4 py-2 hover:bg-gray-50">Copy</button>
                             </div>
                           )}
@@ -430,8 +430,8 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
           <div className="w-24 h-24 rounded-full flex items-center justify-center mb-6 shadow-xl" style={{ background: '#00a884' }}>
             <MessageCircle size={44} className="text-white" />
           </div>
-          <h2 className="text-2xl font-light text-gray-600 mb-2">KalraBuildtech Chat</h2>
-          <p className="text-gray-400 text-sm">Select a conversation to start messaging</p>
+          <h2 className="text-2xl font-light text-secondary mb-2">KalraBuildtech Chat</h2>
+          <p className="text-muted text-sm">Select a conversation to start messaging</p>
         </div>
       )}
 
@@ -440,12 +440,12 @@ const ChatSystemComponent: React.FC<ChatSystemProps> = ({ messages, setMessages,
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b">
-              <h3 className="font-bold text-gray-800">New Group</h3>
-              <button onClick={() => setShowGroupModal(false)}><X size={20} className="text-gray-500" /></button>
+              <h3 className="font-bold text-primary">New Group</h3>
+              <button onClick={() => setShowGroupModal(false)}><X size={20} className="text-muted" /></button>
             </div>
             <div className="p-5 space-y-4">
               <div>
-                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1.5">Group Name</label>
+                <label className="text-xs font-bold text-muted uppercase tracking-wider block mb-1.5">Group Name</label>
                 <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="e.g. Sales Team" className="w-full border rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2" style={{ borderColor: '#e9edef' }} />
               </div>
               <div>

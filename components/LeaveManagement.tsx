@@ -316,9 +316,9 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
 
                 <button
                     onClick={() => setShowApplyModal(true)}
-                    className="bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-8 py-3.5 rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold text-lg"
+                    className="btn btn-primary text-base py-3 px-6"
                 >
-                    <Plus size={24} className="animate-pulse" />
+                    <Plus size={20} />
                     Apply For Leave
                 </button>
             </div>
@@ -348,13 +348,13 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                         <AlertCircle size={32} />
                                     </div>
                                     <div>
-                                        <h3 className="text-xl font-black uppercase tracking-tight">Pending My Action</h3>
-                                        <p className="text-indigo-100/80 text-sm font-bold">You have {leaveRequests.filter(r => (String(r.appliedTo) === String(currentUser.id) || (currentUser.employeeId && String(r.appliedTo) === String(currentUser.employeeId))) && r.status === 'PENDING').length} leave requests waiting for your review.</p>
+                                        <h3 className="text-xl font-bold tracking-tight">Pending My Action</h3>
+                                        <p className="text-indigo-100/80 text-sm font-medium">You have {leaveRequests.filter(r => (String(r.appliedTo) === String(currentUser.id) || (currentUser.employeeId && String(r.appliedTo) === String(currentUser.employeeId))) && r.status === 'PENDING').length} leave requests waiting for your review.</p>
                                     </div>
                                 </div>
                                 <button
                                     onClick={() => setActiveTab('APPROVALS')}
-                                    className="px-8 py-3 bg-white text-indigo-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-50 transition-all shadow-lg"
+                                    className="btn btn-secondary text-indigo-600"
                                 >
                                     Review Requests Now
                                 </button>
@@ -364,28 +364,28 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                         {isAdmin && (
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                                 <div className="bg-gradient-to-br from-indigo-500 to-indigo-600 p-6 rounded-3xl text-white shadow-xl shadow-indigo-100">
-                                    <p className="text-indigo-100 font-bold text-xs uppercase tracking-widest mb-1">Total Requests</p>
+                                    <p className="text-indigo-100 font-semibold text-xs mb-1">Total Requests</p>
                                     <div className="flex justify-between items-end">
                                         <h3 className="text-4xl font-black">{leaveRequests.length}</h3>
                                         <FileBarChart size={24} className="opacity-40" />
                                     </div>
                                 </div>
                                 <div className="bg-gradient-to-br from-amber-500 to-amber-600 p-6 rounded-3xl text-white shadow-xl shadow-amber-100">
-                                    <p className="text-amber-100 font-bold text-xs uppercase tracking-widest mb-1">Pending Approvals</p>
+                                    <p className="text-amber-100 font-semibold text-xs mb-1">Pending Approvals</p>
                                     <div className="flex justify-between items-end">
                                         <h3 className="text-4xl font-black">{leaveRequests.filter(r => r.status === 'PENDING').length}</h3>
                                         <Clock size={24} className="opacity-40" />
                                     </div>
                                 </div>
                                 <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 p-6 rounded-3xl text-white shadow-xl shadow-emerald-100">
-                                    <p className="text-emerald-100 font-bold text-xs uppercase tracking-widest mb-1">Approved This Year</p>
+                                    <p className="text-emerald-100 font-semibold text-xs mb-1">Approved This Year</p>
                                     <div className="flex justify-between items-end">
                                         <h3 className="text-4xl font-black">{leaveRequests.filter(r => r.status === 'APPROVED').length}</h3>
                                         <CheckCircle size={24} className="opacity-40" />
                                     </div>
                                 </div>
                                 <div className="bg-gradient-to-br from-rose-500 to-rose-600 p-6 rounded-3xl text-white shadow-xl shadow-rose-100">
-                                    <p className="text-rose-100 font-bold text-xs uppercase tracking-widest mb-1">Rejected</p>
+                                    <p className="text-rose-100 font-semibold text-xs mb-1">Rejected</p>
                                     <div className="flex justify-between items-end">
                                         <h3 className="text-4xl font-black">{leaveRequests.filter(r => r.status === 'REJECTED').length}</h3>
                                         <XCircle size={24} className="opacity-40" />
@@ -398,11 +398,11 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                             // ADMIN VIEW: See All Employees
                             <div className="bg-white rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
                                 <div className="p-8 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                                    <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg">Team Leave Analysis - {currentYear}</h3>
+                                    <h3 className="font-bold text-slate-800 tracking-tight text-lg">Team Leave Analysis - {currentYear}</h3>
                                 </div>
                                 <div className="overflow-x-auto">
                                     <table className="w-full text-left text-sm">
-                                        <thead className="bg-slate-50/30 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                                        <thead className="bg-slate-50/30 text-xs font-semibold text-slate-500 border-b border-slate-100">
                                             <tr>
                                                 <th className="p-6">Team Member</th>
                                                 <th className="p-6 text-center">Total Leaves Taken</th>
@@ -462,26 +462,26 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                 </div>
 
                                 <div className="md:col-span-2 bg-white rounded-[2.5rem] p-10 shadow-xl shadow-slate-200/50 border border-slate-100">
-                                    <h3 className="font-black text-slate-800 mb-6 text-xl tracking-tight flex items-center gap-3">
+                                    <h3 className="font-black text-primary mb-6 text-xl tracking-tight flex items-center gap-3">
                                         <div className="p-2 bg-emerald-500 text-white rounded-xl"><CheckCircle size={20} /></div>
                                         Quick Leave Summary
                                     </h3>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div className="p-5 bg-indigo-50/50 rounded-2xl border border-indigo-100">
                                             <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">Last Applied</p>
-                                            <p className="text-sm font-bold text-slate-700 truncate">{leaveRequests.filter(r => String(r.employeeId) === String(currentUser.id) || (currentUser.employeeId && String(r.employeeId) === String(currentUser.employeeId))).sort((a, b) => new Date(b.appliedOn || '').getTime() - new Date(a.appliedOn || '').getTime())[0]?.startDate || 'None'}</p>
+                                            <p className="text-sm font-bold text-primary truncate">{leaveRequests.filter(r => String(r.employeeId) === String(currentUser.id) || (currentUser.employeeId && String(r.employeeId) === String(currentUser.employeeId))).sort((a, b) => new Date(b.appliedOn || '').getTime() - new Date(a.appliedOn || '').getTime())[0]?.startDate || 'None'}</p>
                                         </div>
                                         <div className="p-5 bg-emerald-50/50 rounded-2xl border border-emerald-100">
                                             <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-1">Approved This Year</p>
-                                            <p className="text-sm font-bold text-slate-700">{leaveRequests.filter(r => (String(r.employeeId) === String(currentUser.id) || (currentUser.employeeId && String(r.employeeId) === String(currentUser.employeeId))) && r.status === 'APPROVED').length}</p>
+                                            <p className="text-sm font-bold text-primary">{leaveRequests.filter(r => (String(r.employeeId) === String(currentUser.id) || (currentUser.employeeId && String(r.employeeId) === String(currentUser.employeeId))) && r.status === 'APPROVED').length}</p>
                                         </div>
                                         <div className="p-5 bg-amber-50/50 rounded-2xl border border-amber-100">
                                             <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest mb-1">Currently Pending</p>
-                                            <p className="text-sm font-bold text-slate-700">{leaveRequests.filter(r => (String(r.employeeId) === String(currentUser.id) || (currentUser.employeeId && String(r.employeeId) === String(currentUser.employeeId))) && r.status === 'PENDING').length}</p>
+                                            <p className="text-sm font-bold text-primary">{leaveRequests.filter(r => (String(r.employeeId) === String(currentUser.id) || (currentUser.employeeId && String(r.employeeId) === String(currentUser.employeeId))) && r.status === 'PENDING').length}</p>
                                         </div>
                                         <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Company Holiday Left</p>
-                                            <p className="text-sm font-bold text-slate-700">See Calendar</p>
+                                            <p className="text-[10px] font-black text-muted uppercase tracking-widest mb-1">Company Holiday Left</p>
+                                            <p className="text-sm font-bold text-primary">See Calendar</p>
                                         </div>
                                     </div>
                                 </div>
@@ -775,13 +775,13 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                                         <>
                                                             <button
                                                                 onClick={() => handleApproval(req, true)}
-                                                                className="w-full py-4 px-6 bg-gradient-to-r from-emerald-500 to-emerald-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:shadow-xl hover:shadow-emerald-100 transition-all flex items-center justify-center gap-3"
+                                                                className="btn btn-primary bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20 w-full py-3"
                                                             >
                                                                 <CheckCircle2 size={18} /> Approve
                                                             </button>
                                                             <button
                                                                 onClick={() => handleApproval(req, false)}
-                                                                className="w-full py-4 px-6 bg-white border border-rose-200 text-rose-600 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-rose-50 transition-all flex items-center justify-center gap-3 shadow-sm"
+                                                                className="btn btn-secondary text-rose-600 hover:bg-rose-50 border-rose-200 w-full py-3"
                                                             >
                                                                 <XCircle size={18} /> Reject
                                                             </button>
@@ -797,7 +797,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                                     {isAdmin && (
                                                         <button
                                                             onClick={() => handleDeleteLeave(req)}
-                                                            className="w-full py-2.5 px-4 bg-transparent text-slate-300 rounded-xl font-bold text-[10px] uppercase tracking-widest hover:text-rose-500 transition-all flex items-center justify-center gap-2 mt-auto"
+                                                            className="btn btn-ghost text-slate-400 hover:text-rose-600 w-full"
                                                         >
                                                             <X size={14} /> Delete Log
                                                         </button>
@@ -822,18 +822,18 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                             <div className="flex items-center gap-4">
                                 <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-100"><Send size={24} /></div>
                                 <div>
-                                    <h3 className="text-2xl font-black text-slate-800 tracking-tight uppercase">Apply for Leave</h3>
-                                    <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest leading-none">Complete the form below to submit your request</p>
+                                    <h3 className="text-2xl font-bold text-slate-800 tracking-tight">Apply for Leave</h3>
+                                    <p className="text-xs font-medium text-indigo-500 leading-none">Complete the form below to submit your request</p>
                                 </div>
                             </div>
-                            <button onClick={() => setShowApplyModal(false)} className="p-3 hover:bg-white hover:shadow-md rounded-2xl text-slate-400 transition-all"><X size={24} /></button>
+                            <button onClick={() => setShowApplyModal(false)} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-700" title="Close"><X size={24} /></button>
                         </div>
                         <div className="p-8 space-y-8 overflow-y-auto custom-scrollbar">
                             {errorMessage && (
                                 <div className="bg-rose-50 border border-rose-100 rounded-[1.5rem] p-6 flex gap-4 animate-pulse">
                                     <AlertCircle size={24} className="text-rose-500 shrink-0" />
                                     <div>
-                                        <p className="text-xs font-black text-rose-700 uppercase tracking-widest mb-1">Attention Required</p>
+                                        <p className="text-xs font-bold text-rose-700 mb-1">Attention Required</p>
                                         <p className="text-sm text-rose-600 font-bold">{errorMessage}</p>
                                     </div>
                                 </div>
@@ -841,10 +841,10 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                                 <div className="space-y-2">
-                                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Type of Leave</label>
+                                    <label className="block text-xs font-semibold text-slate-500 ml-1">Type of Leave</label>
                                     <div className="relative group">
                                         <select
-                                            className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:bg-white outline-none transition-all font-bold text-slate-700 appearance-none cursor-pointer"
+                                            className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:bg-white outline-none transition-all font-bold text-slate-700 appearance-none cursor-pointer text-sm"
                                             value={newLeave.leaveType || ''}
                                             onChange={e => setNewLeave(prev => ({ ...prev, leaveType: e.target.value as LeaveType }))}
                                         >
@@ -855,7 +855,7 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                 </div>
 
                                 <div className="space-y-2">
-                                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Duration Pattern</label>
+                                    <label className="block text-xs font-semibold text-slate-500 ml-1">Duration Pattern</label>
                                     <div className="relative group">
                                         <select
                                             className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:bg-white outline-none transition-all font-bold text-slate-700 appearance-none cursor-pointer"
@@ -970,12 +970,12 @@ export const LeaveManagement: React.FC<LeaveManagementProps> = ({
                                 </div>
                             </div>
                         </div>
-                        <div className="p-8 bg-slate-50/80 flex justify-end gap-4 border-t border-slate-100 shrink-0 backdrop-blur-sm">
-                            <button onClick={() => setShowApplyModal(false)} className="px-8 py-4 text-slate-400 font-black text-xs uppercase tracking-widest hover:text-slate-600 transition-colors" disabled={isSubmitting}>Cancel</button>
+                        <div className="p-6 bg-slate-50/80 dark:bg-slate-900/80 flex justify-end gap-3 border-t border-slate-100 dark:border-slate-800 shrink-0 backdrop-blur-sm">
+                            <button onClick={() => setShowApplyModal(false)} className="btn btn-secondary" disabled={isSubmitting}>Cancel</button>
                             <button
                                 onClick={handleApplyLeave}
                                 disabled={isSubmitting}
-                                className="px-10 py-4 bg-gradient-to-r from-indigo-600 to-violet-700 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-widest shadow-xl shadow-indigo-200 hover:shadow-2xl hover:shadow-indigo-300 transition-all flex items-center gap-3 disabled:opacity-50 disabled:grayscale active:scale-95"
+                                className="btn btn-primary"
                             >
                                 {isSubmitting ? <Clock size={16} className="animate-spin" /> : <Send size={16} />}
                                 {isSubmitting ? 'Processing...' : 'Submit Application'}

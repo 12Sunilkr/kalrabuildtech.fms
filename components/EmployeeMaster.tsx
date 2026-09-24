@@ -200,11 +200,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
               console.warn('Auto-login failed', e && (e.stack || e.message || e));
             }
           } else {
-            setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
+            setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
           }
         } catch (err) {
           console.error('Failed to create user on server, using local fallback', err && (err.stack || err.message || err));
-          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
+          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name, employeeId: currentEmp.id } as User)]);
         }
       }
 
@@ -269,11 +269,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
           const list = await safeGet('/users');
           setUsers(ensureArray(extractPayload(list)));
         } else {
-          setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password, plain_password: password ? password : (u.plain_password || (u.password && !u.password.startsWith('$2') ? u.password : '123')) } : u));
+          setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password } : u));
         }
       } catch (err) {
         console.error('Failed to update user on server, using local fallback', err && (err.stack || err.message || err));
-        setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password, plain_password: password ? password : (u.plain_password || (u.password && !u.password.startsWith('$2') ? u.password : '123')) } : u));
+        setUsers(users.map(u => u.employeeId === currentEmp.id ? { ...u, name: currentEmp.name || u.name, email: currentEmp.email || u.email, role, password: password ? password : u.password } : u));
       }
     } else if (currentEmp.email) {
       // Create user on server or fallback locally
@@ -289,11 +289,11 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
             if (d?.user) onSwitchUser(d.user);
           } catch (e) { console.warn('Auto-login failed', e && (e.stack || e.message || e)); }
         } else {
-          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
+          setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
         }
       } catch (err) {
         console.error('Failed to create user on server, using local fallback', err && (err.stack || err.message || err));
-        setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', plain_password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
+        setUsers([...users, ({ id: `L-${Date.now()}`, email: currentEmp.email, password: password || '123', role, name: currentEmp.name || '', employeeId: currentEmp.id } as User)]);
       }
     }
 
@@ -320,7 +320,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
       alert("Admin password updated successfully.");
     } catch (err) {
       console.error('Failed to update admin password on server, using local fallback', err && (err.stack || err.message || err));
-      setUsers(users.map(u => u.email === email ? { ...u, password: newAdminPassword, plain_password: newAdminPassword } : u));
+      setUsers(users.map(u => u.email === email ? { ...u, password: newAdminPassword } : u));
       setEditingAdminEmail(null);
       setNewAdminPassword('');
       alert("Admin password updated (local fallback).");
@@ -523,30 +523,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                           <p className="text-sm font-bold text-slate-800">{selectedEmpDetail.phone || <span className="italic text-slate-400 font-normal">Not provided</span>}</p>
                         </div>
                       </div>
-                      {(() => {
-                        const linkedUser = users.find(u => u.employeeId === selectedEmpDetail.id);
-                        if (!linkedUser) return null;
-                        const displayPass = linkedUser.plain_password || (linkedUser.password && !linkedUser.password.startsWith('$2') ? linkedUser.password : '123');
-                        return (
-                          <div className="flex items-start gap-4 border-t border-slate-200/50 pt-4">
-                            <div className="p-2.5 bg-white rounded-xl shadow-sm text-slate-500 border border-slate-100"><Lock size={18} /></div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">System Password</p>
-                              <div className="flex items-center justify-between gap-2 mt-0.5">
-                                <p className="text-sm font-bold font-mono text-slate-800 tracking-wide">
-                                  {showPlainPassword ? displayPass : '••••••••'}
-                                </p>
-                                <button 
-                                  onClick={() => setShowPlainPassword(!showPlainPassword)} 
-                                  className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2 py-1 rounded-md transition-all shrink-0"
-                                >
-                                  {showPlainPassword ? 'Hide' : 'See'}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })()}
+                      {/* System password plain display removed for security */}
                     </div>
                   </div>
                   
@@ -928,6 +905,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                   >
                     <option value="EMPLOYEE">Team Member</option>
                     <option value="ADMIN">Administrator</option>
+                    <option value="PC">Process Coordinator (PC)</option>
                   </select>
                 </div>
               </div>
@@ -1247,32 +1225,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                   >
                     <option value="EMPLOYEE">Team Member</option>
                     <option value="ADMIN">Administrator</option>
+                    <option value="PC">Process Coordinator (PC)</option>
                   </select>
                 </div>
               </div>
 
-              {(() => {
-                const linkedUser = users.find(u => u.employeeId === currentEmp.id);
-                if (!linkedUser) return null;
-                const displayPass = linkedUser.plain_password || (linkedUser.password && !linkedUser.password.startsWith('$2') ? linkedUser.password : '123');
-                return (
-                  <div className="bg-slate-50 border border-slate-200/60 p-4 rounded-xl mt-2">
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="block text-xs font-bold text-slate-500 uppercase flex items-center gap-1"><Lock size={12} /> Current Password</label>
-                      <button 
-                        type="button"
-                        onClick={() => setShowPlainPassword(!showPlainPassword)} 
-                        className="text-xs text-blue-600 hover:text-blue-800 font-bold"
-                      >
-                        {showPlainPassword ? 'Hide' : 'See'}
-                      </button>
-                    </div>
-                    <div className="text-sm font-mono font-bold text-slate-700">
-                      {showPlainPassword ? displayPass : '••••••••'}
-                    </div>
-                  </div>
-                );
-              })()}
+              {/* Current password plain display removed for security */}
 
               <div className="bg-red-50 p-4 rounded-xl mt-2">
                 <label className="block text-xs font-bold text-red-500 uppercase mb-2 flex items-center gap-1"><Lock size={12} /> Reset Password</label>
@@ -1356,17 +1314,19 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
             </div>
             <div className="p-6 space-y-6">
               <p className="text-sm text-slate-500 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                Manage login credentials for system administrators. These accounts have full access to the FMS.
+                Manage login credentials for system administrators and coordinators. These accounts have administrative access to the FMS.
               </p>
               <div className="space-y-3">
-                {users.filter(u => u.role === 'ADMIN').map(admin => (
+                {users.filter(u => u.role === 'ADMIN' || u.role === 'PC').map(admin => (
                   <div key={admin.email} className="p-4 border border-slate-200 rounded-2xl flex flex-col gap-3 hover:border-slate-300 transition-colors shadow-sm">
                     <div className="flex justify-between items-start">
                       <div>
                         <div className="font-bold text-slate-800 text-lg">{admin.name}</div>
                         <div className="text-sm text-slate-500 flex items-center gap-1"><Mail size={12} /> {admin.email}</div>
                       </div>
-                      <div className="bg-slate-900 text-white text-[10px] px-2 py-1 rounded font-bold uppercase tracking-wider">Super Admin</div>
+                      <div className="bg-slate-900 text-white text-[10px] px-2 py-1 rounded font-bold uppercase tracking-wider">
+                        {admin.role === 'PC' ? 'PC' : 'Super Admin'}
+                      </div>
                     </div>
 
                     {editingAdminEmail === admin.email ? (

@@ -137,13 +137,13 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
     return (
         <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
             <div className="mb-8">
-                <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
+                <h2 className="text-2xl md:text-3xl font-extrabold text-primary flex items-center gap-3">
                     <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center shadow-lg shadow-slate-900/20 shrink-0">
                         <Database size={20} />
                     </div>
                     System Data Hub
                 </h2>
-                <p className="text-slate-500 mt-2 font-medium md:ml-14">
+                <p className="text-secondary mt-2 font-medium md:ml-14">
                     Global management of system records, backups, and portable data files.
                 </p>
             </div>
@@ -151,14 +151,14 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12">
                 {/* Health Check Section */}
                 <div className="lg:col-span-2 space-y-6">
-                    <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2 px-1">
+                    <h3 className="text-xs font-bold uppercase tracking-widest text-muted flex items-center gap-2 px-1">
                         <Table size={14}/> Database Row Counts
                     </h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                         {stats.map(s => (
                             <div key={s.label} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
                                 <span className={`text-3xl font-black mb-1 font-mono ${s.color}`}>{s.count}</span>
-                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{s.label}</span>
+                                <span className="text-[10px] font-bold text-muted uppercase tracking-wider">{s.label}</span>
                             </div>
                         ))}
                     </div>
@@ -177,7 +177,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
 
                 {/* Operations Section */}
                 <div className="space-y-6">
-                    <h3 className="text-xs font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2 px-1">
+                    <h3 className="text-xs font-bold uppercase tracking-widest text-muted flex items-center gap-2 px-1">
                         <RefreshCw size={14}/> Data Operations
                     </h3>
 
@@ -186,11 +186,11 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0"><Database size={20}/></div>
                             <div>
-                                <h4 className="font-bold text-slate-800 text-sm">SQLite Database File</h4>
-                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Direct DB Management</p>
+                                <h4 className="font-bold text-primary text-sm">SQLite Database File</h4>
+                                <p className="text-[10px] text-muted font-bold uppercase tracking-wider">Direct DB Management</p>
                             </div>
                         </div>
-                        <p className="text-xs text-slate-500 font-medium">Upload an existing `database.sqlite` file directly, or hot-reload the file from the server's disk.</p>
+                        <p className="text-xs text-secondary font-medium">Upload an existing `database.sqlite` file directly, or hot-reload the file from the server's disk.</p>
                         
                         <div className="space-y-2">
                             {/* Upload DB */}
@@ -198,12 +198,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                             <button 
                                 onClick={() => sqliteInputRef.current?.click()}
                                 disabled={sqliteUploadStatus === 'loading'}
-                                className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
-                                    sqliteUploadStatus === 'loading' ? 'bg-slate-200 text-slate-400 cursor-not-allowed' :
-                                    sqliteUploadStatus === 'success' ? 'bg-green-600 text-white' :
-                                    sqliteUploadStatus === 'error' ? 'bg-red-600 text-white' :
-                                    'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20 cursor-pointer'
-                                }`}
+                                className={`btn ${sqliteUploadStatus === 'loading' ? 'btn-secondary opacity-70 cursor-wait' : sqliteUploadStatus === 'success' ? 'btn-primary bg-emerald-600 hover:bg-emerald-700' : sqliteUploadStatus === 'error' ? 'btn-danger' : 'btn-primary'} w-full`}
                             >
                                 {sqliteUploadStatus === 'loading' ? <><RefreshCw size={16} className="animate-spin"/> Uploading...</> :
                                  sqliteUploadStatus === 'success' ? <><CheckCircle2 size={16}/> Applied!</> :
@@ -215,12 +210,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                             <button 
                                 onClick={handleReloadFromDisk}
                                 disabled={sqliteReloadStatus === 'loading'}
-                                className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 border-2 cursor-pointer ${
-                                    sqliteReloadStatus === 'loading' ? 'bg-slate-50 border-slate-100 text-slate-400 cursor-not-allowed' :
-                                    sqliteReloadStatus === 'success' ? 'bg-green-50 border-green-200 text-green-600' :
-                                    sqliteReloadStatus === 'error' ? 'bg-red-50 border-red-200 text-red-600' :
-                                    'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                                }`}
+                                className={`btn btn-secondary w-full ${sqliteReloadStatus === 'loading' ? 'opacity-70 cursor-wait' : sqliteReloadStatus === 'success' ? 'text-emerald-600 border-emerald-200' : sqliteReloadStatus === 'error' ? 'text-rose-600 border-rose-200' : ''}`}
                             >
                                 {sqliteReloadStatus === 'loading' ? <><RefreshCw size={16} className="animate-spin"/> Reloading...</> :
                                  sqliteReloadStatus === 'success' ? <><CheckCircle2 size={16}/> Reloaded!</> :
@@ -235,15 +225,16 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center shrink-0"><Download size={20}/></div>
                             <div>
-                                <h4 className="font-bold text-slate-800 text-sm">Full Backup</h4>
-                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Export as JSON</p>
+                                <h4 className="font-bold text-primary text-sm">Full Backup</h4>
+                                <p className="text-[10px] text-muted font-bold uppercase tracking-wider">Export as JSON</p>
                             </div>
                         </div>
-                        <p className="text-xs text-slate-500">Download a portable snapshot of the entire database for archiving or migration.</p>
+                        <p className="text-xs text-secondary">Download a portable snapshot of the entire database for archiving or migration.</p>
                         <button 
                             onClick={handleExport}
-                            className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-sm shadow-lg shadow-indigo-600/20 transition-all flex items-center justify-center gap-2"
+                            className="btn btn-primary w-full"
                         >
+                            <Download size={16} />
                             Download Database File
                         </button>
                     </div>
@@ -253,19 +244,15 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center shrink-0"><Upload size={20}/></div>
                             <div>
-                                <h4 className="font-bold text-slate-800 text-sm">Restore Data</h4>
-                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Import JSON</p>
+                                <h4 className="font-bold text-primary text-sm">Restore Data</h4>
+                                <p className="text-[10px] text-muted font-bold uppercase tracking-wider">Import JSON</p>
                             </div>
                         </div>
-                        <p className="text-xs text-slate-500">Restore your system state from a previously exported backup file.</p>
+                        <p className="text-xs text-secondary">Restore your system state from a previously exported backup file.</p>
                         <input type="file" ref={fileInputRef} onChange={handleImport} className="hidden" accept=".json" />
                         <button 
                             onClick={() => fileInputRef.current?.click()}
-                            className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
-                                importStatus === 'success' ? 'bg-green-600 text-white' :
-                                importStatus === 'error' ? 'bg-red-600 text-white' :
-                                'bg-white border-2 border-emerald-100 text-emerald-600 hover:bg-emerald-50'
-                            }`}
+                            className={`btn ${importStatus === 'success' ? 'btn-primary bg-emerald-600' : importStatus === 'error' ? 'btn-danger' : 'btn-secondary text-emerald-700 hover:text-emerald-800 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'} w-full`}
                         >
                             {importStatus === 'success' ? <><CheckCircle2 size={16}/> Restored!</> : 
                              importStatus === 'error' ? 'Invalid File' : 
@@ -287,11 +274,7 @@ export const DatabaseManager: React.FC<DatabaseManagerProps> = ({ allData, onRes
                         <button 
                             onClick={handleResetSystem}
                             onMouseLeave={() => setConfirmReset(false)}
-                            className={`w-full py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
-                                confirmReset 
-                                ? 'bg-red-600 text-white animate-pulse' 
-                                : 'bg-white border-2 border-red-100 text-red-600 hover:bg-red-100'
-                            }`}
+                            className={`btn ${confirmReset ? 'btn-danger animate-pulse' : 'btn-secondary text-rose-600 hover:text-rose-700 border-rose-200 bg-white hover:bg-rose-50'} w-full`}
                         >
                             <Trash2 size={16}/>
                             {confirmReset ? 'Click again to confirm WIPE' : 'Reset System Database'}

@@ -175,7 +175,6 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
     } catch (err) {
         console.error("Login component error:", err);
     } finally {
-        // Only reset loading if we didn't navigate away (App handles navigation)
         setTimeout(() => setIsLoggingIn(false), 2000);
     }
   };
@@ -189,7 +188,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
           const generatedPass = await onResetPassword(recoveryEmail);
           if (generatedPass) {
               if (typeof generatedPass === 'string') {
-                  setTempPassword(generatedPass); // Save dynamic OTP for demo backup
+                  setTempPassword(generatedPass);
               }
               setRecoveryStep('RESET');
           } else {
@@ -316,7 +315,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
                     <button 
                         type="button" 
                         onClick={() => setShowForgotModal(true)}
-                        className="text-[10px] font-black text-blue-400 uppercase tracking-tighter hover:text-blue-300 transition-colors"
+                        className="text-[10px] font-black text-blue-400 uppercase tracking-tighter hover:text-blue-300 transition-colors cursor-pointer"
                     >
                         Forgot?
                     </button>
@@ -346,11 +345,10 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
               <button
                 type="submit"
                 disabled={isLocked || isLoggingIn}
-                className={`w-full font-bold py-4 rounded-xl shadow-[0_20px_40px_-10px_rgba(59,130,246,0.5)] active:scale-[0.98] transition-all flex items-center justify-center gap-3 group relative overflow-hidden ${
-                    isLocked || isLoggingIn ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-white'
+                className={`btn btn-primary w-full py-4 text-base ${
+                    isLocked || isLoggingIn ? 'opacity-50 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg shadow-indigo-500/25'
                 }`}
               >
-                {!isLocked && !isLoggingIn && <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>}
                 <span className="relative z-10 flex items-center gap-2">
                    {isLoggingIn ? <><Loader2 size={20} className="animate-spin" /> Authenticating...</> : isLocked ? `Locked (${lockoutTimer}s)` : <>Secure Login <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" /></>}
                 </span>
@@ -383,7 +381,8 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
                               setNewPassword(''); 
                               setConfirmPassword(''); 
                           }} 
-                          className="text-slate-500 hover:text-white p-2"
+                          className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-white"
+                          title="Close"
                       >
                           <X size={20}/>
                       </button>
@@ -403,7 +402,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
                                   setNewPassword(''); 
                                   setConfirmPassword(''); 
                               }} 
-                              className="w-full bg-white text-slate-900 font-bold py-3 rounded-xl mt-4"
+                              className="btn btn-secondary w-full py-3.5 mt-4"
                           >
                               Back to Login
                           </button>
@@ -467,7 +466,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
                               <button 
                                 type="submit"
                                 disabled={recoveryLoading}
-                                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 disabled:opacity-50 transition-all mt-6"
+                                className="btn btn-primary w-full py-3.5 mt-6"
                               >
                                   {recoveryLoading ? <Loader2 size={18} className="animate-spin"/> : 'Reset Password'}
                               </button>
@@ -495,7 +494,7 @@ export const Auth: React.FC<AuthProps> = ({ onLogin, onResetPassword, onConfirmR
                               <button 
                                 type="submit"
                                 disabled={recoveryLoading}
-                                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 disabled:opacity-50 transition-all"
+                                className="btn btn-primary w-full py-3.5"
                               >
                                   {recoveryLoading ? <Loader2 size={18} className="animate-spin"/> : <><Send size={18}/> Send Verification Code</>}
                               </button>

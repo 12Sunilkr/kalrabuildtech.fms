@@ -25,7 +25,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     const [selectedDate, setSelectedDate] = useState<Date | null>(null);
     const [tasks, setTasks] = useState<Task[]>([]);
     const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
-    // Load tasks from server
+    const [localEmployees, setLocalEmployees] = useState<Employee[]>(employees || []);
+
+    useEffect(() => {
+        if (employees && employees.length > 0) {
+            setLocalEmployees(employees);
+        }
+    }, [employees]);
+
+    const effectiveEmployees = useMemo(() => {
+        return (employees && employees.length > 0) ? employees : localEmployees;
+    }, [employees, localEmployees]);
+
+    // Load tasks, calendar events, and employees from server
     useEffect(() => {
         let mounted = true;
         const load = async () => {
@@ -40,6 +52,12 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                     const carr = ensureArray(cp);
                     if (mounted) setCalendarEvents(carr);
                 } catch (e) { console.warn('Calendar: failed to load server calendar events', e && (e.stack || e.message || e)); }
+                try {
+                    const er = await safeGet('/employees');
+                    const ep = extractPayload(er);
+                    const earr = ensureArray(ep);
+                    if (mounted && earr.length > 0) setLocalEmployees(earr);
+                } catch (e) { console.warn('Calendar: failed to load employees', e && (e.stack || e.message || e)); }
             } catch (e) { console.warn('Calendar: failed to load tasks', e && (e.stack || e.message || e)); }
         };
         load();
@@ -106,6 +124,31 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
         })();
     };
 
+    // Helper to safely extract month (0-indexed) and day (1-31) regardless of timezone / format
+    const getBirthdayParts = (birthDateStr?: string | number | Date) => {
+        if (!birthDateStr) return null;
+        if (typeof birthDateStr === 'string') {
+            const clean = birthDateStr.trim().split('T')[0].split(' ')[0];
+            if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(clean)) {
+                const parts = clean.split(/[-/]/);
+                const m = parseInt(parts[1], 10) - 1;
+                const d = parseInt(parts[2], 10);
+                if (!isNaN(m) && !isNaN(d)) return { month: m, day: d };
+            }
+            if (/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(clean)) {
+                const parts = clean.split(/[-/]/);
+                const d = parseInt(parts[0], 10);
+                const m = parseInt(parts[1], 10) - 1;
+                if (!isNaN(m) && !isNaN(d)) return { month: m, day: d };
+            }
+        }
+        const dob = new Date(birthDateStr);
+        if (!isNaN(dob.getTime())) {
+            return { month: dob.getMonth(), day: dob.getDate() };
+        }
+        return null;
+    };
+
     // --- Aggregate Events ---
     const getEventsForDate = (date: Date) => {
         const dateKey = formatDateKey(date);
@@ -130,10 +173,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
         const currentDay = getDate(date);
         const currentMonth = getMonth(date);
 
-        employees.forEach(emp => {
+        effectiveEmployees.forEach(emp => {
             if (emp.birthDate) {
-                const dob = new Date(emp.birthDate);
-                if (getDate(dob) === currentDay && getMonth(dob) === currentMonth) {
+                const parts = getBirthdayParts(emp.birthDate);
+                if (parts && parts.day === currentDay && parts.month === currentMonth) {
                     events.push({ type: 'BIRTHDAY', data: emp });
                 }
             }
@@ -252,7 +295,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                                                 break;
                                             case 'LEAVE':
                                                 bg = 'bg-purple-50 text-purple-700 border border-purple-100';
-                                                const empName = employees.find(emp => emp.id === e.data.employeeId)?.name.split(' ')[0] || e.data.employeeId;
+                                                const empName = effectiveEmployees.find(emp => emp.id === e.data.employeeId)?.name.split(' ')[0] || e.data.employeeId;
                                                 label = `Leave: ${empName}`;
                                                 break;
                                             case 'REMINDER':
@@ -294,7 +337,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                             {currentUser.role === 'ADMIN' ? (
                                 <select value={newReminderUserId || 'ADMIN'} onChange={e => setNewReminderUserId(e.target.value)} className="rounded-xl border border-yellow-200 px-3 py-2 text-sm bg-white">
                                     <option value="ADMIN">Admin (self)</option>
-                                    {employees.map(emp => (
+                                    {effectiveEmployees.map(emp => (
                                         <option key={emp.id} value={emp.id}>{emp.name}</option>
                                     ))}
                                 </select>
@@ -334,7 +377,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                                 getEventsForDate(selectedDate).map((e, idx) => {
                                     switch (e.type) {
                                         case 'HOLIDAY':
-                                            return (
+                                             return (
                                                 <div key={idx} className="bg-red-50 p-4 rounded-xl border border-red-100 flex gap-3 items-center">
                                                     <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-red-500 font-bold shrink-0 shadow-sm"><CalendarDays size={18} /></div>
                                                     <div>
@@ -363,7 +406,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                                                     <div>
                                                         <div className="text-xs font-bold text-blue-400 uppercase">Task Due</div>
                                                         <div className="font-bold text-blue-900">{t.title}</div>
-                                                        <div className="text-xs text-blue-600/80">Assigned to: {employees.find(emp => emp.id === t.assignedTo)?.name}</div>
+                                                        <div className="text-xs text-blue-600/80">Assigned to: {effectiveEmployees.find(emp => emp.id === t.assignedTo)?.name}</div>
                                                     </div>
                                                 </div>
                                             );
@@ -381,13 +424,13 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                                             );
                                         case 'LEAVE':
                                             const l = e.data as LeaveRequest;
-                                            const empName = employees.find(emp => emp.id === l.employeeId)?.name;
+                                            const lEmpName = effectiveEmployees.find(emp => emp.id === l.employeeId)?.name;
                                             return (
                                                 <div key={idx} className="bg-purple-50 p-4 rounded-xl border border-purple-100 flex gap-3 items-center">
                                                     <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-purple-500 font-bold shrink-0 shadow-sm"><FileBarChart size={18} /></div>
                                                     <div>
                                                         <div className="text-xs font-bold text-purple-400 uppercase">On Leave</div>
-                                                        <div className="font-bold text-purple-900">{empName}</div>
+                                                        <div className="font-bold text-purple-900">{lEmpName}</div>
                                                         <div className="text-xs text-purple-600/80">{l.leaveType} ({l.durationType})</div>
                                                     </div>
                                                 </div>

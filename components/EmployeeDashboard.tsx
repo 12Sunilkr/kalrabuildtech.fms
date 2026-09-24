@@ -155,12 +155,44 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   // Retrieve Full Employee Details
   const employeeDetails = employees.find(e => e.id === empId);
 
-  // Check for Birthday
+  // Helper for parsing any birthDate string/format safely
+  const getBirthdayParts = (birthDateStr?: string | number | Date) => {
+    if (!birthDateStr) return null;
+    if (typeof birthDateStr === 'string') {
+      const clean = birthDateStr.trim().split('T')[0].split(' ')[0];
+      if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(clean)) {
+        const parts = clean.split(/[-/]/);
+        const m = parseInt(parts[1], 10) - 1;
+        const d = parseInt(parts[2], 10);
+        if (!isNaN(m) && !isNaN(d)) return { month: m, day: d };
+      }
+      if (/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(clean)) {
+        const parts = clean.split(/[-/]/);
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        if (!isNaN(m) && !isNaN(d)) return { month: m, day: d };
+      }
+    }
+    const dob = new Date(birthDateStr);
+    if (!isNaN(dob.getTime())) {
+      return { month: dob.getMonth(), day: dob.getDate() };
+    }
+    return null;
+  };
+
+  // Check for Birthday of current user
   const isBirthday = (() => {
     if (!employeeDetails?.birthDate) return false;
-    const dob = new Date(employeeDetails.birthDate);
-    return today.getDate() === dob.getDate() && today.getMonth() === dob.getMonth();
+    const parts = getBirthdayParts(employeeDetails.birthDate);
+    return parts && parts.day === today.getDate() && parts.month === today.getMonth();
   })();
+
+  // Colleagues celebrating birthdays today
+  const teamBirthdaysToday = employees.filter(emp => {
+    if (!emp.birthDate) return false;
+    const parts = getBirthdayParts(emp.birthDate);
+    return parts && parts.day === today.getDate() && parts.month === today.getMonth();
+  });
 
   // Performance Report State
   const [showPerformanceReport, setShowPerformanceReport] = useState(false);
@@ -359,12 +391,12 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                 
                 {/* Info Block */}
                 <div className="flex-1 text-center md:text-left flex flex-col justify-center min-h-[6rem]">
-                    <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{user.name}</h1>
-                    <div className="mt-2 flex flex-wrap items-center justify-center md:justify-start gap-3 text-sm text-slate-500">
+                    <h1 className="text-2xl font-bold text-primary tracking-tight">{user.name}</h1>
+                    <div className="mt-2 flex flex-wrap items-center justify-center md:justify-start gap-3 text-sm text-secondary">
                         <span className="flex items-center gap-1.5"><Briefcase size={14} /> {employeeDetails?.designation || 'Staff'}</span>
-                        <span className="hidden sm:inline text-slate-300">•</span>
+                        <span className="hidden sm:inline text-muted">•</span>
                         <span className="flex items-center gap-1.5"><MapPin size={14} /> {employeeDetails?.department || 'Operations'}</span>
-                        <span className="hidden sm:inline text-slate-300">•</span>
+                        <span className="hidden sm:inline text-muted">•</span>
                         <span className="flex items-center gap-1.5"><Mail size={14} /> {user.email || 'N/A'}</span>
                     </div>
                 </div>
@@ -374,9 +406,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                     <button
                         onClick={handleRefresh}
                         disabled={isRefreshing}
-                        className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-sm transition-all shadow-sm border ${
-                            isRefreshing ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-wait' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300'
-                        }`}
+                        className={`btn btn-secondary ${isRefreshing ? 'cursor-wait opacity-70' : ''}`}
                     >
                         <RefreshCw size={14} className={isRefreshing ? 'animate-spin text-slate-400' : ''} />
                         {isRefreshing ? 'Syncing...' : 'Sync Data'}
@@ -387,13 +417,36 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
 
         {/* 2. Birthday Notification */}
         {isBirthday && (
-           <div className="bg-gradient-to-r from-indigo-50 to-blue-50 border border-indigo-100 rounded-xl p-4 flex items-center gap-4 text-indigo-900 shadow-sm">
-               <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg"><Cake size={20} /></div>
+           <div className="bg-gradient-to-r from-pink-500/10 via-purple-500/10 to-indigo-500/10 border border-pink-200 rounded-2xl p-5 flex items-center gap-4 text-pink-900 shadow-sm animate-fade-in">
+               <div className="p-3 bg-gradient-to-tr from-pink-500 to-rose-600 text-white rounded-xl shadow-md shadow-pink-200 shrink-0"><Cake size={24} /></div>
                <div>
-                   <p className="font-semibold text-sm">Happy Birthday, {user.name}! 🎉</p>
-                   <p className="text-xs opacity-80 mt-0.5">Wishing you a great day from Kalra Buildtech.</p>
+                   <p className="font-extrabold text-base text-slate-800">Happy Birthday, {user.name}! 🎉🎂</p>
+                   <p className="text-xs text-pink-700/80 mt-0.5 font-medium">Wishing you a wonderful day filled with joy and success from Kalra Buildtech!</p>
                </div>
            </div>
+        )}
+
+        {/* Team Birthdays Celebration Alert */}
+        {teamBirthdaysToday.length > 0 && (
+          <div className="p-6 rounded-2xl border border-pink-100 bg-white shadow-lg shadow-pink-500/5 flex items-center gap-6 animate-scale-in relative overflow-hidden group">
+              <div className="absolute -right-12 -top-12 text-pink-500/5 transform group-hover:scale-110 transition-transform duration-700 pointer-events-none">
+                  <Cake size={180} />
+              </div>
+              <div className="w-14 h-14 bg-gradient-to-tr from-pink-500 to-rose-600 rounded-2xl flex items-center justify-center text-white shadow-md shadow-pink-200 shrink-0">
+                  <Cake size={28} />
+              </div>
+              <div className="relative z-10 flex-1">
+                  <p className="text-pink-600 font-bold text-[10px] uppercase tracking-wider mb-1 leading-none">Celebration Alert</p>
+                  <h3 className="font-extrabold text-lg text-slate-800 mb-2 tracking-tight">Today's Team Birthdays! 🎂</h3>
+                  <div className="flex flex-wrap gap-2">
+                      {teamBirthdaysToday.map(emp => (
+                          <span key={emp.id} className="text-xs font-bold bg-pink-50 text-pink-700 px-3 py-1 rounded-lg border border-pink-100 shadow-sm">
+                              {emp.name} {emp.designation ? `(${emp.designation})` : ''}
+                          </span>
+                      ))}
+                  </div>
+              </div>
+          </div>
         )}
 
         {/* 3. Main Content Grid */}
@@ -405,7 +458,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 overflow-hidden flex flex-col transition-all duration-300 hover:shadow-md">
                     {/* Header */}
                     <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-4 flex items-center justify-between">
-                        <h3 className="font-bold text-slate-800 flex items-center gap-2.5 text-sm">
+                        <h3 className="font-bold text-primary flex items-center gap-2.5 text-sm">
                             <span className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg border border-indigo-100/50">
                                 <Clock size={16} />
                             </span>
@@ -437,13 +490,13 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                     
                     <div className="p-6 text-center flex-1 flex flex-col justify-center bg-gradient-to-b from-white to-slate-50/30">
                         {/* Timer display */}
-                        <div className="font-mono text-4xl sm:text-5xl font-black text-slate-800 tracking-tight mb-2 selection:bg-indigo-100">
+                        <div className="font-mono text-4xl sm:text-5xl font-black text-primary tracking-tight mb-2 selection:bg-indigo-100">
                             {formatTime(elapsed)}
                         </div>
 
                         {/* Official first-login time + late indicator */}
                         {validFirstLoginTime && (
-                          <div className={`text-xs font-semibold mb-4 flex items-center justify-center gap-1.5 ${isLateLogin ? 'text-rose-500' : 'text-emerald-600'}`}>
+                          <div className={`text-xs font-semibold mb-4 flex items-center justify-center gap-1.5 ${isLateLogin ? 'text-state-danger' : 'text-state-success'}`}>
                             <Clock size={12} />
                             Login: {format(validFirstLoginTime, 'hh:mm:ss a')}
                             {isLateLogin ? (
@@ -456,12 +509,12 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                         
                         <div className="grid grid-cols-2 gap-3 mb-6">
                             <div className="bg-white p-3.5 rounded-xl border border-slate-200/70 shadow-2xs">
-                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1 tracking-wider">Target</p>
-                                <p className="font-bold text-slate-800 text-sm">08:00h</p>
+                                <p className="text-[10px] uppercase font-bold text-muted mb-1 tracking-wider">Target</p>
+                                <p className="font-bold text-primary text-sm">08:00h</p>
                             </div>
                             <div className="bg-white p-3.5 rounded-xl border border-slate-200/70 shadow-2xs">
-                                <p className="text-[10px] uppercase font-bold text-slate-400 mb-1 tracking-wider">Overtime</p>
-                                <p className="font-bold text-emerald-600 text-sm">+{overtime.toFixed(2)}h</p>
+                                <p className="text-[10px] uppercase font-bold text-muted mb-1 tracking-wider">Overtime</p>
+                                <p className="font-bold text-state-success text-sm">+{overtime.toFixed(2)}h</p>
                             </div>
                         </div>
 
@@ -476,7 +529,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                               {sessionsLeft > 0 && cooldownSecs === 0 && (
                                 <button
                                     onClick={onClockIn}
-                                    className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 active:scale-95 text-white font-bold py-3.5 rounded-xl shadow-md shadow-indigo-500/20 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
+                                    className="btn btn-primary w-full py-3"
                                 >
                                     <PlayCircle size={18} /> Begin Shift
                                 </button>
@@ -500,7 +553,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                               {!existingSundayReq && (
                                 <button
                                     onClick={() => setShowSundayReqModal(true)}
-                                    className="w-full border border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 font-semibold py-2.5 rounded-xl transition-all text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                    className="btn btn-secondary w-full text-amber-700 border-amber-200 bg-amber-50 hover:bg-amber-100"
                                 >
                                     <AlertTriangle size={14} /> Notify Admin (Optional)
                                 </button>
@@ -526,7 +579,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                     /* Currently clocked in — show End Session */
                                     <button
                                         onClick={onClockOut}
-                                        className="w-full bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 active:scale-[0.98] text-white font-bold py-3.5 rounded-xl shadow-md shadow-red-500/20 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
+                                        className="btn btn-danger w-full py-3"
                                     >
                                         <LogOut size={18} /> End Session
                                     </button>
@@ -552,7 +605,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                                     /* Ready to start next session (or first session) */
                                     <button
                                         onClick={onClockIn}
-                                        className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 active:scale-[0.98] text-white font-bold py-3.5 rounded-xl shadow-md shadow-indigo-500/20 transition-all text-sm flex items-center justify-center gap-2 cursor-pointer"
+                                        className="btn btn-primary w-full py-3"
                                     >
                                         <PlayCircle size={18} />
                                         {sessionCount === 0 ? 'Begin Shift' : `Resume Session (${sessionCount + 1}/${MAX_SESSIONS})`}
@@ -656,101 +709,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                     </div>
                 </div>
 
-                {/* My Shift Logs History Section */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4 flex items-center justify-between">
-                        <h3 className="font-semibold text-slate-800 flex items-center gap-2 text-sm">
-                            <Clock size={16} className="text-indigo-500" /> My Shift Logs History
-                        </h3>
-                        {onNavigate && (
-                            <button
-                                onClick={() => onNavigate(ViewMode.TIME_LOGS)}
-                                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-1"
-                            >
-                                View Full History <ChevronRight size={14} />
-                            </button>
-                        )}
-                    </div>
 
-                    <div className="p-5">
-                        {allUserLogs.length === 0 ? (
-                            <div className="text-center py-8 text-slate-400 text-xs">
-                                <Clock size={32} className="mx-auto mb-2 opacity-40" />
-                                No shift logs recorded yet today. Click "Begin Shift" above to start logging.
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {[...allUserLogs]
-                                    .filter(l => l.clockIn && !isNaN(new Date(l.clockIn).getTime()))
-                                    .sort((a, b) => new Date(b.clockIn!).getTime() - new Date(a.clockIn!).getTime())
-                                    .slice(0, 7)
-                                    .map((log, idx) => {
-                                        const startDt = new Date(log.clockIn!);
-                                        const endDt = log.clockOut && !isNaN(new Date(log.clockOut).getTime()) ? new Date(log.clockOut) : null;
-                                        const isActive = !log.clockOut;
-                                        const duration = log.durationHours ?? (endDt ? (endDt.getTime() - startDt.getTime()) / 3600000 : 0);
-
-                                        return (
-                                            <div key={log.id || idx} className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-slate-50/70 hover:bg-slate-100/80 rounded-xl border border-slate-100 transition-colors gap-2">
-                                                <div className="flex items-center gap-3">
-                                                    <div className={`p-2.5 rounded-xl ${isActive ? 'bg-emerald-100 text-emerald-700 animate-pulse' : 'bg-slate-200/70 text-slate-600'}`}>
-                                                        <Clock size={16} />
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-xs font-bold text-slate-800">
-                                                            {log.date || format(startDt, 'yyyy-MM-dd')}
-                                                        </p>
-                                                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-                                                            In: <span className="font-bold text-slate-700">{format(startDt, 'hh:mm:ss a')}</span>
-                                                            {endDt ? (
-                                                                <> · Out: <span className="font-bold text-slate-700">{format(endDt, 'hh:mm:ss a')}</span></>
-                                                            ) : (
-                                                                <span className="ml-1 text-emerald-600 font-bold uppercase text-[10px]">· Active Now</span>
-                                                            )}
-                                                        </p>
-                                                    </div>
-                                                </div>
-
-                                                <div className="flex items-center gap-3 self-end sm:self-center">
-                                                    <span className="text-xs font-black text-slate-800">
-                                                        {isActive ? (
-                                                            <span className="text-emerald-600">In Progress</span>
-                                                        ) : (
-                                                            `${duration.toFixed(2)} hrs`
-                                                        )}
-                                                    </span>
-                                                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}`}>
-                                                        {isActive ? 'Active' : 'Closed'}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                {/* Quick Links */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div className="border-b border-slate-100 bg-slate-50/50 px-5 py-4">
-                        <h3 className="font-semibold text-slate-800 text-sm">Quick Navigation</h3>
-                    </div>
-                    <div className="divide-y divide-slate-100">
-                        <button
-                            onClick={() => onNavigate?.(ViewMode.TIME_LOGS)}
-                            className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors group cursor-pointer"
-                        >
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-slate-100 rounded-lg text-slate-600 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
-                                    <Clock size={16} />
-                                </div>
-                                <span className="text-sm font-semibold text-slate-700">Time Logs History</span>
-                            </div>
-                            <ChevronRight size={16} className="text-slate-400 group-hover:text-slate-600 group-hover:translate-x-0.5 transition-transform" />
-                        </button>
-                    </div>
-                </div>
 
             </div>
         </div>
@@ -765,9 +724,10 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
                 </div>
                 <button 
                     onClick={() => setShowSundayReqModal(false)}
-                    className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                    className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600"
+                    title="Close"
                 >
-                    <X size={24} className="text-slate-400" />
+                    <X size={20} />
                 </button>
               </div>
               <h3 className="text-3xl font-black text-slate-900 mb-3 tracking-tight">Notify Admin</h3>
@@ -783,7 +743,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
               <button
                 onClick={handleSundayRequest}
                 disabled={!sundayReason.trim()}
-                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-5 rounded-[2rem] shadow-2xl shadow-slate-900/20 active:scale-95 transition-all text-lg disabled:opacity-50 disabled:pointer-events-none"
+                className="btn btn-primary w-full py-3.5 text-base"
               >
                 Notify Admin
               </button>
@@ -872,9 +832,10 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
               {/* Close Button Overlay */}
               <button 
                 onClick={() => setShowPerformanceReport(false)}
-                className="absolute top-10 right-10 w-12 h-12 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 text-slate-400 rounded-2xl flex items-center justify-center transition-all shadow-sm active:scale-95"
+                className="btn btn-ghost btn-icon absolute top-8 right-8 text-slate-400 hover:text-slate-800"
+                title="Close"
               >
-                <X size={24} />
+                <X size={22} />
               </button>
             </div>
           </div>

@@ -5,7 +5,7 @@ import { format, isPast, differenceInHours } from 'date-fns';
 import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronLeft, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw, Users, ArrowRightLeft, XCircle, Layers } from 'lucide-react';
 
 import { convertFileToBase64 } from '../utils/fileHelper';
-import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
+import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, safeGetSwr } from '../src/utils/api';
 
 const extractPayload = apiExtractPayload;
 const ensureArray = apiEnsureArray;
@@ -69,9 +69,10 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
 
-  // Refresh tasks on mount and when currentUser changes
+  // On mount: use SWR so tasks already in state/cache show instantly;
+  // a background refresh keeps data fresh without blocking the UI.
   useEffect(() => {
-    fetchTasks();
+    fetchTasks(tasks && tasks.length > 0);
     fetchUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
@@ -119,22 +120,34 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     return !!task.completionDate || (task.status || '').toUpperCase() === 'COMPLETED';
   };
 
-
-
-  // --- Fetch tasks from server for current user (admin fetches all) ---
-  const fetchTasks = async () => {
-    setIsLoading(true);
+  // --- Fetch tasks using stale-while-revalidate for instant loading ---
+  // silent=true → if we already have tasks in state, don't show a spinner;
+  //               SWR returns cached data instantly, background-refreshes quietly.
+  // silent=false → first ever load (tasks array empty): show spinner until resolved.
+  const fetchTasks = async (silent = false) => {
+    if (!silent) setIsLoading(true);
     setError(null);
     try {
-      // The API returns tasks for the logged-in user when called as GET /api/tasks
-      const r = await safeGet('/tasks');
+      const r = await safeGetSwr(
+        '/tasks',
+        // onFresh callback: called when background refresh completes
+        (fresh) => {
+          const payload = extractPayload(fresh);
+          const arr = ensureArray(payload);
+          if (arr.length > 0) setTasks(arr);
+        },
+        {}, // no extra query params
+        15_000,  // fresh window: 15s
+        120_000  // stale window: 2 min
+      );
       const payload = extractPayload(r);
-      setTasks(ensureArray(payload));
+      const arr = ensureArray(payload);
+      if (arr.length > 0 || !silent) setTasks(arr);
     } catch (e) {
       console.warn('Failed to fetch tasks', e);
-      setError('Failed to load tasks');
+      if (!silent) setError('Failed to load tasks');
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   };
 
@@ -269,21 +282,28 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
         if (created) {
           const createdTask = Array.isArray(created) ? created[0] : (created.task || created);
           if (createdTask && createdTask.id) newId = createdTask.id;
-          setTasks(prev => [createdTask as Task, ...prev]);
+          if (createdTask) {
+            setTasks(prev => [createdTask as Task, ...prev.filter(t => t.id !== createdTask.id)]);
+          }
         }
       } catch (e) {
         console.warn('Could not extract created task, continuing to refresh', e && (e.stack || e.message || e));
       }
-      try { await fetchTasks(); } catch (e) { console.warn('Refresh after create failed, keeping optimistic state', e && (e.stack || e.message || e)); }
+
+      // Close modal IMMEDIATELY upon successful server receipt
       setShowAssignModal(false);
+      setIsLoading(false);
+
       addNotification('New Task', `Task ${newId ? newId : ''} "${payload.title}" assigned successfully.`, 'TASK', String(payload.assignedTo || payload.assigned_to));
+
+      // Refresh quietly in background
+      fetchTasks().catch(e => console.warn('Background refresh after create failed', e));
     } catch (err: any) {
       console.error('Create task failed', err);
       const message = err && err.response && (err.response.data?.message || err.response.data?.error) ? (err.response.data.message || err.response.data.error) : (err && err.message) || 'Failed to create task';
       setError(message);
-      throw err;
-    } finally {
       setIsLoading(false);
+      throw err;
     }
   };
 
@@ -297,15 +317,17 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
         completionProcess: processNote,
         completionAttachment: attachment || null
       };
-      await api.put(`/tasks/${taskId}`, payload);
+      // Optimistically update local state & close modal immediately
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'COMPLETED', completionDate: payload.completionDate, completionProcess: payload.completionProcess, completionAttachment: payload.completionAttachment } : t));
-      await fetchTasks();
       setShowCompleteModal(null);
+      setIsLoading(false);
+
+      await api.put(`/tasks/${taskId}`, payload);
       addNotification('Task Completed', `Task ${taskId} marked as completed by ${currentUser.name}.`, 'TASK', String('ADMIN'));
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (e) {
       console.error('Complete task failed', e);
       setError('Failed to complete task');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -316,9 +338,6 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     try {
       const task = tasks.find(t => t.id === taskId);
 
-      // Call the dedicated uncomplete endpoint — this directly NULLs completionDate in the DB
-      await api.put(`/tasks/${taskId}/uncomplete`, {});
-
       // Optimistically clear completion fields in local state
       setTasks(prev => prev.map(t =>
         t.id === taskId
@@ -326,27 +345,24 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
           : t
       ));
 
-      // Refresh from server so we get the authoritative state
-      await fetchTasks();
-
-      if (task) addNotification('Task Reverted', `Task "${task.title}" marked as incomplete by Admin.`, 'TASK', String(task.assignedTo));
-
       // Figure out where the task belongs based on its due date
       const dueDateObj = task?.dueDate ? new Date(task.dueDate) : null;
       const isValidDate = dueDateObj && !isNaN(dueDateObj.getTime());
       const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
       const isLate = isValidDate && dueDateObj! < todayStart;
-
-      // Navigate admin/user to the correct tab
       setActiveTab(isLate ? 'OVERDUE' : 'PENDING');
+      setIsLoading(false);
+
+      // Call the dedicated uncomplete endpoint
+      await api.put(`/tasks/${taskId}/uncomplete`, {});
+      if (task) addNotification('Task Reverted', `Task "${task.title}" marked as incomplete by Admin.`, 'TASK', String(task.assignedTo));
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (e) {
       console.error('Mark incomplete failed', e);
       setError('Failed to mark task as incomplete');
-    } finally {
       setIsLoading(false);
     }
   };
-
 
   const handleRaiseObjection = async (taskId: string, extensionDate: string, extensionReason: string) => {
     setIsLoading(true);
@@ -358,12 +374,7 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
         status: 'PENDING',
         timestamp: new Date().toISOString()
       };
-      // Update extensionRequest and extensionHistory on the server
-      // Fetch existing task to build new history
-      const res = await safeGet('/tasks');
-      const payload = extractPayload(res);
-      const allTasks = ensureArray(payload);
-      const task = tasks.find(t => t.id === taskId) || allTasks.find((x: any) => x.id === taskId);
+      const task = tasks.find(t => t.id === taskId);
       const currentCount = (task as any)?.objectionCount || (task?.extensionHistory || []).length;
       if (currentCount >= 3) {
         setError('Maximum limit of 3 objections reached for this task');
@@ -371,14 +382,18 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
         return;
       }
       const newHistory = [...(task?.extensionHistory || []), newReq];
-      await api.put(`/tasks/${taskId}`, { status: 'EXTENSION_REQUESTED', extensionRequest: newReq, extensionHistory: newHistory });
-      await fetchTasks();
+
+      // Optimistic update
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'EXTENSION_REQUESTED', extensionRequest: newReq, extensionHistory: newHistory } : t));
       setShowObjectionModal(null);
+      setIsLoading(false);
+
+      await api.put(`/tasks/${taskId}`, { status: 'EXTENSION_REQUESTED', extensionRequest: newReq, extensionHistory: newHistory });
       addNotification('Task Alert', `Extension requested for Task ${taskId} by ${currentUser.name}.`, 'TASK', String('ADMIN'));
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (e) {
       console.error('Raise objection failed', e);
       setError('Failed to raise extension request');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -398,29 +413,28 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     externalLink: string | null;
   }) => {
     if (!showEditModal) return;
+    const targetId = showEditModal;
     setIsLoading(true);
     setError(null);
     try {
-      await api.put(`/tasks/${showEditModal}`, payload);
-
-      // Optimistic update
-      setTasks(prev => prev.map(t => t.id === showEditModal ? { ...t, ...payload } : t));
-
-      await fetchTasks();
+      // Optimistic update & instant modal close
+      setTasks(prev => prev.map(t => t.id === targetId ? { ...t, ...payload } : t));
       setShowEditModal(null);
+      setIsLoading(false);
 
-      // Notification
-      const oldTask = tasks.find(t => t.id === showEditModal);
+      await api.put(`/tasks/${targetId}`, payload);
+
+      const oldTask = tasks.find(t => t.id === targetId);
       if (oldTask && oldTask.assignedTo !== payload.assignedTo) {
-        addNotification('Task Transferred', `Task ${showEditModal} has been transferred.`, 'TASK', payload.assignedTo);
+        addNotification('Task Transferred', `Task ${targetId} has been transferred.`, 'TASK', payload.assignedTo);
       } else {
-        addNotification('Task Updated', `Task ${showEditModal} has been updated.`, 'TASK', payload.assignedTo);
+        addNotification('Task Updated', `Task ${targetId} has been updated.`, 'TASK', payload.assignedTo);
       }
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (err: any) {
       console.error('Update task failed', err);
       const message = err && err.response && (err.response.data?.message || err.response.data?.error) ? (err.response.data.message || err.response.data.error) : (err && err.message) || 'Failed to update task';
       setError(message);
-    } finally {
       setIsLoading(false);
     }
   };
@@ -433,34 +447,27 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     if (!actionPrompt) return;
     
     const { taskId, type } = actionPrompt;
+    setActionPrompt(null);
     setIsLoading(true);
     setError(null);
     try {
       if (type === 'DELETE') {
-        // Permanently delete the task from the database
-        await api.delete(`/tasks/${taskId}`);
-
-        // Optimistically remove from local state
         let assigned: any = null;
         setTasks(prev => {
           const taskToDelete = prev.find(t => t.id === taskId);
           if (taskToDelete) assigned = taskToDelete.assignedTo;
           return prev.filter(t => t.id !== taskId);
         });
+        setIsLoading(false);
 
+        await api.delete(`/tasks/${taskId}`);
         if (assigned) addNotification('Task Deleted', `Task ${taskId} was permanently deleted by Admin.`, 'TASK', String(assigned));
       } else {
-        // For HOLD and TERMINATE, update status instead
         const newStatus = type === 'HOLD' ? 'HOLD' : 'TERMINATED';
-        // When terminating, clear extension request so it doesn't appear in objections
         const updatePayload = type === 'TERMINATE'
           ? { status: newStatus, statusNote: actionReason, extensionRequest: null, extensionHistory: [] }
           : { status: newStatus, statusNote: actionReason };
 
-        // Persist change on server
-        await api.put(`/tasks/${taskId}`, updatePayload);
-
-        // Optimistically update local tasks so UI reflects immediately and avoid stale-state issues
         let assigned: any = null;
         setTasks(prev => prev.map(t => {
           if (t.id === taskId) {
@@ -471,18 +478,16 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
           }
           return t;
         }));
+        setIsLoading(false);
 
+        await api.put(`/tasks/${taskId}`, updatePayload);
         if (assigned) addNotification('Task Update', `Task ${taskId} was ${type.toLowerCase()}ed by Admin.`, 'TASK', String(assigned));
       }
-
-      // Keep server-authoritative data in sync
-      await fetchTasks();
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (e) {
       console.error('Admin action failed', e);
       setError('Failed to perform admin action');
-    } finally {
       setIsLoading(false);
-      setActionPrompt(null);
     }
   };
 
@@ -490,16 +495,16 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     setIsLoading(true);
     setError(null);
     try {
-      await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: '' });
-      // Optimistic UI update
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'PENDING', statusNote: '' } : t));
-      await fetchTasks();
+      setIsLoading(false);
+
+      await api.put(`/tasks/${taskId}`, { status: 'PENDING', statusNote: '' });
       const task = tasks.find(t => t.id === taskId);
       if (task) addNotification('Task Resumed', `Task ${taskId} is now active again.`, 'TASK', String(task.assignedTo));
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (e) {
       console.error('Resume task failed', e);
       setError('Failed to resume task');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -509,11 +514,7 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     setError(null);
 
     try {
-      // Fetch existing task to update its history
-      const res = await safeGet('/tasks');
-      const payload = extractPayload(res);
-      const allTasks = ensureArray(payload);
-      const t = allTasks.find((x: any) => x.id === taskId);
+      const t = tasks.find(x => x.id === taskId);
       if (!t) throw new Error('Task not found');
 
       let newHistory = t.extensionHistory || [];
@@ -526,32 +527,25 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
       }
 
       if (approved && t.extensionRequest) {
-        // Approving: move due date forward and set back to pending
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest!.requestedDate, extensionRequest: { ...t.extensionRequest!, status: 'APPROVED' } as ExtensionRequest, extensionHistory: newHistory, statusNote: '' } : task));
+        setIsLoading(false);
+
         await api.put(`/tasks/${taskId}`, { status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: '' });
-
-
-        // Optimistic UI update
-        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', dueDate: t.extensionRequest.requestedDate, extensionRequest: { ...t.extensionRequest, status: 'APPROVED' }, extensionHistory: newHistory, statusNote: '' } : task));
-
       } else if (!approved && t.extensionRequest) {
-        // Rejecting: keep task as PENDING (do not set to OVERDUE) and record admin rejection note
         const rejectionNote = `Extension rejected by ${currentUser.name}`;
-        const updatedReq = { ...t.extensionRequest, status: 'REJECTED', adminResponse: rejectionNote };
+        const updatedReq: ExtensionRequest = { ...t.extensionRequest!, status: 'REJECTED', adminResponse: rejectionNote };
+
+        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote } : task));
+        setIsLoading(false);
 
         await api.put(`/tasks/${taskId}`, { status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote });
-
-
-        // Optimistic UI update
-        setTasks(prev => prev.map(task => task.id === taskId ? { ...task, status: 'PENDING', extensionRequest: updatedReq, extensionHistory: newHistory, statusNote: rejectionNote } : task));
       }
 
-      // Keep server in sync
-      await fetchTasks();
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
       if (t) addNotification('Extension Request', `Your extension request for Task ${taskId} was ${approved ? 'Approved' : 'Rejected'}.`, 'TASK', String(t.assignedTo));
     } catch (e) {
       console.error('Extension response failed', e);
       setError('Failed to update extension request');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -567,13 +561,7 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
       // Admin acknowledging → task moves back to PENDING (admin reviewed & resets)
       const newStatus = acknowledgedBy === 'DOER' ? 'OVERDUE' : 'PENDING';
 
-      await api.put(`/tasks/${taskId}`, {
-        status: newStatus,
-        extensionRequest: '',
-        statusNote: '',
-        rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
-      });
-
+      // Optimistic update
       setTasks(prev => prev.map(t => t.id === taskId ? {
         ...t,
         status: newStatus,
@@ -581,18 +569,24 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
         statusNote: '',
         rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
       } : t));
+      setActiveTab(acknowledgedBy === 'DOER' ? 'OVERDUE' : 'PENDING');
+      setIsLoading(false);
 
-      await fetchTasks();
+      await api.put(`/tasks/${taskId}`, {
+        status: newStatus,
+        extensionRequest: '',
+        statusNote: '',
+        rejectionCount: acknowledgedBy === 'DOER' ? currentRejections + 1 : currentRejections
+      });
+
       const msg = acknowledgedBy === 'DOER'
         ? `Task ${taskId} moved to Overdue — extension rejected and acknowledged.`
         : `Task ${taskId} reset to Pending by Admin after rejection review.`;
       addNotification('Acknowledged', msg, 'TASK', String(currentUser.id));
-      // Auto-navigate to destination tab so user sees the task immediately
-      setActiveTab(acknowledgedBy === 'DOER' ? 'OVERDUE' : 'PENDING');
+      fetchTasks().catch(e => console.warn('Background refresh failed', e));
     } catch (e) {
       console.error('Acknowledge rejection failed', e);
       setError('Failed to acknowledge rejection');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -841,8 +835,8 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
     const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
 
     const btnBaseClass = isMobile
-      ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 hover:bg-slate-50 rounded-lg transition-colors text-slate-700"
-      : "w-full py-2 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors";
+      ? "btn btn-ghost w-full justify-start text-sm py-2.5 px-3"
+      : "btn btn-sm w-full";
 
     if (isPC) return null;
 
@@ -853,25 +847,25 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
           <>
             <button
               onClick={() => setShowCompleteModal(task.id)}
-              className={isMobile ? `${btnBaseClass} text-indigo-600 bg-indigo-50` : `${btnBaseClass} bg-indigo-600 hover:bg-indigo-700 text-white shadow-md`}
+              className={isMobile ? `${btnBaseClass} text-indigo-600 bg-indigo-50` : `${btnBaseClass} btn-primary`}
             >
-              <CheckCircle2 size={isMobile ? 18 : 16} /> Complete Task
+              <CheckCircle2 size={isMobile ? 18 : 15} /> Complete Task
             </button>
             {(isTaskOverdue || displayStatus === 'PENDING') && (() => {
               const objCount = (task as any).objectionCount || (task.extensionHistory || []).length;
               if (objCount >= 3) {
                 return (
-                  <div className={isMobile ? "w-full py-3 px-4 text-left text-sm font-bold flex items-center gap-3 text-red-500 bg-red-50 border border-red-100 rounded-lg" : "w-full py-2 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border border-red-100 text-red-500 bg-red-50"}>
-                    <AlertTriangle size={isMobile ? 18 : 16} /> Objection Limit (3/3)
+                  <div className={isMobile ? "w-full py-2.5 px-3 text-left text-sm font-bold flex items-center gap-3 text-rose-500 bg-rose-50 border border-rose-100 rounded-xl" : "w-full py-1.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border border-rose-100 text-rose-500 bg-rose-50"}>
+                    <AlertTriangle size={isMobile ? 18 : 14} /> Objection Limit (3/3)
                   </div>
                 );
               }
               return (
                 <button
                   onClick={() => setShowObjectionModal(task.id)}
-                  className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-red-600`}
+                  className={isMobile ? btnBaseClass : `${btnBaseClass} btn-secondary text-slate-700 hover:text-rose-600`}
                 >
-                  <AlertTriangle size={isMobile ? 18 : 16} /> Raise Objection
+                  <AlertTriangle size={isMobile ? 18 : 14} /> Raise Objection
                 </button>
               );
             })()}
@@ -883,21 +877,21 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
           <>
             <button
               onClick={() => handleOpenEditModal(task)}
-              className={isMobile ? `${btnBaseClass} text-blue-600 hover:bg-blue-50` : `${btnBaseClass} bg-white border border-blue-200 text-blue-600 hover:bg-blue-50`}
+              className={isMobile ? `${btnBaseClass} text-indigo-600` : `${btnBaseClass} btn-secondary text-indigo-600`}
             >
               <FileText size={isMobile ? 18 : 14} /> Edit Task
             </button>
             {displayStatus !== 'HOLD' ? (
               <button
                 onClick={() => initiateAdminAction(task.id, 'HOLD')}
-                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-yellow-200 text-yellow-600 hover:bg-yellow-50`}
+                className={isMobile ? `${btnBaseClass} text-amber-600` : `${btnBaseClass} btn-secondary text-amber-600`}
               >
                 <PauseCircle size={isMobile ? 18 : 14} /> Hold Task
               </button>
             ) : (
               <button
                 onClick={() => handleResumeTask(task.id)}
-                className={isMobile ? btnBaseClass : `${btnBaseClass} bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
+                className={isMobile ? `${btnBaseClass} text-amber-700` : `${btnBaseClass} btn-secondary text-amber-700 bg-amber-50`}
               >
                 <Clock size={isMobile ? 18 : 14} /> Resume Task
               </button>
@@ -905,7 +899,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
 
             <button
               onClick={() => initiateAdminAction(task.id, 'TERMINATE')}
-              className={isMobile ? btnBaseClass : `${btnBaseClass} bg-white border border-red-200 text-red-600 hover:bg-red-50`}
+              className={isMobile ? `${btnBaseClass} text-rose-600` : `${btnBaseClass} btn-secondary text-rose-600`}
             >
               <Ban size={isMobile ? 18 : 14} /> Terminate
             </button>
@@ -916,7 +910,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
         {isAdmin && displayStatus === 'COMPLETED' && (
           <button
             onClick={() => handleIncompleteTask(task.id)}
-            className={isMobile ? `${btnBaseClass} text-orange-600 hover:bg-orange-50` : `${btnBaseClass} bg-white border border-orange-200 text-orange-600 hover:bg-orange-50`}
+            className={isMobile ? `${btnBaseClass} text-amber-600` : `${btnBaseClass} btn-secondary text-amber-600`}
           >
             <RefreshCw size={isMobile ? 18 : 14} /> Uncomplete
           </button>
@@ -926,7 +920,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
         {isAdmin && (
           <button
             onClick={() => initiateAdminAction(task.id, 'DELETE')}
-            className={isMobile ? `${btnBaseClass} text-red-600 hover:bg-red-50` : `${btnBaseClass} bg-slate-50 border border-slate-200 text-slate-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200 mt-auto`}
+            className={isMobile ? `${btnBaseClass} text-rose-600` : `${btnBaseClass} btn-ghost text-slate-400 hover:text-rose-600 mt-auto`}
           >
             <Trash2 size={isMobile ? 18 : 14} /> Delete
           </button>
@@ -956,7 +950,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
           {canSeeAllTasks && (
             <button
               onClick={handleExportTasks}
-              className="flex-1 md:flex-none bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-700 px-3 md:px-6 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 transition-all hover:bg-white hover:shadow-lg active:scale-95 font-bold text-sm"
+              className="btn btn-secondary flex-1 md:flex-none"
             >
               <Download size={16} />
               <span className="hidden sm:inline">Export Data</span>
@@ -966,7 +960,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
           {canSeeAllTasks && (
             <button
               onClick={() => setShowAssignModal(true)}
-              className="flex-1 md:flex-none bg-gradient-to-r from-indigo-600 to-violet-700 hover:from-indigo-700 hover:to-violet-800 text-white px-3 md:px-8 py-2.5 md:py-3.5 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 shadow-xl shadow-indigo-200 transition-all active:scale-95 font-bold text-sm"
+              className="btn btn-primary flex-1 md:flex-none"
             >
               <Plus size={18} />
               <span className="hidden sm:inline">Assign New Task</span>
@@ -1002,10 +996,10 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                 }}
                 className={`px-3 md:px-4 py-1.5 md:py-2.5 rounded-lg md:rounded-xl text-xs md:text-sm font-bold transition-all whitespace-nowrap flex items-center gap-1.5 md:gap-2 ${isActive
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
-                    : 'text-slate-500 hover:bg-white hover:text-indigo-600'
+                    : 'text-secondary hover:bg-white hover:text-link'
                   }`}
               >
-                <TabIcon size={15} className={`shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                <TabIcon size={15} className={`shrink-0 ${isActive ? 'text-white' : 'text-muted'}`} />
                 <span>{label} ({count})</span>
               </button>
             );
@@ -1029,7 +1023,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
           {/* Member Filter — Admin & PC */}
           {canSeeAllTasks && (
             <div className="relative w-full md:w-56">
-              <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={15} />
+              <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" size={15} />
               <select
                 value={selectedMemberId}
                 onChange={e => {
@@ -1039,7 +1033,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                     setActiveTab('ALL');
                   });
                 }}
-                className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm font-semibold text-slate-700 appearance-none"
+                className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm font-semibold text-primary appearance-none"
               >
                 <option value="ALL">All Members ({relevantTasks.length})</option>
                 {employees
@@ -1240,15 +1234,19 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                       {/* Completion / Extension / Status Notes */}
                       <div className="space-y-3 mt-4">
                         {isTaskCompleted(task) && (
-                          <div className="bg-green-50/50 p-4 rounded-xl border border-green-100 text-sm">
-                            <p className="font-bold text-green-800 mb-1 flex items-center gap-2"><CheckCircle2 size={16} /> Completed on {task.completionDate}</p>
+                          <div className="bg-green-50/50 p-3.5 md:p-4 rounded-xl border border-green-100 text-sm">
+                            <p className="font-bold text-green-800 mb-1 flex items-center gap-2">
+                              <CheckCircle2 size={16} /> Completed on {task.completionDate}
+                            </p>
                             {task.completionProcess && (
-                              <p className="text-green-700/80 italic break-words">{task.completionProcess}</p>
+                              <p className="text-green-700/90 italic break-words leading-relaxed text-xs md:text-sm pl-4 border-l-2 border-green-300 my-1.5 whitespace-pre-wrap">
+                                "{task.completionProcess}"
+                              </p>
                             )}
                             {task.completionAttachment && (
-                              <div className="mt-2 text-green-700 flex items-center gap-2">
+                              <div className="mt-2 text-green-700 flex items-center gap-2 text-xs">
                                 <FileText size={14} />
-                                <a href={task.completionAttachment} download={`Task_${task.id}_Proof`} className="font-bold underline">Download Proof</a>
+                                <a href={task.completionAttachment} download={`Task_${task.id}_Proof`} className="font-bold underline hover:text-green-900">Download Proof</a>
                               </div>
                             )}
                           </div>
@@ -1591,7 +1589,7 @@ const AssignTaskModal: React.FC<AssignTaskModalProps> = React.memo(({
       <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
           <h3 className="text-xl font-extrabold text-slate-800">Assign New Task</h3>
-          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-icon-sm text-slate-500 hover:text-slate-800" title="Close"><X size={20} /></button>
         </div>
         <div className="p-6 space-y-4 overflow-y-auto">
           {serverError && (
@@ -1698,7 +1696,7 @@ const AssignTaskModal: React.FC<AssignTaskModalProps> = React.memo(({
                 <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
                   <FileText size={20} />
                   File Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Remove attachment"><X size={14} /></button>
                 </div>
               ) : (
                 <div className="text-slate-400 text-sm">
@@ -1710,11 +1708,12 @@ const AssignTaskModal: React.FC<AssignTaskModalProps> = React.memo(({
           </div>
         </div>
         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
           <button
             type="submit"
             disabled={isLoading}
-            className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
+            className="btn btn-primary"
+          >
             {isLoading ? 'Assigning...' : 'Assign Task'}
           </button>
         </div>
@@ -1810,7 +1809,7 @@ const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
       <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
           <h3 className="text-xl font-extrabold text-slate-800">Edit Task</h3>
-          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-icon-sm text-slate-500 hover:text-slate-800" title="Close"><X size={20} /></button>
         </div>
         <div className="p-6 space-y-4 overflow-y-auto">
           {serverError && (
@@ -1912,7 +1911,7 @@ const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
                 <div className="flex items-center justify-center gap-2 text-indigo-600 font-bold">
                   <FileText size={20} />
                   File Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Remove attachment"><X size={14} /></button>
                 </div>
               ) : (
                 <div className="text-slate-400 text-sm">
@@ -1924,11 +1923,12 @@ const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
           </div>
         </div>
         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
           <button
             type="submit"
             disabled={isLoading}
-            className={`px-5 py-2.5 rounded-xl font-bold shadow-lg transition-all ${isLoading ? 'bg-slate-400 text-white opacity-80 cursor-wait' : 'bg-indigo-600 text-white shadow-indigo-600/20'}`}>
+            className="btn btn-primary"
+          >
             {isLoading ? 'Updating...' : 'Save Changes'}
           </button>
         </div>
@@ -1984,7 +1984,7 @@ const CompleteTaskModal: React.FC<CompleteTaskModalProps> = React.memo(({
       <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
           <h3 className="text-xl font-extrabold text-slate-800">Submit Completion Report</h3>
-          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-icon-sm text-slate-500 hover:text-slate-800" title="Close"><X size={20} /></button>
         </div>
         <div className="p-6 space-y-4 overflow-y-auto">
           {error && (
@@ -1998,7 +1998,7 @@ const CompleteTaskModal: React.FC<CompleteTaskModalProps> = React.memo(({
             Please describe the steps taken to complete this task and attach any necessary proof (photos/documents).
           </div>
           <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Process Description (How to?)</label>
+            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Completion Remarks / Process Note</label>
             <textarea
               className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-indigo-500 outline-none h-32 resize-none"
               value={processNote}
@@ -2015,7 +2015,7 @@ const CompleteTaskModal: React.FC<CompleteTaskModalProps> = React.memo(({
                 <div className="flex items-center justify-center gap-2 text-green-600 font-bold">
                   <CheckCircle2 size={20} />
                   Proof Attached ({(attachment.length / 1024).toFixed(0)} KB)
-                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={14} /></button>
+                  <button type="button" onClick={(e) => { e.preventDefault(); setAttachment(null); }} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Remove attachment"><X size={14} /></button>
                 </div>
               ) : (
                 <div className="text-slate-400 text-sm">
@@ -2027,8 +2027,8 @@ const CompleteTaskModal: React.FC<CompleteTaskModalProps> = React.memo(({
           </div>
         </div>
         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-          <button type="submit" disabled={isLoading} className="px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold shadow-lg shadow-green-600/20 disabled:opacity-60">
+          <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
+          <button type="submit" disabled={isLoading} className="btn btn-primary bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20">
             {isLoading ? 'Submitting...' : 'Mark as Completed'}
           </button>
         </div>
@@ -2077,7 +2077,7 @@ const ObjectionModal: React.FC<ObjectionModalProps> = React.memo(({
       <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 bg-red-50/50 flex justify-between items-center shrink-0">
           <h3 className="text-xl font-extrabold text-red-800">Raise Objection / Request Extension</h3>
-          <button type="button" onClick={onClose} className="p-2 hover:bg-red-100 rounded-full text-red-500"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-icon-sm text-slate-500 hover:text-slate-800" title="Close"><X size={20} /></button>
         </div>
         <div className="p-6 space-y-4 overflow-y-auto">
           {error && (
@@ -2112,8 +2112,8 @@ const ObjectionModal: React.FC<ObjectionModalProps> = React.memo(({
           </div>
         </div>
         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-          <button type="submit" disabled={isLoading} className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg shadow-red-600/20 disabled:opacity-60">
+          <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
+          <button type="submit" disabled={isLoading} className="btn btn-danger">
             {isLoading ? 'Submitting...' : 'Submit Request'}
           </button>
         </div>
@@ -2159,7 +2159,7 @@ const ActionPromptModal: React.FC<ActionPromptModalProps> = React.memo(({
       <form onSubmit={handleFormSubmit} className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
         <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
           <h3 className="text-xl font-extrabold text-slate-800 capitalize">{type === 'DELETE' ? 'Delete Task' : `${type.toLowerCase()} Task`}</h3>
-          <button type="button" onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-icon-sm text-slate-500 hover:text-slate-800" title="Close"><X size={20} /></button>
         </div>
         <div className="p-6 space-y-4">
           {error && (
@@ -2188,12 +2188,11 @@ const ActionPromptModal: React.FC<ActionPromptModalProps> = React.memo(({
           </div>
         </div>
         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100">
-          <button type="button" onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
+          <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
           <button
             type="submit"
             disabled={isLoading}
-            className={`px-5 py-2.5 text-white rounded-xl font-bold shadow-lg disabled:opacity-60 ${type === 'DELETE' || type === 'TERMINATE' ? 'bg-red-600 hover:bg-red-700 shadow-red-600/20' : 'bg-yellow-500 hover:bg-yellow-600 shadow-yellow-500/20'
-              }`}
+            className={type === 'DELETE' || type === 'TERMINATE' ? 'btn btn-danger' : 'btn btn-primary bg-amber-600 hover:bg-amber-700 shadow-amber-600/20'}
           >
             {isLoading ? 'Confirming...' : `Confirm ${type === 'DELETE' ? 'Delete' : (type === 'HOLD' ? 'Hold' : 'Terminate')}`}
           </button>

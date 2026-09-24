@@ -116,19 +116,19 @@ const NotepadComponent: React.FC<NotepadProps> = ({ notes, setNotes, currentUser
     <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-8">
         <div>
-          <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
+          <h2 className="text-2xl md:text-3xl font-extrabold text-primary flex items-center gap-3">
             <div className="w-10 h-10 bg-yellow-400 text-yellow-900 rounded-xl flex items-center justify-center shadow-lg shadow-yellow-400/20 shrink-0">
               <StickyNote size={20} />
             </div>
             My Notepad
           </h2>
-          <p className="text-slate-500 mt-2 font-medium md:ml-14">
+          <p className="text-secondary mt-2 font-medium md:ml-14">
             Keep track of your personal tasks and ideas.
           </p>
         </div>
         <button
           onClick={openAddModal}
-          className="bg-slate-900 hover:bg-slate-800 text-white px-5 py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-slate-900/20 transition-all active:scale-95 font-bold"
+          className="btn btn-primary"
         >
           <Plus size={18} />
           Create Note
@@ -136,7 +136,7 @@ const NotepadComponent: React.FC<NotepadProps> = ({ notes, setNotes, currentUser
       </div>
 
       <div className="relative w-full max-w-md mb-8">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={18} />
         <input
           type="text"
           placeholder="Search notes..."
@@ -147,7 +147,7 @@ const NotepadComponent: React.FC<NotepadProps> = ({ notes, setNotes, currentUser
       </div>
 
       {myNotes.length === 0 ? (
-        <div className="text-center py-20 bg-white rounded-3xl border border-slate-100 text-slate-400">
+        <div className="text-center py-20 bg-white rounded-3xl border border-slate-100 text-muted">
           <StickyNote size={48} className="mx-auto mb-4 opacity-20" />
           <p className="font-medium">No notes yet. Start writing!</p>
         </div>
@@ -158,22 +158,22 @@ const NotepadComponent: React.FC<NotepadProps> = ({ notes, setNotes, currentUser
             return (
               <div key={note.id} className={`p-6 rounded-2xl shadow-sm border flex flex-col h-64 hover:shadow-md transition-shadow relative group ${colorObj.class}`}>
                 <div className="flex justify-between items-start mb-3">
-                  <span className="text-[10px] font-bold uppercase tracking-wider bg-white/50 px-2 py-1 rounded text-slate-600 border border-black/5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider bg-white/50 px-2 py-1 rounded text-secondary border border-black/5">
                     {note.category}
                   </span>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => openEditModal(note)} className="p-1.5 bg-white/80 rounded-lg hover:bg-white text-slate-600 hover:text-blue-600 shadow-sm"><Edit2 size={14} /></button>
-                    <button onClick={() => handleDeleteNote(note.id)} className="p-1.5 bg-white/80 rounded-lg hover:bg-white text-slate-600 hover:text-red-600 shadow-sm"><Trash2 size={14} /></button>
+                    <button onClick={() => openEditModal(note)} className="btn btn-secondary btn-icon-sm bg-white/90 text-secondary hover:text-link" title="Edit Note"><Edit2 size={14} /></button>
+                    <button onClick={() => handleDeleteNote(note.id)} className="btn btn-secondary btn-icon-sm bg-white/90 text-secondary hover:text-state-danger" title="Delete Note"><Trash2 size={14} /></button>
                   </div>
                 </div>
 
-                <h3 className="font-bold text-slate-800 text-lg mb-2 line-clamp-1">{note.title}</h3>
+                <h3 className="font-bold text-primary text-lg mb-2 line-clamp-1">{note.title}</h3>
                 <div className="flex-1 overflow-hidden relative">
-                  <p className="text-slate-600 text-sm whitespace-pre-wrap">{note.content}</p>
+                  <p className="text-secondary text-sm whitespace-pre-wrap">{note.content}</p>
                   <div className={`absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-${note.color === 'white' ? 'white' : note.color + '-100'} to-transparent`}></div>
                 </div>
 
-                <div className="mt-4 pt-3 border-t border-black/5 flex items-center gap-2 text-xs font-medium text-slate-500">
+                <div className="mt-4 pt-3 border-t border-black/5 flex items-center gap-2 text-xs font-medium text-muted">
                   <Calendar size={12} />
                   <span>{format(new Date(note.updatedAt), 'MMM d, yyyy • h:mm a')}</span>
                 </div>
@@ -230,12 +230,12 @@ const NoteEditorModal: React.FC<NoteEditorModalProps> = React.memo(({ isOpen, on
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-          <h3 className="text-xl font-extrabold text-slate-800">{isEditing ? 'Edit Note' : 'New Note'}</h3>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+          <h3 className="text-xl font-extrabold text-primary">{isEditing ? 'Edit Note' : 'New Note'}</h3>
+          <button onClick={onClose} className="btn btn-ghost btn-icon-sm text-muted hover:text-primary" title="Close"><X size={20} /></button>
         </div>
         <div className="p-6 space-y-4 overflow-y-auto">
           <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Title</label>
+            <label className="block text-xs font-bold text-muted uppercase mb-2">Title</label>
             <input
               type="text"
               className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-yellow-400 outline-none font-bold text-lg"
@@ -248,7 +248,7 @@ const NoteEditorModal: React.FC<NoteEditorModalProps> = React.memo(({ isOpen, on
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Category</label>
+              <label className="block text-xs font-bold text-muted uppercase mb-2">Category</label>
               <select
                 className="w-full border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-yellow-400 outline-none bg-white"
                 value={category}
@@ -260,7 +260,7 @@ const NoteEditorModal: React.FC<NoteEditorModalProps> = React.memo(({ isOpen, on
               </select>
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Color</label>
+              <label className="block text-xs font-bold text-muted uppercase mb-2">Color</label>
               <div className="flex gap-2">
                 {NOTE_COLORS.map(c => (
                   <button
@@ -274,7 +274,7 @@ const NoteEditorModal: React.FC<NoteEditorModalProps> = React.memo(({ isOpen, on
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Content</label>
+            <label className="block text-xs font-bold text-muted uppercase mb-2">Content</label>
             <textarea
               className="w-full border border-slate-200 rounded-xl p-4 focus:ring-2 focus:ring-yellow-400 outline-none h-48 resize-none bg-slate-50 leading-relaxed"
               value={content}
@@ -285,8 +285,8 @@ const NoteEditorModal: React.FC<NoteEditorModalProps> = React.memo(({ isOpen, on
           </div>
         </div>
         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-          <button onClick={onClose} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-          <button onClick={handleSave} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-900/20">Save Note</button>
+          <button onClick={onClose} className="btn btn-secondary">Cancel</button>
+          <button onClick={handleSave} className="btn btn-primary">Save Note</button>
         </div>
       </div>
     </div>

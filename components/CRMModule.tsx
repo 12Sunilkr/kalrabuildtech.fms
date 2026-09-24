@@ -78,6 +78,15 @@ const STATUS_STYLE: Record<Status, { bg: string; color: string }> = {
   'Closed': { bg: '#f0fdf4', color: '#15803d' },
 };
 
+// ─── Text Color Tokens ────────────────────────────────────────────────────────
+const TEXT_PRIMARY = 'var(--color-text-primary, #0f172a)';
+const TEXT_SECONDARY = 'var(--color-text-secondary, #475569)';
+const TEXT_MUTED = 'var(--color-text-muted, #94a3b8)';
+const TEXT_LINK = 'var(--color-text-link, #4f46e5)';
+const TEXT_DANGER = 'var(--color-text-danger, #e11d48)';
+const TEXT_SUCCESS = 'var(--color-text-success, #16a34a)';
+const TEXT_WARNING = 'var(--color-text-warning, #d97706)';
+
 const BOARD_COLUMNS: { id: Status; label: string; dot: string }[] = [
   { id: 'New', label: 'New Leads', dot: '#3b7fe8' },
   { id: 'Follow-up', label: 'In Follow-up', dot: '#d97706' },
@@ -218,8 +227,8 @@ const LeadCard: React.FC<{
       {/* Top row */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 13, color: '#1e293b' }}>{lead.name}</div>
-          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, color: TEXT_PRIMARY }}>{lead.name}</div>
+          <div style={{ fontSize: 10, color: TEXT_MUTED, marginTop: 2 }}>
             {lead.id}{lead.project ? ` · ${lead.project}` : ''}
           </div>
         </div>
@@ -227,8 +236,8 @@ const LeadCard: React.FC<{
       </div>
 
       {/* Phone */}
-      <div style={{ fontSize: 11.5, color: '#64748b', display: 'flex', alignItems: 'center', gap: 5, marginBottom: 10 }}>
-        <Phone size={11} color="#94a3b8" />
+      <div style={{ fontSize: 11.5, color: TEXT_SECONDARY, display: 'flex', alignItems: 'center', gap: 5, marginBottom: 10 }}>
+        <Phone size={11} color="var(--color-text-muted, #94a3b8)" />
         {lead.mobile}
       </div>
 
@@ -309,10 +318,10 @@ const BoardView: React.FC<{
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: col.dot }} />
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: '#1e293b' }}>{col.label}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: TEXT_PRIMARY }}>{col.label}</span>
               <span style={{
                 fontSize: 11, fontWeight: 600, padding: '2px 8px',
-                borderRadius: 20, background: '#f4f6fa', color: '#64748b',
+                borderRadius: 20, background: '#f4f6fa', color: TEXT_SECONDARY,
               }}>{colLeads.length}</span>
             </div>
           </div>
@@ -369,7 +378,7 @@ const ListView: React.FC<{
         <tbody>
           {leads.length === 0 ? (
             <tr>
-              <td colSpan={6} style={{ padding: '40px', textAlign: 'center', color: '#94a3b8' }}>
+              <td colSpan={6} style={{ padding: '40px', textAlign: 'center', color: TEXT_MUTED }}>
                 No leads found
               </td>
             </tr>
@@ -384,12 +393,12 @@ const ListView: React.FC<{
                 onMouseLeave={e => (e.currentTarget as HTMLTableRowElement).style.background = ''}
               >
                 <td style={{ padding: '12px 16px' }}>
-                  <div style={{ fontWeight: 600, fontSize: 12.5, color: '#1e293b' }}>{lead.name}</div>
-                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>{lead.id} · {lead.mobile}</div>
+                  <div style={{ fontWeight: 600, fontSize: 12.5, color: TEXT_PRIMARY }}>{lead.name}</div>
+                  <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{lead.id} · {lead.mobile}</div>
                 </td>
                 <td style={{ padding: '12px 16px' }}>
-                  <div style={{ fontSize: 12, color: '#1e293b', fontWeight: 500 }}>{lead.project || '—'}</div>
-                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>{lead.source}</div>
+                  <div style={{ fontSize: 12, color: TEXT_PRIMARY, fontWeight: 500 }}>{lead.project || '—'}</div>
+                  <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 2 }}>{lead.source}</div>
                 </td>
                 <td style={{ padding: '12px 16px' }}><StatusPill status={lead.status} /></td>
                 <td style={{ padding: '12px 16px' }}><PriorityBadge priority={lead.priority} /></td>
@@ -397,11 +406,11 @@ const ListView: React.FC<{
                   {lead.assigned_name ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Avatar name={lead.assigned_name} size={24} />
-                      <span style={{ fontSize: 12, color: '#64748b' }}>{lead.assigned_name}</span>
+                      <span style={{ fontSize: 12, color: TEXT_SECONDARY }}>{lead.assigned_name}</span>
                     </div>
                   ) : '—'}
                 </td>
-                <td style={{ padding: '12px 16px', fontSize: 11.5, color: overdue ? '#dc2626' : '#94a3b8', fontWeight: overdue ? 500 : 400 }}>
+                <td style={{ padding: '12px 16px', fontSize: 11.5, color: overdue ? TEXT_DANGER : TEXT_MUTED, fontWeight: overdue ? 600 : 400 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <span>{lead.next_followup_date ? fmtDate(lead.next_followup_date) : '—'}</span>
                     {lead.next_followup_date && lead.status !== 'Closed' && (
@@ -458,11 +467,11 @@ const DashboardView: React.FC<{ leads: CRMLead[]; employees: Employee[] }> = ({ 
         {kpis.map(k => (
           <div key={k.label} style={{ ...cardStyle, position: 'relative', overflow: 'hidden' }}>
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: k.accent }} />
-            <div style={{ fontSize: 10.5, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 500, marginBottom: 8 }}>
+            <div style={{ fontSize: 10.5, color: TEXT_SECONDARY, textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 600, marginBottom: 8 }}>
               {k.label}
             </div>
-            <div style={{ fontSize: 26, fontWeight: 600, color: '#1e293b', lineHeight: 1 }}>{k.value}</div>
-            <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 6 }}>{k.sub}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: TEXT_PRIMARY, lineHeight: 1 }}>{k.value}</div>
+            <div style={{ fontSize: 10.5, color: TEXT_MUTED, marginTop: 6 }}>{k.sub}</div>
           </div>
         ))}
       </div>
@@ -642,13 +651,13 @@ const LeadFormModal: React.FC<{
 
   const inputStyle: React.CSSProperties = {
     border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px',
-    fontSize: 12.5, color: '#1e293b', outline: 'none',
+    fontSize: 12.5, color: TEXT_PRIMARY, outline: 'none',
     fontFamily: 'DM Sans, sans-serif', width: '100%', background: '#fff',
     boxSizing: 'border-box',
   };
 
   const labelStyle: React.CSSProperties = {
-    fontSize: 11.5, fontWeight: 600, color: '#64748b',
+    fontSize: 11.5, fontWeight: 600, color: TEXT_SECONDARY,
     textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 5, display: 'block',
   };
 
@@ -669,16 +678,17 @@ const LeadFormModal: React.FC<{
           display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexShrink: 0,
         }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: '#1e293b' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: TEXT_PRIMARY }}>
               {lead ? lead.name : 'Add New Lead'}
             </div>
-            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 3 }}>
+            <div style={{ fontSize: 11.5, color: TEXT_SECONDARY, marginTop: 3 }}>
               {lead ? `${lead.id} · ${lead.project}` : 'Fill in the lead details below'}
             </div>
           </div>
           <button
             onClick={onClose}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 4 }}
+            className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600"
+            title="Close"
           >
             <X size={18} />
           </button>
@@ -857,21 +867,7 @@ const LeadFormModal: React.FC<{
                 <button
                   type="button"
                   onClick={handleDeleteLead}
-                  style={{
-                    border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
-                    borderRadius: 8, padding: '8px 16px', fontSize: 12.5,
-                    fontWeight: 600, cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    transition: 'all 0.15s',
-                  }}
-                  onMouseEnter={e => {
-                    (e.currentTarget as HTMLButtonElement).style.background = '#dc2626';
-                    (e.currentTarget as HTMLButtonElement).style.color = '#fff';
-                  }}
-                  onMouseLeave={e => {
-                    (e.currentTarget as HTMLButtonElement).style.background = '#fef2f2';
-                    (e.currentTarget as HTMLButtonElement).style.color = '#dc2626';
-                  }}
+                  className="btn btn-danger"
                 >
                   <X size={14} /> Delete Lead
                 </button>
@@ -881,22 +877,13 @@ const LeadFormModal: React.FC<{
             <div style={{ display: 'flex', gap: 10 }}>
               <button
                 type="button" onClick={onClose}
-                style={{
-                  border: '1px solid #e2e8f0', background: '#fff',
-                  borderRadius: 8, padding: '8px 18px', fontSize: 12.5,
-                  fontWeight: 500, cursor: 'pointer', color: '#64748b',
-                  fontFamily: 'DM Sans, sans-serif',
-                }}
+                className="btn btn-secondary"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                style={{
-                  border: 'none', background: '#0f1f3d', color: '#fff',
-                  borderRadius: 8, padding: '8px 22px', fontSize: 12.5,
-                  fontWeight: 500, cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                }}
+                className="btn btn-primary"
               >
                 {lead ? 'Save Changes' : 'Create Lead'}
               </button>
@@ -1040,8 +1027,8 @@ export const CRMModule: React.FC<CRMProps> = ({ currentUser, employees }) => {
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
           }}>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: '#1e293b' }}>{tabLabel[activeTab]}</div>
-              <div style={{ fontSize: 11, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 4, marginTop: 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: TEXT_PRIMARY }}>{tabLabel[activeTab]}</div>
+              <div style={{ fontSize: 11, color: TEXT_MUTED, display: 'flex', alignItems: 'center', gap: 4, marginTop: 1 }}>
                 CRM <ChevronRight size={10} /> {tabLabel[activeTab]}
               </div>
             </div>
@@ -1052,9 +1039,9 @@ export const CRMModule: React.FC<CRMProps> = ({ currentUser, employees }) => {
                     key={tab}
                     onClick={() => setActiveTab(tab)}
                     style={{
-                      padding: '6px 12px', borderRadius: '6px', fontSize: 12, fontWeight: 500,
+                      padding: '6px 12px', borderRadius: '6px', fontSize: 12, fontWeight: 600,
                       background: activeTab === tab ? '#fff' : 'transparent',
-                      color: activeTab === tab ? '#1e293b' : '#64748b',
+                      color: activeTab === tab ? TEXT_PRIMARY : TEXT_SECONDARY,
                       border: activeTab === tab ? '1px solid #e2e8f0' : '1px solid transparent',
                       boxShadow: activeTab === tab ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
                       cursor: 'pointer', transition: 'all 0.2s', outline: 'none'
@@ -1078,12 +1065,7 @@ export const CRMModule: React.FC<CRMProps> = ({ currentUser, employees }) => {
               </div>
               <button
                 onClick={() => { setSelectedLead(null); setShowForm(true); }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  background: '#0f1f3d', color: '#fff', border: 'none',
-                  borderRadius: 8, padding: '8px 16px', fontSize: 12.5,
-                  fontWeight: 500, cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                }}
+                className="btn btn-primary"
               >
                 <Plus size={14} /> Add Lead
               </button>

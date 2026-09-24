@@ -97,9 +97,9 @@ export default function WorkPlannerView({ projectId, projectName, projectStatus 
           <div className="flex items-center gap-4">
             <button
               onClick={onBack}
-              className="text-slate-600 hover:text-slate-800 flex items-center gap-1"
+              className="btn btn-ghost"
             >
-              <ChevronLeft size={20} />
+              <ChevronLeft size={18} />
               Back to Dashboard
             </button>
           </div>
@@ -108,8 +108,8 @@ export default function WorkPlannerView({ projectId, projectName, projectStatus 
           </span>
         </div>
 
-        <h1 className="text-3xl font-bold text-slate-900 mb-2">{projectName} - Work Planner</h1>
-        <p className="text-slate-600">Plan and track daily work activities</p>
+        <h1 className="text-3xl font-bold text-primary mb-2">{projectName} - Work Planner</h1>
+        <p className="text-secondary">Plan and track daily work activities</p>
 
         {/* Controls */}
         <div className="flex items-center gap-4 mt-6">
@@ -124,7 +124,7 @@ export default function WorkPlannerView({ projectId, projectName, projectStatus 
           </div>
           <button
             onClick={() => setShowForm(!showForm)}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium"
+            className="btn btn-primary"
           >
             <Plus size={18} />
             Add Work Plan
@@ -172,14 +172,14 @@ export default function WorkPlannerView({ projectId, projectName, projectStatus 
               <button
                 type="submit"
                 disabled={submitting}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-slate-400"
+                className="btn btn-primary"
               >
                 {submitting ? 'Adding...' : 'Add'}
               </button>
               <button
                 type="button"
                 onClick={() => setShowForm(false)}
-                className="px-4 py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50"
+                className="btn btn-secondary"
               >
                 Cancel
               </button>
@@ -252,13 +252,14 @@ export default function WorkPlannerView({ projectId, projectName, projectStatus 
                       </div>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <div className="flex justify-center gap-3">
-                        <button className="w-8 h-8 rounded-full bg-slate-200 hover:bg-slate-300 flex items-center justify-center text-slate-600 hover:text-slate-800 transition">
+                      <div className="flex justify-center gap-2">
+                        <button className="btn btn-secondary btn-icon-sm" title="Edit">
                           <Edit size={16} />
                         </button>
                         <button
                           onClick={() => handleDelete(task.id)}
-                          className="w-8 h-8 rounded-full bg-red-100 hover:bg-red-200 flex items-center justify-center text-red-600 hover:text-red-700 transition"
+                          className="btn btn-ghost btn-icon-sm text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                          title="Delete"
                         >
                           <Trash2 size={16} />
                         </button>

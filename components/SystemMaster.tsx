@@ -1,12 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Layers,
-  LayoutDashboard,
   FileSpreadsheet,
-  PlusCircle,
-  UserPlus,
-  History,
-  Settings as SettingsIcon,
   Search,
   Plus,
   ExternalLink,
@@ -15,22 +9,9 @@ import {
   Users,
   Check,
   UserCheck,
-  CheckSquare,
-  Square,
   Shield,
-  Briefcase,
-  Info,
-  Calendar,
-  Eye,
-  LogOut,
-  ChevronRight,
-  TrendingUp,
-  FileText,
   Star,
   Clock,
-  Bell,
-  HelpCircle,
-  Package,
   ShoppingBag,
   BarChart3,
   Building,
@@ -38,20 +19,23 @@ import {
   CalendarCheck,
   ClipboardList,
   MoreVertical,
-  ChevronDown,
-  ArrowRight,
-  Share2,
-  Sparkles,
   X,
   Lock,
-  Unlock,
   UserX,
-  Filter,
-  CheckCircle2,
-  Zap,
-  FileCheck
+  Copy,
+  Grid,
+  List,
+  RefreshCw,
+  Sparkles,
+  SlidersHorizontal,
+  FolderPlus,
+  FolderKanban,
+  ArrowRight,
+  MoveRight,
+  ChevronRight,
+  Layers
 } from 'lucide-react';
-import { ViewMode, User, KBTSheet, KBTActivity } from '../types';
+import { ViewMode, User, KBTSheet } from '../types';
 
 interface SystemMasterUser extends User {
   department?: string;
@@ -69,7 +53,7 @@ const DEFAULT_SHEETS: KBTSheet[] = [
     id: 'KBT-001',
     name: 'Attendance Sheet',
     department: 'HR & Attendance',
-    purpose: 'Monthly attendance records of all employees',
+    purpose: 'Monthly attendance records and employee daily logs',
     url: 'https://docs.google.com/spreadsheets/d/1',
     responsible_person: 'HR Team',
     frequency: 'Daily',
@@ -79,9 +63,9 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-002',
-    name: 'PMS Sheet',
+    name: 'PMS Master Sheet',
     department: 'PMS',
-    purpose: 'Project Management System and weekly tracker',
+    purpose: 'Project Management System, milestones and weekly tracker',
     url: 'https://docs.google.com/spreadsheets/d/2',
     responsible_person: 'Project Lead',
     frequency: 'Weekly',
@@ -91,9 +75,9 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-003',
-    name: 'Finance Sheet',
+    name: 'Finance & Accounts Ledger',
     department: 'Finance & Accounts',
-    purpose: 'Income, Expense, Balance and Account details',
+    purpose: 'Income, expense, vouchers, balance and bank reconciliations',
     url: 'https://docs.google.com/spreadsheets/d/3',
     responsible_person: 'Finance Admin',
     frequency: 'Daily',
@@ -103,7 +87,7 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-004',
-    name: 'Purchase & Stock',
+    name: 'Purchase & Stock Register',
     department: 'Procurement',
     purpose: 'Material purchase records, stock inventory and supplier details',
     url: 'https://docs.google.com/spreadsheets/d/4',
@@ -115,9 +99,9 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-005',
-    name: 'Employee Master',
+    name: 'Employee Master Database',
     department: 'HR & Attendance',
-    purpose: 'Employee details and information master',
+    purpose: 'Employee details, verification records and department directory',
     url: 'https://docs.google.com/spreadsheets/d/5',
     responsible_person: 'HR Admin',
     frequency: 'On-Demand',
@@ -127,9 +111,9 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-006',
-    name: 'Task Tracker',
+    name: 'Operations Task Tracker',
     department: 'Operations',
-    purpose: 'All tasks, status and progress tracking',
+    purpose: 'Daily operational tasks, checklist items and site progress',
     url: 'https://docs.google.com/spreadsheets/d/6',
     responsible_person: 'Operations Team',
     frequency: 'Daily',
@@ -139,9 +123,9 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-007',
-    name: 'Project Sheets',
+    name: 'Site Engineering Projects',
     department: 'Engineering',
-    purpose: 'All project related sheets and reports',
+    purpose: 'Engineering drawings, project status reports and site measurements',
     url: 'https://docs.google.com/spreadsheets/d/7',
     responsible_person: 'Site Engineer',
     frequency: 'Monthly',
@@ -151,9 +135,9 @@ const DEFAULT_SHEETS: KBTSheet[] = [
   },
   {
     id: 'KBT-008',
-    name: 'Reports',
+    name: 'Executive MIS Reports',
     department: 'Management',
-    purpose: 'MIS reports and executive analytics sheets',
+    purpose: 'Executive summaries, KPI metrics and management analytics',
     url: 'https://docs.google.com/spreadsheets/d/8',
     responsible_person: 'Director',
     frequency: 'Monthly',
@@ -174,105 +158,110 @@ const DEFAULT_SYSTEM_USERS: SystemMasterUser[] = [
   { id: 'E-008', name: 'Deepak Kumar', email: 'deepak@kalrabuildtech.com', role: 'EMPLOYEE', password: '', department: 'Operations' }
 ];
 
+const BASE_DEPARTMENTS = [
+  'HR & Attendance',
+  'PMS',
+  'Finance & Accounts',
+  'Procurement',
+  'Operations',
+  'Engineering',
+  'Management'
+];
+
 export const SystemMaster: React.FC<SystemMasterProps> = ({ currentView, onNavigate, currentUser, showToast }) => {
-  // Navigation states inside System Master sub-app
-  const [activeTab, setActiveTab] = useState<'sheets' | 'add-sheet' | 'assign'>('sheets');
+  // Navigation tabs: 'directory' | 'add-sheet' | 'permissions'
+  const [activeMainTab, setActiveMainTab] = useState<'directory' | 'add-sheet' | 'permissions'>('directory');
 
   // Data states
   const [sheets, setSheets] = useState<KBTSheet[]>([]);
-  const [activities, setActivities] = useState<KBTActivity[]>([]);
   const [systemUsers, setSystemUsers] = useState<SystemMasterUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  // UI state for image-matched layout
-  const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [showAllSheets, setShowAllSheets] = useState<boolean>(false);
-  const [openMenuSheetId, setOpenMenuSheetId] = useState<string | null>(null);
+  // View & Filter states: 'category' (Grouped sections) | 'grid' (All cards) | 'table' (Data table)
+  const [viewMode, setViewMode] = useState<'category' | 'grid' | 'table'>('category');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedDept, setSelectedDept] = useState<string>('All');
+  const [filterType, setFilterType] = useState<'all' | 'starred' | 'recent'>('all');
+  const [sortBy, setSortBy] = useState<'name' | 'dept' | 'frequency' | 'newest'>('name');
 
-  // Starred / Favorite Sheet IDs
+  // Modal States
+  const [isSheetModalOpen, setIsSheetModalOpen] = useState(false);
+  const [isPermissionsModalOpen, setIsPermissionsModalOpen] = useState(false);
+  const [isMoveCategoryModalOpen, setIsMoveCategoryModalOpen] = useState(false);
+  const [isAddExistingModalOpen, setIsAddExistingModalOpen] = useState(false);
+  const [targetCategoryForExisting, setTargetCategoryForExisting] = useState<string>('');
+  const [sheetToMove, setSheetToMove] = useState<KBTSheet | null>(null);
+  const [activeMenuSheetId, setActiveMenuSheetId] = useState<string | null>(null);
+
+  // Form State - Add / Edit Sheet
+  const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
+  const [formSheetId, setFormSheetId] = useState('');
+  const [formName, setFormName] = useState('');
+  const [formUrl, setFormUrl] = useState('');
+  const [formDept, setFormDept] = useState('HR & Attendance');
+  const [isCustomDept, setIsCustomDept] = useState(false);
+  const [customDeptName, setCustomDeptName] = useState('');
+  const [formPurpose, setFormPurpose] = useState('');
+  const [formResponsible, setFormResponsible] = useState('');
+  const [formFrequency, setFormFrequency] = useState('Daily');
+  const [formNotes, setFormNotes] = useState('');
+  const [formSubmitting, setFormSubmitting] = useState(false);
+
+  // Move Category modal state
+  const [moveToDept, setMoveToDept] = useState('HR & Attendance');
+  const [isMoveCustomDept, setIsMoveCustomDept] = useState(false);
+  const [moveCustomDeptName, setMoveCustomDeptName] = useState('');
+
+  // Permissions Manager State
+  const [permTargetSheetId, setPermTargetSheetId] = useState<string>('');
+  const [permUserSearch, setPermUserSearch] = useState<string>('');
+  const [permDeptFilter, setPermDeptFilter] = useState<string>('All');
+
+  // Role permissions check
+  const isAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'PC';
+
+  // Starred / Favorite Sheets
   const [starredIds, setStarredIds] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem('kbt_starred_sheets');
-      return saved ? new Set(JSON.parse(saved)) : new Set(['KBT-001', 'KBT-002', 'KBT-003', 'KBT-005', 'KBT-006']);
+      return saved ? new Set(JSON.parse(saved)) : new Set(['KBT-001', 'KBT-002', 'KBT-003']);
     } catch {
-      return new Set(['KBT-001', 'KBT-002', 'KBT-003', 'KBT-005', 'KBT-006']);
+      return new Set(['KBT-001', 'KBT-002', 'KBT-003']);
     }
   });
 
   // Recently opened sheets
-  const [recentOpened, setRecentOpened] = useState<{ id: string; openedAt: string }[]>(() => {
+  const [recentOpened, setRecentOpened] = useState<{ id: string; openedAt: number }[]>(() => {
     try {
-      const saved = localStorage.getItem('kbt_recent_sheets');
-      return saved ? JSON.parse(saved) : [
-        { id: 'KBT-001', openedAt: 'Opened 2 hours ago' },
-        { id: 'KBT-002', openedAt: 'Opened 4 hours ago' },
-        { id: 'KBT-003', openedAt: 'Opened 1 day ago' }
-      ];
+      const saved = localStorage.getItem('kbt_recent_sheets_v2');
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return [
-        { id: 'KBT-001', openedAt: 'Opened 2 hours ago' },
-        { id: 'KBT-002', openedAt: 'Opened 4 hours ago' },
-        { id: 'KBT-003', openedAt: 'Opened 1 day ago' }
-      ];
+      return [];
     }
   });
-
-  // Administrative testing toggle
-  const [isAdminPreviewMode, setIsAdminPreviewMode] = useState(false);
-  const isActualAdmin = currentUser?.role === 'ADMIN' || currentUser?.role === 'PC';
-  const showAdminLayout = isActualAdmin && !isAdminPreviewMode;
-
-  // Sheets filters & search
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // Form states - Add/Edit Sheet
-  const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
-  const [sheetIdInput, setSheetIdInput] = useState('');
-  const [sheetName, setSheetName] = useState('');
-  const [sheetUrl, setSheetUrl] = useState('');
-  const [sheetDept, setSheetDept] = useState('Other');
-  const [sheetPurpose, setSheetPurpose] = useState('');
-  const [sheetResponsible, setSheetResponsible] = useState('Admin');
-  const [sheetFrequency, setSheetFrequency] = useState('Daily');
-  const [sheetStatus, setSheetStatus] = useState('Active');
-  const [sheetNotes, setSheetNotes] = useState('');
-  const [sheetAssigned, setSheetAssigned] = useState<string[]>([]);
-
-  // Professional Assign Section State & Controls
-  const [assignMode, setAssignMode] = useState<'by-sheet' | 'by-user'>('by-sheet');
-  const [assignSelectedSheetId, setAssignSelectedSheetId] = useState<string>('');
-  const [assignSelectedUserId, setAssignSelectedUserId] = useState<string>('');
-  const [assignSheetSearch, setAssignSheetSearch] = useState<string>('');
-  const [assignUserSearch, setAssignUserSearch] = useState<string>('');
-  const [assignDeptFilter, setAssignDeptFilter] = useState<string>('All');
 
   // Fetch initial data
   const fetchData = async () => {
     setLoading(true);
-    setError(null);
     try {
       const sheetsRes = await fetch('/api/system-master/sheets');
-      if (!sheetsRes.ok) throw new Error('Failed to fetch sheets');
-      const sheetsData = await sheetsRes.json();
-      const loadedSheets: KBTSheet[] = sheetsData.data || [];
-      setSheets(loadedSheets.length ? loadedSheets : DEFAULT_SHEETS);
+      if (sheetsRes.ok) {
+        const sheetsData = await sheetsRes.json();
+        const loaded: KBTSheet[] = sheetsData.data || [];
+        setSheets(loaded.length ? loaded : DEFAULT_SHEETS);
+      } else {
+        setSheets(DEFAULT_SHEETS);
+      }
 
-      if (isActualAdmin) {
-        const actRes = await fetch('/api/system-master/activities');
-        if (actRes.ok) {
-          const actData = await actRes.json();
-          setActivities(actData.data || []);
-        }
-
+      if (isAdmin) {
         const usersRes = await fetch('/api/system-master/users');
         if (usersRes.ok) {
           const usersData = await usersRes.json();
           setSystemUsers(usersData.data || []);
         }
       }
-    } catch (err: any) {
-      console.warn('Backend fetch fallback to defaults', err);
+    } catch (err) {
+      console.warn('Fallback to default sheets data', err);
       setSheets(DEFAULT_SHEETS);
     } finally {
       setLoading(false);
@@ -283,110 +272,398 @@ export const SystemMaster: React.FC<SystemMasterProps> = ({ currentView, onNavig
     fetchData();
   }, [currentUser]);
 
-  // Toggle star / favorite
-  const toggleStar = (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-    setStarredIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      try { localStorage.setItem('kbt_starred_sheets', JSON.stringify(Array.from(next))); } catch {}
-      return next;
-    });
-  };
-
-  // Open sheet URL in new tab and track as recently opened
-  const handleOpenSheet = (sheet: KBTSheet, e?: React.MouseEvent) => {
-    if (e) e.preventDefault();
-    setRecentOpened(prev => {
-      const filtered = prev.filter(r => r.id !== sheet.id);
-      const updated = [{ id: sheet.id, openedAt: 'Just now' }, ...filtered].slice(0, 8);
-      try { localStorage.setItem('kbt_recent_sheets', JSON.stringify(updated)); } catch {}
-      return updated;
-    });
-    window.open(sheet.url, '_blank');
-  };
-
-  // Active sheets collection (from backend or default fallback)
+  // Active sheets list
   const activeSheetsList = useMemo(() => {
     return sheets.length > 0 ? sheets : DEFAULT_SHEETS;
   }, [sheets]);
 
-  // Category Icon & Color Mapping
-  const getCategoryDetails = (sheet: KBTSheet) => {
-    const text = (sheet.name + ' ' + sheet.department).toLowerCase();
-    if (text.includes('attendance')) return { icon: CalendarCheck, bg: 'bg-emerald-500', text: 'text-emerald-600', lightBg: 'bg-emerald-50' };
-    if (text.includes('pms') || text.includes('project management')) return { icon: ClipboardList, bg: 'bg-blue-600', text: 'text-blue-600', lightBg: 'bg-blue-50' };
-    if (text.includes('finance') || text.includes('account') || text.includes('income')) return { icon: DollarSign, bg: 'bg-amber-600', text: 'text-amber-600', lightBg: 'bg-amber-50' };
-    if (text.includes('purchase') || text.includes('stock') || text.includes('procurement')) return { icon: ShoppingBag, bg: 'bg-purple-600', text: 'text-purple-600', lightBg: 'bg-purple-50' };
-    if (text.includes('employee') || text.includes('team') || text.includes('hr')) return { icon: Users, bg: 'bg-teal-600', text: 'text-teal-600', lightBg: 'bg-teal-50' };
-    if (text.includes('task') || text.includes('tracker')) return { icon: CheckSquare, bg: 'bg-pink-600', text: 'text-pink-600', lightBg: 'bg-pink-50' };
-    if (text.includes('project')) return { icon: Building, bg: 'bg-sky-600', text: 'text-sky-600', lightBg: 'bg-sky-50' };
-    if (text.includes('report') || text.includes('mis') || text.includes('analytic')) return { icon: BarChart3, bg: 'bg-emerald-600', text: 'text-emerald-600', lightBg: 'bg-emerald-50' };
-    return { icon: FileSpreadsheet, bg: 'bg-indigo-600', text: 'text-indigo-600', lightBg: 'bg-indigo-50' };
+  // Effective users list
+  const effectiveUsers = useMemo(() => {
+    return systemUsers.length > 0 ? systemUsers : DEFAULT_SYSTEM_USERS;
+  }, [systemUsers]);
+
+  // Dynamically compute all unique departments across sheets & defaults
+  const allDepartments = useMemo(() => {
+    const fromSheets = activeSheetsList.map(s => s.department).filter(Boolean);
+    const set = new Set([...BASE_DEPARTMENTS, ...fromSheets]);
+    return Array.from(set);
+  }, [activeSheetsList]);
+
+  // Star toggle
+  const toggleStar = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setStarredIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        showToast('Removed from favorites', 'info');
+      } else {
+        next.add(id);
+        showToast('Added to favorites', 'success');
+      }
+      try {
+        localStorage.setItem('kbt_starred_sheets', JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
   };
 
-  // Filtered sheets array
-  const filteredSheets = useMemo(() => {
-    let result = activeSheetsList;
+  // Open Sheet in new tab & track recent
+  const handleOpenSheet = (sheet: KBTSheet, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setRecentOpened(prev => {
+      const filtered = prev.filter(r => r.id !== sheet.id);
+      const updated = [{ id: sheet.id, openedAt: Date.now() }, ...filtered].slice(0, 10);
+      try {
+        localStorage.setItem('kbt_recent_sheets_v2', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+    window.open(sheet.url, '_blank', 'noopener,noreferrer');
+  };
 
+  // Copy Sheet Link
+  const handleCopyLink = (sheet: KBTSheet, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    navigator.clipboard.writeText(sheet.url);
+    showToast(`Copied link for "${sheet.name}"`, 'success');
+  };
+
+  // Filtered & Sorted sheets
+  const displayedSheets = useMemo(() => {
+    let result = [...activeSheetsList];
+
+    // Filter by type (All, Starred, Recent)
+    if (filterType === 'starred') {
+      result = result.filter(s => starredIds.has(s.id));
+    } else if (filterType === 'recent') {
+      const recentIdMap = new Map(recentOpened.map((r, idx) => [r.id, idx]));
+      result = result.filter(s => recentIdMap.has(s.id));
+      result.sort((a, b) => (recentIdMap.get(a.id) ?? 99) - (recentIdMap.get(b.id) ?? 99));
+    }
+
+    // Filter by department
+    if (selectedDept !== 'All') {
+      result = result.filter(s => s.department.toLowerCase().includes(selectedDept.toLowerCase()));
+    }
+
+    // Search query filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(s =>
-        s.name.toLowerCase().includes(q) ||
-        s.department.toLowerCase().includes(q) ||
-        s.purpose.toLowerCase().includes(q) ||
-        s.id.toLowerCase().includes(q)
+      result = result.filter(
+        s =>
+          s.name.toLowerCase().includes(q) ||
+          s.department.toLowerCase().includes(q) ||
+          (s.purpose && s.purpose.toLowerCase().includes(q)) ||
+          s.id.toLowerCase().includes(q) ||
+          (s.responsible_person && s.responsible_person.toLowerCase().includes(q))
       );
     }
 
-    if (selectedCategory !== 'All') {
-      const cat = selectedCategory.toLowerCase();
-      result = result.filter(s => {
-        const text = (s.name + ' ' + s.department).toLowerCase();
-        if (cat === 'attendance') return text.includes('attendance') || text.includes('hr');
-        if (cat === 'pms') return text.includes('pms') || text.includes('task');
-        if (cat === 'finance') return text.includes('finance') || text.includes('account');
-        if (cat === 'purchase') return text.includes('purchase') || text.includes('stock') || text.includes('procurement');
-        if (cat === 'hr') return text.includes('hr') || text.includes('employee') || text.includes('team');
-        if (cat === 'projects') return text.includes('project') || text.includes('engineering');
-        if (cat === 'reports') return text.includes('report') || text.includes('mis');
-        return text.includes(cat);
-      });
+    // Sort order (unless recent filter is active)
+    if (filterType !== 'recent') {
+      if (sortBy === 'name') {
+        result.sort((a, b) => a.name.localeCompare(b.name));
+      } else if (sortBy === 'dept') {
+        result.sort((a, b) => a.department.localeCompare(b.department));
+      } else if (sortBy === 'frequency') {
+        result.sort((a, b) => a.frequency.localeCompare(b.frequency));
+      } else if (sortBy === 'newest') {
+        result.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+      }
     }
 
     return result;
-  }, [activeSheetsList, searchQuery, selectedCategory]);
+  }, [activeSheetsList, filterType, selectedDept, searchQuery, sortBy, starredIds, recentOpened]);
 
-  // Handle Sheet CRUD
-  const handleSheetSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sheetName || !sheetUrl) {
-      showToast('Name and URL are required', 'error');
+  // Group sheets by category for 'category' view mode
+  const categorizedSheets = useMemo(() => {
+    const map = new Map<string, KBTSheet[]>();
+
+    const activeDepts = selectedDept === 'All' ? allDepartments : [selectedDept];
+
+    activeDepts.forEach(dept => {
+      map.set(dept, []);
+    });
+
+    displayedSheets.forEach(sheet => {
+      const dept = sheet.department || 'Other';
+      if (!map.has(dept)) {
+        map.set(dept, []);
+      }
+      map.get(dept)!.push(sheet);
+    });
+
+    const list: { department: string; sheets: KBTSheet[] }[] = [];
+    map.forEach((items, dept) => {
+      if (items.length > 0 || !searchQuery) {
+        list.push({ department: dept, sheets: items });
+      }
+    });
+
+    return list;
+  }, [displayedSheets, allDepartments, selectedDept, searchQuery]);
+
+  // Category styling helper
+  const getDepartmentTheme = (dept: string) => {
+    const d = (dept || '').toLowerCase();
+    if (d.includes('attendance') || d.includes('hr')) {
+      return {
+        icon: CalendarCheck,
+        badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+        cardAccent: 'from-emerald-500/20 to-transparent',
+        iconBg: 'bg-emerald-600 text-white shadow-emerald-500/20',
+        headerBg: 'bg-emerald-50/70 border-emerald-200 text-emerald-950',
+        btnBg: 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+      };
+    }
+    if (d.includes('pms')) {
+      return {
+        icon: ClipboardList,
+        badge: 'bg-blue-50 text-blue-700 border-blue-200',
+        cardAccent: 'from-blue-500/20 to-transparent',
+        iconBg: 'bg-blue-600 text-white shadow-blue-500/20',
+        headerBg: 'bg-blue-50/70 border-blue-200 text-blue-950',
+        btnBg: 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-600/20'
+      };
+    }
+    if (d.includes('finance') || d.includes('account')) {
+      return {
+        icon: DollarSign,
+        badge: 'bg-amber-50 text-amber-700 border-amber-200',
+        cardAccent: 'from-amber-500/20 to-transparent',
+        iconBg: 'bg-amber-600 text-white shadow-amber-500/20',
+        headerBg: 'bg-amber-50/70 border-amber-200 text-amber-950',
+        btnBg: 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-600/20'
+      };
+    }
+    if (d.includes('procurement') || d.includes('stock') || d.includes('purchase')) {
+      return {
+        icon: ShoppingBag,
+        badge: 'bg-purple-50 text-purple-700 border-purple-200',
+        cardAccent: 'from-purple-500/20 to-transparent',
+        iconBg: 'bg-purple-600 text-white shadow-purple-500/20',
+        headerBg: 'bg-purple-50/70 border-purple-200 text-purple-950',
+        btnBg: 'bg-purple-600 hover:bg-purple-700 text-white shadow-purple-600/20'
+      };
+    }
+    if (d.includes('operation')) {
+      return {
+        icon: SlidersHorizontal,
+        badge: 'bg-pink-50 text-pink-700 border-pink-200',
+        cardAccent: 'from-pink-500/20 to-transparent',
+        iconBg: 'bg-pink-600 text-white shadow-pink-500/20',
+        headerBg: 'bg-pink-50/70 border-pink-200 text-pink-950',
+        btnBg: 'bg-pink-600 hover:bg-pink-700 text-white shadow-pink-600/20'
+      };
+    }
+    if (d.includes('engineering') || d.includes('project')) {
+      return {
+        icon: Building,
+        badge: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+        cardAccent: 'from-cyan-500/20 to-transparent',
+        iconBg: 'bg-cyan-600 text-white shadow-cyan-500/20',
+        headerBg: 'bg-cyan-50/70 border-cyan-200 text-cyan-950',
+        btnBg: 'bg-cyan-600 hover:bg-cyan-700 text-white shadow-cyan-600/20'
+      };
+    }
+    if (d.includes('management') || d.includes('report') || d.includes('mis')) {
+      return {
+        icon: BarChart3,
+        badge: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+        cardAccent: 'from-indigo-500/20 to-transparent',
+        iconBg: 'bg-indigo-600 text-white shadow-indigo-500/20',
+        headerBg: 'bg-indigo-50/70 border-indigo-200 text-indigo-950',
+        btnBg: 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+      };
+    }
+    if (d.includes('sales') || d.includes('market') || d.includes('crm')) {
+      return {
+        icon: Sparkles,
+        badge: 'bg-rose-50 text-rose-700 border-rose-200',
+        cardAccent: 'from-rose-500/20 to-transparent',
+        iconBg: 'bg-rose-600 text-white shadow-rose-500/20',
+        headerBg: 'bg-rose-50/70 border-rose-200 text-rose-950',
+        btnBg: 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20'
+      };
+    }
+    return {
+      icon: FileSpreadsheet,
+      badge: 'bg-teal-50 text-teal-700 border-teal-200',
+      cardAccent: 'from-teal-500/20 to-transparent',
+      iconBg: 'bg-teal-600 text-white shadow-teal-500/20',
+      headerBg: 'bg-teal-50/70 border-teal-200 text-teal-950',
+      btnBg: 'bg-teal-600 hover:bg-teal-700 text-white shadow-teal-600/20'
+    };
+  };
+
+  // Open Add Sheet (with pre-filled department)
+  const handleOpenAddModal = (targetDepartment?: string) => {
+    setEditingSheetId(null);
+    setFormSheetId('');
+    setFormName('');
+    setFormUrl('');
+
+    const defaultDept = targetDepartment && targetDepartment !== 'All'
+      ? targetDepartment
+      : selectedDept !== 'All'
+      ? selectedDept
+      : 'HR & Attendance';
+
+    setFormDept(defaultDept);
+    setIsCustomDept(false);
+    setCustomDeptName('');
+    setFormPurpose('');
+    setFormResponsible(currentUser?.name || 'Admin');
+    setFormFrequency('Daily');
+    setFormNotes('');
+    setIsSheetModalOpen(true);
+  };
+
+  // Open Edit Sheet Modal
+  const handleOpenEditModal = (sheet: KBTSheet, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActiveMenuSheetId(null);
+    setEditingSheetId(sheet.id);
+    setFormSheetId(sheet.id);
+    setFormName(sheet.name);
+    setFormUrl(sheet.url);
+
+    if (allDepartments.includes(sheet.department)) {
+      setFormDept(sheet.department);
+      setIsCustomDept(false);
+      setCustomDeptName('');
+    } else {
+      setFormDept('__CUSTOM__');
+      setIsCustomDept(true);
+      setCustomDeptName(sheet.department);
+    }
+
+    setFormPurpose(sheet.purpose || '');
+    setFormResponsible(sheet.responsible_person || '');
+    setFormFrequency(sheet.frequency || 'Daily');
+    setFormNotes(sheet.notes || '');
+    setIsSheetModalOpen(true);
+  };
+
+  // Quick Move Category for existing/previous sheet
+  const handleOpenMoveCategoryModal = (sheet: KBTSheet, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActiveMenuSheetId(null);
+    setSheetToMove(sheet);
+    setMoveToDept(sheet.department || 'HR & Attendance');
+    setIsMoveCustomDept(false);
+    setMoveCustomDeptName('');
+    setIsMoveCategoryModalOpen(true);
+  };
+
+  // Save Category Move for Existing Sheet
+  const handleConfirmMoveCategory = async (newDept: string) => {
+    if (!sheetToMove) return;
+    const finalDept = newDept.trim();
+    if (!finalDept) {
+      showToast('Please specify a category', 'error');
       return;
     }
 
+    try {
+      const res = await fetch(`/api/system-master/sheets/${sheetToMove.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ department: finalDept })
+      });
+
+      if (res.ok) {
+        setSheets(prev => prev.map(s => (s.id === sheetToMove.id ? { ...s, department: finalDept } : s)));
+        showToast(`Moved "${sheetToMove.name}" to category "${finalDept}"`, 'success');
+        setIsMoveCategoryModalOpen(false);
+        setSheetToMove(null);
+      } else {
+        showToast('Failed to change category', 'error');
+      }
+    } catch {
+      showToast('Network error updating category', 'error');
+    }
+  };
+
+  // Add Existing Sheet to Target Category
+  const handleAddExistingSheetToCategory = async (sheetId: string, targetDept: string) => {
+    const targetSheet = activeSheetsList.find(s => s.id === sheetId);
+    if (!targetSheet) return;
+
+    try {
+      const res = await fetch(`/api/system-master/sheets/${sheetId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ department: targetDept })
+      });
+
+      if (res.ok) {
+        setSheets(prev => prev.map(s => (s.id === sheetId ? { ...s, department: targetDept } : s)));
+        showToast(`Added "${targetSheet.name}" to "${targetDept}" category`, 'success');
+        setIsAddExistingModalOpen(false);
+      } else {
+        showToast('Failed to move sheet', 'error');
+      }
+    } catch {
+      showToast('Error updating sheet category', 'error');
+    }
+  };
+
+  // Delete Sheet
+  const handleDeleteSheet = async (sheet: KBTSheet, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActiveMenuSheetId(null);
+    if (!window.confirm(`Are you sure you want to delete "${sheet.name}" (${sheet.id})?`)) return;
+
+    try {
+      const res = await fetch(`/api/system-master/sheets/${sheet.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        showToast('Sheet deleted successfully', 'success');
+        fetchData();
+      } else {
+        showToast('Failed to delete sheet', 'error');
+      }
+    } catch {
+      showToast('Network error while deleting sheet', 'error');
+    }
+  };
+
+  // Save Sheet (Add / Update)
+  const handleSaveSheet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName.trim() || !formUrl.trim()) {
+      showToast('Sheet Name and Google Sheet URL are required', 'error');
+      return;
+    }
+
+    const effectiveDept = isCustomDept
+      ? customDeptName.trim()
+      : formDept === '__CUSTOM__'
+      ? customDeptName.trim()
+      : formDept;
+
+    if (!effectiveDept) {
+      showToast('Please specify a department / category for this sheet', 'error');
+      return;
+    }
+
+    setFormSubmitting(true);
     const payload = {
-      id: sheetIdInput.trim() || undefined,
-      name: sheetName,
-      url: sheetUrl,
-      department: sheetDept,
-      purpose: sheetPurpose,
-      responsible_person: sheetResponsible,
-      frequency: sheetFrequency,
-      status: sheetStatus,
-      notes: sheetNotes,
-      assignedUsers: sheetAssigned
+      id: formSheetId.trim() || undefined,
+      name: formName.trim(),
+      url: formUrl.trim(),
+      department: effectiveDept,
+      purpose: formPurpose.trim(),
+      responsible_person: formResponsible.trim(),
+      frequency: formFrequency,
+      status: 'Active',
+      notes: formNotes.trim()
     };
 
     try {
-      let url = '/api/system-master/sheets';
-      let method = 'POST';
-
-      if (editingSheetId) {
-        url = `/api/system-master/sheets/${editingSheetId}`;
-        method = 'PUT';
-      }
+      const url = editingSheetId ? `/api/system-master/sheets/${editingSheetId}` : '/api/system-master/sheets';
+      const method = editingSheetId ? 'PUT' : 'POST';
 
       const res = await fetch(url, {
         method,
@@ -394,604 +671,984 @@ export const SystemMaster: React.FC<SystemMasterProps> = ({ currentView, onNavig
         body: JSON.stringify(payload)
       });
 
-      const data = await res.json();
       if (res.ok) {
-        showToast(editingSheetId ? 'Sheet updated successfully' : 'Sheet added successfully', 'success');
-        resetSheetForm();
+        showToast(
+          editingSheetId
+            ? `Sheet updated in "${effectiveDept}"`
+            : `New Google Sheet added to "${effectiveDept}"`,
+          'success'
+        );
+        setIsSheetModalOpen(false);
+        setActiveMainTab('directory');
         fetchData();
-        setActiveTab('sheets');
       } else {
-        showToast(data.message || 'Action failed', 'error');
+        const data = await res.json();
+        showToast(data.message || 'Operation failed', 'error');
       }
     } catch (err) {
       console.error(err);
-      showToast('Server error', 'error');
+      showToast('Failed to connect to server', 'error');
+    } finally {
+      setFormSubmitting(false);
     }
   };
 
-  const editSheet = (sheet: KBTSheet) => {
-    setEditingSheetId(sheet.id);
-    setSheetIdInput(sheet.id);
-    setSheetName(sheet.name);
-    setSheetUrl(sheet.url);
-    setSheetDept(sheet.department);
-    setSheetPurpose(sheet.purpose);
-    setSheetResponsible(sheet.responsible_person);
-    setSheetFrequency(sheet.frequency);
-    setSheetStatus(sheet.status);
-    setSheetNotes(sheet.notes || '');
-    setSheetAssigned(sheet.assignedUsers || []);
-    setActiveTab('add-sheet');
+  // Open Permissions Modal
+  const handleOpenPermissionsModal = (sheetId?: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActiveMenuSheetId(null);
+    setPermTargetSheetId(sheetId || (activeSheetsList[0]?.id ?? ''));
+    setPermUserSearch('');
+    setPermDeptFilter('All');
+    setIsPermissionsModalOpen(true);
   };
 
-  const deleteSheet = async (id: string) => {
-    if (!window.confirm(`Are you sure you want to delete sheet ${id}?`)) return;
+  // Target sheet for permission modal
+  const targetPermSheet = useMemo(() => {
+    return activeSheetsList.find(s => s.id === permTargetSheetId) || activeSheetsList[0];
+  }, [activeSheetsList, permTargetSheetId]);
 
-    try {
-      const res = await fetch(`/api/system-master/sheets/${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('Sheet deleted successfully', 'success');
-        fetchData();
-      } else {
-        showToast(data.message || 'Failed to delete', 'error');
-      }
-    } catch (err) {
-      console.error(err);
-      showToast('Server error', 'error');
-    }
-  };
+  // Toggle user permission for selected sheet
+  const handleToggleUserPermission = async (userEmail: string) => {
+    if (!targetPermSheet) return;
 
-  const resetSheetForm = () => {
-    setEditingSheetId(null);
-    setSheetIdInput('');
-    setSheetName('');
-    setSheetUrl('');
-    setSheetDept('Other');
-    setSheetPurpose('');
-    setSheetResponsible('Admin');
-    setSheetFrequency('Daily');
-    setSheetStatus('Active');
-    setSheetNotes('');
-    setSheetAssigned([]);
-  };
-
-  // Single Sheet Assignment batch operations
-  const selectedSheetForAssign = useMemo(() => {
-    return activeSheetsList.find(s => s.id === assignSelectedSheetId);
-  }, [activeSheetsList, assignSelectedSheetId]);
-
-  const toggleUserAssignment = async (email: string) => {
-    if (!selectedSheetForAssign) return;
-
-    let updated = [...(selectedSheetForAssign.assignedUsers || [])];
-    const emailLower = email.toLowerCase();
+    let updated = [...(targetPermSheet.assignedUsers || [])];
+    const emailLower = userEmail.toLowerCase();
     const exists = updated.some(e => e.toLowerCase() === emailLower);
+
     if (exists) {
       updated = updated.filter(e => e.toLowerCase() !== emailLower);
     } else {
-      updated.push(email);
+      updated.push(userEmail);
     }
 
     try {
-      const res = await fetch(`/api/system-master/sheets/${selectedSheetForAssign.id}`, {
+      const res = await fetch(`/api/system-master/sheets/${targetPermSheet.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assignedUsers: updated })
       });
 
       if (res.ok) {
-        setSheets(prev => prev.map(s => s.id === selectedSheetForAssign.id ? { ...s, assignedUsers: updated } : s));
-        showToast('Assignment updated', 'success');
+        setSheets(prev => prev.map(s => (s.id === targetPermSheet.id ? { ...s, assignedUsers: updated } : s)));
+        showToast(exists ? 'Access revoked' : 'Access granted', 'success');
       } else {
-        showToast('Failed to update assignment', 'error');
-      }
-    } catch (err) {
-      console.error(err);
-      showToast('Server error', 'error');
-    }
-  };
-
-  // Effective users memo (Fallback to default system users if server users list is empty)
-  const effectiveUsers = useMemo(() => {
-    return systemUsers.length > 0 ? systemUsers : DEFAULT_SYSTEM_USERS;
-  }, [systemUsers]);
-
-  // Initialize selection defaults
-  useEffect(() => {
-    if (activeSheetsList.length > 0 && !assignSelectedSheetId) {
-      setAssignSelectedSheetId(activeSheetsList[0].id);
-    }
-  }, [activeSheetsList, assignSelectedSheetId]);
-
-  useEffect(() => {
-    if (effectiveUsers.length > 0 && !assignSelectedUserId) {
-      setAssignSelectedUserId(effectiveUsers[0].id);
-    }
-  }, [effectiveUsers, assignSelectedUserId]);
-
-  const selectedUserForAssign = useMemo(() => {
-    return effectiveUsers.find(u => u.id === assignSelectedUserId) || effectiveUsers[0];
-  }, [effectiveUsers, assignSelectedUserId]);
-
-  // Key permission matrix stats
-  const totalAccessGrants = useMemo(() => {
-    return activeSheetsList.reduce((acc, sheet) => acc + (sheet.assignedUsers?.length || 0), 0);
-  }, [activeSheetsList]);
-
-  const configuredSheetsCount = useMemo(() => {
-    return activeSheetsList.filter(sheet => (sheet.assignedUsers?.length || 0) > 0).length;
-  }, [activeSheetsList]);
-
-  const unassignedSheetsCount = useMemo(() => {
-    return activeSheetsList.filter(sheet => (!sheet.assignedUsers || sheet.assignedUsers.length === 0)).length;
-  }, [activeSheetsList]);
-
-  // Bulk action handlers
-  const handleGrantAllUsersToSheet = async (sheetId: string) => {
-    const targetSheet = activeSheetsList.find(s => s.id === sheetId);
-    if (!targetSheet) return;
-    const allEmails = effectiveUsers.map(u => u.email);
-    try {
-      const res = await fetch(`/api/system-master/sheets/${sheetId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignedUsers: allEmails })
-      });
-      if (res.ok) {
-        setSheets(prev => prev.map(s => s.id === sheetId ? { ...s, assignedUsers: allEmails } : s));
-        showToast(`Authorized all ${allEmails.length} team members`, 'success');
-      } else {
-        showToast('Failed to update sheet permissions', 'error');
+        showToast('Failed to update permission', 'error');
       }
     } catch {
-      showToast('Server error updating permissions', 'error');
+      showToast('Server error updating permission', 'error');
     }
   };
 
-  const handleClearAllUsersFromSheet = async (sheetId: string) => {
-    try {
-      const res = await fetch(`/api/system-master/sheets/${sheetId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignedUsers: [] })
-      });
-      if (res.ok) {
-        setSheets(prev => prev.map(s => s.id === sheetId ? { ...s, assignedUsers: [] } : s));
-        showToast('Cleared all permissions for this sheet', 'info');
-      } else {
-        showToast('Failed to clear permissions', 'error');
-      }
-    } catch {
-      showToast('Server error', 'error');
-    }
-  };
-
-  const handleGrantDepartmentToSheet = async (sheetId: string, departmentName: string) => {
-    const targetSheet = activeSheetsList.find(s => s.id === sheetId);
-    if (!targetSheet) return;
-    const deptEmails = effectiveUsers.filter(u => (u.department || 'General') === departmentName).map(u => u.email);
-    if (deptEmails.length === 0) {
-      showToast(`No employees found in ${departmentName}`, 'warning');
+  // Bulk grant by Department
+  const handleGrantDepartment = async (deptName: string) => {
+    if (!targetPermSheet) return;
+    const deptUsers = effectiveUsers.filter(u => (u.department || 'General').toLowerCase() === deptName.toLowerCase());
+    if (deptUsers.length === 0) {
+      showToast(`No users found in ${deptName}`, 'warning');
       return;
     }
-    const currentSet = new Set((targetSheet.assignedUsers || []).map(e => e.toLowerCase()));
-    deptEmails.forEach(e => currentSet.add(e.toLowerCase()));
-    const updatedUsers = Array.from(currentSet);
+
+    const currentSet = new Set((targetPermSheet.assignedUsers || []).map(e => e.toLowerCase()));
+    deptUsers.forEach(u => currentSet.add(u.email.toLowerCase()));
+    const updated = Array.from(currentSet);
 
     try {
-      const res = await fetch(`/api/system-master/sheets/${sheetId}`, {
+      const res = await fetch(`/api/system-master/sheets/${targetPermSheet.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignedUsers: updatedUsers })
+        body: JSON.stringify({ assignedUsers: updated })
       });
+
       if (res.ok) {
-        setSheets(prev => prev.map(s => s.id === sheetId ? { ...s, assignedUsers: updatedUsers } : s));
-        showToast(`Granted access to all ${departmentName} team members`, 'success');
-      } else {
-        showToast('Failed to update permissions', 'error');
+        setSheets(prev => prev.map(s => (s.id === targetPermSheet.id ? { ...s, assignedUsers: updated } : s)));
+        showToast(`Granted access to all ${deptName} members`, 'success');
       }
     } catch {
-      showToast('Server error', 'error');
+      showToast('Error updating permissions', 'error');
     }
   };
 
-  const handleToggleSheetForUser = async (userEmail: string, sheetId: string) => {
-    const targetSheet = activeSheetsList.find(s => s.id === sheetId);
-    if (!targetSheet) return;
-    let updatedUsers = [...(targetSheet.assignedUsers || [])];
-    const emailLower = userEmail.toLowerCase();
-    const isAssigned = updatedUsers.some(e => e.toLowerCase() === emailLower);
-    if (isAssigned) {
-      updatedUsers = updatedUsers.filter(e => e.toLowerCase() !== emailLower);
-    } else {
-      updatedUsers.push(userEmail);
-    }
+  // Grant All / Clear All
+  const handleSetAllPermissions = async (grantAll: boolean) => {
+    if (!targetPermSheet) return;
+    const updated = grantAll ? effectiveUsers.map(u => u.email) : [];
 
     try {
-      const res = await fetch(`/api/system-master/sheets/${sheetId}`, {
+      const res = await fetch(`/api/system-master/sheets/${targetPermSheet.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignedUsers: updatedUsers })
+        body: JSON.stringify({ assignedUsers: updated })
       });
+
       if (res.ok) {
-        setSheets(prev => prev.map(s => s.id === sheetId ? { ...s, assignedUsers: updatedUsers } : s));
-        showToast(isAssigned ? `Access revoked for ${targetSheet.name}` : `Access granted for ${targetSheet.name}`, isAssigned ? 'info' : 'success');
-      } else {
-        showToast('Failed to update user access', 'error');
+        setSheets(prev => prev.map(s => (s.id === targetPermSheet.id ? { ...s, assignedUsers: updated } : s)));
+        showToast(grantAll ? 'Granted access to all employees' : 'Cleared all sheet access', 'info');
       }
     } catch {
-      showToast('Server error', 'error');
+      showToast('Error updating permissions', 'error');
     }
   };
 
-  const handleGrantAllSheetsToUser = async (userEmail: string) => {
-    try {
-      const updatedSheets = activeSheetsList.map(sheet => {
-        const currentUsers = sheet.assignedUsers || [];
-        if (!currentUsers.some(e => e.toLowerCase() === userEmail.toLowerCase())) {
-          return { ...sheet, assignedUsers: [...currentUsers, userEmail] };
-        }
-        return sheet;
-      });
+  // Close menus when clicking outside
+  useEffect(() => {
+    const handleOutsideClick = () => setActiveMenuSheetId(null);
+    window.addEventListener('click', handleOutsideClick);
+    return () => window.removeEventListener('click', handleOutsideClick);
+  }, []);
 
-      for (const s of updatedSheets) {
-        await fetch(`/api/system-master/sheets/${s.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assignedUsers: s.assignedUsers })
-        });
-      }
+  // Reusable Single Sheet Card Component
+  const renderSheetCard = (sheet: KBTSheet) => {
+    const theme = getDepartmentTheme(sheet.department);
+    const DeptIcon = theme.icon;
+    const isStarred = starredIds.has(sheet.id);
+    const assignedCount = sheet.assignedUsers?.length || 0;
 
-      setSheets(updatedSheets);
-      showToast(`Granted access to all sheets for user`, 'success');
-    } catch {
-      showToast('Server error', 'error');
-    }
+    return (
+      <div
+        key={sheet.id}
+        className="bg-white border border-slate-200/80 hover:border-emerald-300/80 rounded-2xl p-5 flex flex-col justify-between shadow-2xs hover:shadow-lg transition-all duration-300 relative group overflow-hidden"
+      >
+        {/* Subtle top color gradient accent */}
+        <div className={`absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r ${theme.cardAccent}`} />
+
+        <div>
+          {/* Top Row: Icon + Star + Admin Dropdown */}
+          <div className="flex items-center justify-between mb-3.5">
+            <div className="flex items-center gap-2">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${theme.iconBg} shadow-sm`}>
+                <DeptIcon size={18} />
+              </div>
+              <span className="font-mono text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200/80 px-2 py-0.5 rounded-lg">
+                {sheet.id}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                onClick={e => toggleStar(sheet.id, e)}
+                className="p-1.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-amber-500 transition-colors"
+                title={isStarred ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                <Star size={17} className={isStarred ? 'fill-amber-400 text-amber-400' : ''} />
+              </button>
+
+              {isAdmin && (
+                <div className="relative" onClick={e => e.stopPropagation()}>
+                  <button
+                    onClick={() => setActiveMenuSheetId(activeMenuSheetId === sheet.id ? null : sheet.id)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+                    title="Sheet Actions"
+                  >
+                    <MoreVertical size={16} />
+                  </button>
+
+                  {activeMenuSheetId === sheet.id && (
+                    <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-slate-200 rounded-2xl shadow-xl z-30 p-1.5 space-y-1">
+                      <button
+                        onClick={e => handleOpenMoveCategoryModal(sheet, e)}
+                        className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-xl flex items-center gap-2"
+                      >
+                        <FolderKanban size={13} className="text-emerald-600" />
+                        <span>Change Category</span>
+                      </button>
+                      <button
+                        onClick={e => handleOpenPermissionsModal(sheet.id, e)}
+                        className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-700 rounded-xl flex items-center gap-2"
+                      >
+                        <Shield size={13} className="text-blue-600" />
+                        <span>Manage Access</span>
+                      </button>
+                      <button
+                        onClick={e => handleOpenEditModal(sheet, e)}
+                        className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2"
+                      >
+                        <Edit2 size={13} />
+                        <span>Edit Details</span>
+                      </button>
+                      <button
+                        onClick={e => handleCopyLink(sheet, e)}
+                        className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2"
+                      >
+                        <Copy size={13} />
+                        <span>Copy URL</span>
+                      </button>
+                      <div className="border-t border-slate-100 my-1" />
+                      <button
+                        onClick={e => handleDeleteSheet(sheet, e)}
+                        className="w-full text-left px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl flex items-center gap-2"
+                      >
+                        <Trash2 size={13} />
+                        <span>Delete Sheet</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Department Tag with Quick Move Trigger */}
+          <div className="mb-2 flex items-center gap-1.5">
+            <button
+              onClick={e => (isAdmin ? handleOpenMoveCategoryModal(sheet, e) : null)}
+              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-[10px] font-bold border transition-colors ${theme.badge} ${
+                isAdmin ? 'hover:brightness-95 cursor-pointer' : ''
+              }`}
+              title={isAdmin ? 'Click to change category' : undefined}
+            >
+              <span>{sheet.department}</span>
+              {isAdmin && <ChevronRight size={10} className="text-slate-400" />}
+            </button>
+          </div>
+
+          {/* Title */}
+          <h3 className="text-sm sm:text-base font-black text-slate-900 group-hover:text-emerald-700 transition-colors line-clamp-1 leading-snug">
+            {sheet.name}
+          </h3>
+
+          {/* Purpose / Description */}
+          <p className="text-xs text-slate-500 mt-1 font-medium line-clamp-2 min-h-[32px] leading-relaxed">
+            {sheet.purpose || 'Connected company sheet for reporting and operational tracking.'}
+          </p>
+        </div>
+
+        {/* Card Bottom: Metadata & Actions */}
+        <div className="mt-5 pt-3.5 border-t border-slate-100 space-y-3">
+          {/* Frequency & User Access stats */}
+          <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+            <span className="text-slate-500">
+              {sheet.frequency || 'Daily'} Update
+            </span>
+            <div className="flex items-center gap-1.5 text-slate-500" title={`${assignedCount} assigned users`}>
+              <Users size={13} className="text-slate-400" />
+              <span>{assignedCount > 0 ? `${assignedCount} users` : 'All Team'}</span>
+            </div>
+          </div>
+
+          {/* Primary Open & Copy Buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={e => handleOpenSheet(sheet, e)}
+              className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-md shadow-emerald-600/20"
+            >
+              <span>Open Sheet</span>
+              <ExternalLink size={13} />
+            </button>
+
+            <button
+              onClick={e => handleCopyLink(sheet, e)}
+              className="p-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition-all"
+              title="Copy Sheet URL"
+            >
+              <Copy size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
-
-  const handleRevokeAllSheetsFromUser = async (userEmail: string) => {
-    try {
-      const updatedSheets = activeSheetsList.map(sheet => {
-        const currentUsers = sheet.assignedUsers || [];
-        const filteredUsers = currentUsers.filter(e => e.toLowerCase() !== userEmail.toLowerCase());
-        return { ...sheet, assignedUsers: filteredUsers };
-      });
-
-      for (const s of updatedSheets) {
-        await fetch(`/api/system-master/sheets/${s.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ assignedUsers: s.assignedUsers })
-        });
-      }
-
-      setSheets(updatedSheets);
-      showToast(`Revoked all sheet access for user`, 'info');
-    } catch {
-      showToast('Server error', 'error');
-    }
-  };
-
-  // List of category tabs
-  const CATEGORY_TABS = [
-    { id: 'All', label: 'All Sheets', icon: FileSpreadsheet },
-    { id: 'Attendance', label: 'Attendance', icon: CalendarCheck },
-    { id: 'PMS', label: 'PMS', icon: ClipboardList },
-    { id: 'Finance', label: 'Finance', icon: DollarSign },
-    { id: 'Purchase', label: 'Purchase & Stock', icon: ShoppingBag },
-    { id: 'HR', label: 'HR', icon: Users },
-    { id: 'Projects', label: 'Projects', icon: Building },
-    { id: 'Reports', label: 'Reports', icon: BarChart3 }
-  ];
-
-  const visibleCards = showAllSheets ? filteredSheets : filteredSheets.slice(0, 8);
 
   return (
-    <div className="min-h-screen bg-slate-50/60 font-sans text-slate-800 flex flex-col">
-      {/* Global Top Bar */}
-      <header className="bg-white border-b border-slate-200/80 px-6 py-3.5 flex items-center justify-between z-20 sticky top-0 backdrop-blur-md bg-white/90">
-        <div className="flex items-center gap-3.5">
-          <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-md shadow-emerald-600/20 shrink-0">
-            <FileSpreadsheet size={22} />
-          </div>
-          <div>
-            <h1 className="text-xl font-extrabold tracking-tight text-slate-900 leading-tight">Sheet Hub</h1>
-            <p className="text-xs text-slate-400 font-medium">All Google Sheets in one place</p>
-          </div>
-        </div>
+    <div className="min-h-screen bg-slate-50/70 text-slate-800 pb-16 font-sans">
+      {/* 1. TOP HEADER & CONTROLS */}
+      <div className="bg-white border-b border-slate-200/80 sticky top-0 z-20 backdrop-blur-md bg-white/90">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            {/* Title & Badge */}
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center text-white shadow-lg shadow-emerald-600/25 shrink-0">
+                <FileSpreadsheet size={22} className="stroke-[2.2]" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2.5">
+                  <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900">Sheet Center</h1>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    {activeSheetsList.length} Connected
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 font-medium">
+                  Organize, categorize and access company spreadsheets by department
+                </p>
+              </div>
+            </div>
 
-        {/* Header Right Actions */}
-        <div className="flex items-center gap-4">
-          <div className="relative hidden md:block w-72">
-            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search sheets..."
-              className="w-full bg-slate-50 border border-slate-200/80 text-slate-800 pl-10 pr-12 py-2 text-xs rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/30 focus:bg-white transition-all"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-            />
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-bold text-slate-400 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-2xs">⌘K</span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors relative" title="Notifications">
-              <Bell size={18} />
-              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[9px] font-bold flex items-center justify-center border-2 border-white">12</span>
-            </button>
-            <button className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors" title="Help & Docs">
-              <HelpCircle size={18} />
-            </button>
-          </div>
-
-          {isActualAdmin && (
-            <button
-              onClick={() => setIsAdminPreviewMode(!isAdminPreviewMode)}
-              className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all border border-slate-200"
-            >
-              <Eye size={14} />
-              <span className="hidden sm:inline">{isAdminPreviewMode ? 'View as Admin' : 'View as Employee'}</span>
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Module Level Navigation Bar for 3 Sections */}
-      <div className="bg-white border-b border-slate-200 px-6 py-2.5 flex items-center justify-between sticky top-[65px] z-15 backdrop-blur-md bg-white/95 shadow-xs">
-        <div className="flex items-center gap-2 overflow-x-auto py-0.5 custom-scrollbar">
-          <button
-            onClick={() => setActiveTab('sheets')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-              activeTab === 'sheets'
-                ? 'bg-slate-900 text-white shadow-md'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-            }`}
-          >
-            <FileSpreadsheet size={15} />
-            <span>1. Sheet Directory</span>
-            <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold ${activeTab === 'sheets' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
-              {activeSheetsList.length}
-            </span>
-          </button>
-
-          {showAdminLayout && (
-            <>
+            {/* Top Navigation Tabs */}
+            <div className="flex items-center gap-2 self-start md:self-auto overflow-x-auto pb-1 md:pb-0">
               <button
-                onClick={() => { resetSheetForm(); setActiveTab('add-sheet'); }}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-                  activeTab === 'add-sheet'
-                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                onClick={() => setActiveMainTab('directory')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                  activeMainTab === 'directory'
+                    ? 'bg-slate-900 text-white shadow-md'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                 }`}
               >
-                <PlusCircle size={15} />
-                <span>2. {editingSheetId ? 'Edit Google Sheet' : 'Connect New Sheet'}</span>
+                <FolderKanban size={14} />
+                <span>1. Sheet Directory</span>
               </button>
 
-              <button
-                onClick={() => setActiveTab('assign')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-                  activeTab === 'assign'
-                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/20'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-              >
-                <Shield size={15} className={activeTab === 'assign' ? 'text-amber-300' : 'text-blue-600'} />
-                <span>3. Assign Sheet Permissions</span>
-                <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold ${activeTab === 'assign' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'}`}>
-                  {totalAccessGrants}
-                </span>
-              </button>
-            </>
-          )}
+              {isAdmin && (
+                <>
+                  <button
+                    onClick={() => {
+                      handleOpenAddModal();
+                    }}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                      activeMainTab === 'add-sheet'
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/25'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <Plus size={14} />
+                    <span>2. Add New Sheet</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenPermissionsModal()}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 hover:border-blue-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shadow-2xs"
+                  >
+                    <Shield size={14} className="text-blue-600" />
+                    <span>3. Permissions</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
         </div>
-
-        {showAdminLayout && activeTab === 'sheets' && (
-          <button
-            onClick={() => setActiveTab('assign')}
-            className="px-3.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0"
-          >
-            <Shield size={14} />
-            <span>Manage Permissions</span>
-          </button>
-        )}
       </div>
 
-      {/* Main Page Area */}
-      <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
-
-        {/* 1. Top 4 Stats Overview Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
-          {/* Card 1: Total Sheets */}
-          <div className="bg-white border border-slate-200/70 rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all flex items-center gap-4 group">
-            <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100 group-hover:scale-105 transition-transform">
-              <FileSpreadsheet size={22} />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 font-bold">Total Sheets</p>
-              <h3 className="text-2xl font-black text-slate-900 leading-tight mt-0.5">{activeSheetsList.length}</h3>
-              <p className="text-[11px] text-slate-400 font-medium">All connected sheets</p>
-            </div>
-          </div>
-
-          {/* Card 2: Shared With Me */}
-          <div className="bg-white border border-slate-200/70 rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all flex items-center gap-4 group">
-            <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100 group-hover:scale-105 transition-transform">
-              <Users size={22} />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 font-bold">Shared With Me</p>
-              <h3 className="text-2xl font-black text-slate-900 leading-tight mt-0.5">8</h3>
-              <p className="text-[11px] text-slate-400 font-medium">Sheets shared</p>
-            </div>
-          </div>
-
-          {/* Card 3: Recently Opened */}
-          <div className="bg-white border border-slate-200/70 rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all flex items-center gap-4 group">
-            <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 border border-amber-100 group-hover:scale-105 transition-transform">
-              <Clock size={22} />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 font-bold">Recently Opened</p>
-              <h3 className="text-2xl font-black text-slate-900 leading-tight mt-0.5">{recentOpened.length || 6}</h3>
-              <p className="text-[11px] text-slate-400 font-medium">In last 7 days</p>
-            </div>
-          </div>
-
-          {/* Card 4: Important */}
-          <div className="bg-white border border-slate-200/70 rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all flex items-center gap-4 group">
-            <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0 border border-purple-100 group-hover:scale-105 transition-transform">
-              <Star size={22} className="fill-purple-100" />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 font-bold">Important</p>
-              <h3 className="text-2xl font-black text-slate-900 leading-tight mt-0.5">{starredIds.size}</h3>
-              <p className="text-[11px] text-slate-400 font-medium">Marked as important</p>
-            </div>
-          </div>
-        </div>
-
-        {/* 2. Category Filter Pills Row */}
-        <div className="bg-white/80 border border-slate-200/80 p-2 rounded-2xl backdrop-blur-sm flex items-center justify-between gap-3 overflow-x-auto hide-scrollbar">
-          <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar py-0.5">
-            {CATEGORY_TABS.map(({ id, label, icon: TabIcon }) => {
-              const isActive = selectedCategory === id;
-              return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 space-y-6">
+        {/* 2. SEARCH & FILTER BAR */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-4 shadow-2xs space-y-3.5">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            {/* Realtime Search */}
+            <div className="relative flex-1">
+              <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search sheets by name, ID, department or purpose..."
+                className="w-full bg-slate-50 border border-slate-200/80 text-slate-800 pl-10 pr-9 py-2.5 text-xs sm:text-sm rounded-xl outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 focus:bg-white transition-all placeholder:text-slate-400"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
                 <button
-                  key={id}
-                  onClick={() => setSelectedCategory(id)}
-                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
-                    isActive
-                      ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Quick Views & Layout Switcher */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0 shrink-0">
+              {/* Layout Switcher (By Category / All Grid / Table) */}
+              <div className="bg-slate-100 p-1 rounded-xl flex items-center border border-slate-200">
+                <button
+                  onClick={() => setViewMode('category')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    viewMode === 'category' ? 'bg-white text-emerald-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                  title="Grouped by Department Sections"
+                >
+                  <FolderKanban size={14} />
+                  <span className="hidden sm:inline">By Category</span>
+                </button>
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    viewMode === 'grid' ? 'bg-white text-emerald-700 shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                  title="All Grid Cards View"
+                >
+                  <Grid size={15} />
+                </button>
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`p-1.5 rounded-lg transition-all ${
+                    viewMode === 'table' ? 'bg-white text-emerald-700 shadow-xs font-bold' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                  title="Table List View"
+                >
+                  <List size={15} />
+                </button>
+              </div>
+
+              {/* Filter Type Pills */}
+              <div className="bg-slate-100 p-1 rounded-xl flex items-center border border-slate-200/80">
+                <button
+                  onClick={() => setFilterType('all')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                    filterType === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
-                  <TabIcon size={14} className={isActive ? 'text-white' : 'text-slate-400'} />
-                  <span>{label}</span>
+                  All
+                </button>
+                <button
+                  onClick={() => setFilterType('starred')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                    filterType === 'starred' ? 'bg-white text-amber-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Star size={13} className={filterType === 'starred' ? 'fill-amber-400 text-amber-500' : ''} />
+                  <span>Starred</span>
+                </button>
+                <button
+                  onClick={() => setFilterType('recent')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap ${
+                    filterType === 'recent' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Clock size={13} />
+                  <span>Recent</span>
+                </button>
+              </div>
+
+              {/* Sort Selector */}
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as any)}
+                className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+              >
+                <option value="name">Sort: Name</option>
+                <option value="dept">Sort: Category</option>
+                <option value="frequency">Sort: Frequency</option>
+                <option value="newest">Sort: Sheet ID</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Department Filter Chips & Direct Category Creator */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pt-1 pb-1 border-t border-slate-100 custom-scrollbar">
+            <button
+              onClick={() => setSelectedDept('All')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 shrink-0 border ${
+                selectedDept === 'All'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200/80 hover:text-slate-900'
+              }`}
+            >
+              <span>All Categories</span>
+              <span
+                className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
+                  selectedDept === 'All' ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
+                }`}
+              >
+                {activeSheetsList.length}
+              </span>
+            </button>
+
+            {allDepartments.map(dept => {
+              const isSelected = selectedDept === dept;
+              const count = activeSheetsList.filter(s => s.department.toLowerCase().includes(dept.toLowerCase())).length;
+
+              return (
+                <button
+                  key={dept}
+                  onClick={() => setSelectedDept(dept)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 shrink-0 border ${
+                    isSelected
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200/80 hover:text-slate-900'
+                  }`}
+                >
+                  <span>{dept}</span>
+                  <span
+                    className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
+                      isSelected ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
+                    }`}
+                  >
+                    {count}
+                  </span>
                 </button>
               );
             })}
-          </div>
 
-          {showAdminLayout && (
-            <button
-              onClick={() => { resetSheetForm(); setActiveTab('add-sheet'); }}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-md shadow-emerald-600/20 shrink-0 ml-2"
-            >
-              <Plus size={15} />
-              <span>Connect New Sheet</span>
-            </button>
-          )}
+            {isAdmin && (
+              <button
+                onClick={() => {
+                  setEditingSheetId(null);
+                  setFormSheetId('');
+                  setFormName('');
+                  setFormUrl('');
+                  setFormDept('__CUSTOM__');
+                  setIsCustomDept(true);
+                  setCustomDeptName('');
+                  setFormPurpose('');
+                  setFormResponsible(currentUser?.name || 'Admin');
+                  setFormFrequency('Daily');
+                  setFormNotes('');
+                  setIsSheetModalOpen(true);
+                }}
+                className="px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 shrink-0 border border-dashed border-emerald-300 bg-emerald-50/50 hover:bg-emerald-100 text-emerald-800"
+                title="Create a new custom category"
+              >
+                <FolderPlus size={13} className="text-emerald-600" />
+                <span>+ New Category</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* ADMIN TAB NAVIGATION (Add / Assign) */}
-        {showAdminLayout && activeTab !== 'sheets' && (
-          <div className="bg-white border border-slate-200/80 p-4 rounded-2xl flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setActiveTab('sheets')}
-                className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition-colors text-xs font-bold flex items-center gap-1"
-              >
-                <ArrowRight size={14} className="rotate-180" /> Back to Sheets
-              </button>
-              <h2 className="text-sm font-bold text-slate-800">
-                {activeTab === 'add-sheet' ? (editingSheetId ? 'Edit Google Sheet' : 'Connect New Google Sheet') : 'Assign Sheets to Team'}
-              </h2>
+        {/* 3. SHEETS CONTENT DISPLAY */}
+        {displayedSheets.length === 0 ? (
+          <div className="bg-white border border-slate-200/80 rounded-3xl p-12 text-center max-w-lg mx-auto space-y-4 shadow-2xs mt-8">
+            <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mx-auto text-emerald-600 shadow-inner">
+              <FileSpreadsheet size={26} />
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => { resetSheetForm(); setActiveTab('add-sheet'); }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${activeTab === 'add-sheet' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white border-slate-200 text-slate-600'}`}
-              >
-                Form
-              </button>
-              <button
-                onClick={() => setActiveTab('assign')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${activeTab === 'assign' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white border-slate-200 text-slate-600'}`}
-              >
-                Assign Permissions
-              </button>
+            <div>
+              <h3 className="text-base font-black text-slate-900">No Google Sheets Found</h3>
+              <p className="text-xs text-slate-500 mt-1 font-medium">
+                {searchQuery || selectedDept !== 'All' || filterType !== 'all'
+                  ? `No sheets found under category "${selectedDept}".`
+                  : 'No sheets have been connected yet.'}
+              </p>
+            </div>
+
+            <div className="flex justify-center gap-2 pt-2">
+              {(searchQuery || selectedDept !== 'All' || filterType !== 'all') && (
+                <button
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSelectedDept('All');
+                    setFilterType('all');
+                  }}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1.5"
+                >
+                  <span>Reset Filters</span>
+                </button>
+              )}
+
+              {isAdmin && selectedDept !== 'All' && (
+                <button
+                  onClick={() => handleOpenAddModal(selectedDept)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1.5 shadow-md shadow-emerald-600/20"
+                >
+                  <Plus size={14} />
+                  <span>Add Sheet to {selectedDept}</span>
+                </button>
+              )}
+            </div>
+          </div>
+        ) : viewMode === 'category' ? (
+          /* CATEGORY / DEPARTMENT SECTIONS VIEW */
+          <div className="space-y-8">
+            {categorizedSheets.map(({ department, sheets }) => {
+              const theme = getDepartmentTheme(department);
+              const DeptIcon = theme.icon;
+
+              return (
+                <section
+                  key={department}
+                  className="bg-white/80 border border-slate-200/90 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4 transition-all"
+                >
+                  {/* Category Section Header */}
+                  <div className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${theme.headerBg}`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${theme.iconBg} shadow-sm shrink-0`}>
+                        <DeptIcon size={20} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-base font-black text-slate-900">{department}</h2>
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-white/80 text-slate-700 border border-slate-200 shadow-2xs">
+                            {sheets.length} {sheets.length === 1 ? 'Sheet' : 'Sheets'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                          Department spreadsheets, reports and workflows
+                        </p>
+                      </div>
+                    </div>
+
+                    {isAdmin && (
+                      <div className="flex items-center gap-2 self-start sm:self-auto">
+                        <button
+                          onClick={() => {
+                            setTargetCategoryForExisting(department);
+                            setIsAddExistingModalOpen(true);
+                          }}
+                          className="px-3 py-2 bg-white/90 hover:bg-white text-slate-700 hover:text-slate-900 border border-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs"
+                          title={`Assign an existing sheet to ${department}`}
+                        >
+                          <MoveRight size={13} className="text-slate-500" />
+                          <span>+ Add Existing Sheet</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleOpenAddModal(department)}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm active:scale-98 ${theme.btnBg}`}
+                          title={`Add new Google Sheet to ${department}`}
+                        >
+                          <Plus size={14} className="stroke-[2.5]" />
+                          <span>+ New {department} Sheet</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Category Sheets Grid */}
+                  {sheets.length === 0 ? (
+                    <div className="border border-dashed border-slate-200 rounded-2xl p-8 text-center bg-slate-50/50 space-y-3">
+                      <p className="text-xs font-bold text-slate-600">No sheets in {department} yet</p>
+                      {isAdmin && (
+                        <div className="flex justify-center gap-2">
+                          <button
+                            onClick={() => {
+                              setTargetCategoryForExisting(department);
+                              setIsAddExistingModalOpen(true);
+                            }}
+                            className="px-3.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1"
+                          >
+                            <MoveRight size={12} />
+                            <span>Add Existing Sheet</span>
+                          </button>
+                          <button
+                            onClick={() => handleOpenAddModal(department)}
+                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1"
+                          >
+                            <Plus size={13} />
+                            <span>Add New Sheet</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5 pt-1">
+                      {sheets.map(sheet => renderSheetCard(sheet))}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        ) : viewMode === 'grid' ? (
+          /* FLAT GRID VIEW - ALL CARDS */
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5">
+            {displayedSheets.map(sheet => renderSheetCard(sheet))}
+          </div>
+        ) : (
+          /* TABLE / LIST VIEW - ENTERPRISE DATA TABLE */
+          <div className="bg-white border border-slate-200/90 rounded-2xl shadow-2xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]">
+                    <th className="py-3.5 px-4 w-10 text-center">★</th>
+                    <th className="py-3.5 px-4">Sheet Name & ID</th>
+                    <th className="py-3.5 px-4">Department / Category</th>
+                    <th className="py-3.5 px-4">Purpose / Scope</th>
+                    <th className="py-3.5 px-4">Lead / Owner</th>
+                    <th className="py-3.5 px-4">Frequency</th>
+                    <th className="py-3.5 px-4">Access Scope</th>
+                    <th className="py-3.5 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {displayedSheets.map(sheet => {
+                    const theme = getDepartmentTheme(sheet.department);
+                    const isStarred = starredIds.has(sheet.id);
+                    const assignedCount = sheet.assignedUsers?.length || 0;
+
+                    return (
+                      <tr key={sheet.id} className="hover:bg-slate-50/70 transition-colors group">
+                        {/* Star */}
+                        <td className="py-3 px-4 text-center">
+                          <button
+                            onClick={e => toggleStar(sheet.id, e)}
+                            className="text-slate-300 hover:text-amber-500 p-1"
+                            title={isStarred ? 'Remove favorite' : 'Add favorite'}
+                          >
+                            <Star size={15} className={isStarred ? 'fill-amber-400 text-amber-400' : ''} />
+                          </button>
+                        </td>
+
+                        {/* Sheet Name & ID */}
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                              {sheet.id}
+                            </span>
+                            <span className="font-extrabold text-slate-900 group-hover:text-emerald-700 transition-colors">
+                              {sheet.name}
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* Department / Category with Quick Change */}
+                        <td className="py-3 px-4">
+                          <button
+                            onClick={e => (isAdmin ? handleOpenMoveCategoryModal(sheet, e) : null)}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border transition-colors ${theme.badge} ${
+                              isAdmin ? 'hover:brightness-95 cursor-pointer' : ''
+                            }`}
+                            title={isAdmin ? 'Click to change category' : undefined}
+                          >
+                            <span>{sheet.department}</span>
+                            {isAdmin && <ChevronRight size={10} className="text-slate-400" />}
+                          </button>
+                        </td>
+
+                        {/* Purpose */}
+                        <td className="py-3 px-4 max-w-xs truncate text-slate-500 font-medium" title={sheet.purpose}>
+                          {sheet.purpose || '—'}
+                        </td>
+
+                        {/* Responsible */}
+                        <td className="py-3 px-4 text-slate-700 font-semibold">
+                          {sheet.responsible_person || 'HR / Admin'}
+                        </td>
+
+                        {/* Frequency */}
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-bold">
+                            {sheet.frequency || 'Daily'}
+                          </span>
+                        </td>
+
+                        {/* Access Scope */}
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                              assignedCount > 0 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {assignedCount > 0 ? `${assignedCount} users` : 'All Team'}
+                          </span>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={e => handleOpenSheet(sheet, e)}
+                              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs flex items-center gap-1 shadow-2xs"
+                            >
+                              <span>Open</span>
+                              <ExternalLink size={12} />
+                            </button>
+
+                            <button
+                              onClick={e => handleCopyLink(sheet, e)}
+                              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
+                              title="Copy URL"
+                            >
+                              <Copy size={14} />
+                            </button>
+
+                            {isAdmin && (
+                              <>
+                                <button
+                                  onClick={e => handleOpenMoveCategoryModal(sheet, e)}
+                                  className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                                  title="Change Category"
+                                >
+                                  <FolderKanban size={14} />
+                                </button>
+                                <button
+                                  onClick={e => handleOpenPermissionsModal(sheet.id, e)}
+                                  className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                                  title="Manage Access"
+                                >
+                                  <Shield size={14} />
+                                </button>
+                                <button
+                                  onClick={e => handleOpenEditModal(sheet, e)}
+                                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
+                                  title="Edit Sheet"
+                                >
+                                  <Edit2 size={14} />
+                                </button>
+                                <button
+                                  onClick={e => handleDeleteSheet(sheet, e)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                                  title="Delete Sheet"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
+      </div>
 
-        {/* 3. ADMIN ADD/EDIT FORM */}
-        {showAdminLayout && activeTab === 'add-sheet' && (
-          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 shadow-sm max-w-3xl mx-auto space-y-6">
-            <h3 className="text-lg font-extrabold text-slate-900">{editingSheetId ? 'Edit Google Sheet Registry' : 'Connect New Google Sheet'}</h3>
-            <form onSubmit={handleSheetSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Sheet Name *</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Attendance Sheet"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white"
-                    value={sheetName}
-                    onChange={e => setSheetName(e.target.value)}
-                  />
+      {/* 4. ADD / EDIT SHEET MODAL */}
+      {isSheetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div
+            className="bg-white rounded-3xl max-w-xl w-full p-6 sm:p-8 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+                  <FileSpreadsheet size={20} />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Department / Category</label>
-                  <select
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white font-medium"
-                    value={sheetDept}
-                    onChange={e => setSheetDept(e.target.value)}
-                  >
-                    <option value="HR & Attendance">HR & Attendance</option>
-                    <option value="PMS">PMS</option>
-                    <option value="Finance & Accounts">Finance & Accounts</option>
-                    <option value="Procurement">Procurement & Stock</option>
-                    <option value="Operations">Operations</option>
-                    <option value="Engineering">Engineering & Projects</option>
-                    <option value="Management">Management & Reports</option>
-                    <option value="Other">Other</option>
-                  </select>
+                  <h3 className="text-base font-black text-slate-900">
+                    {editingSheetId ? 'Edit Google Sheet' : 'Connect New Google Sheet'}
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    {editingSheetId ? `Update details for ${formSheetId}` : 'Register and assign a Google Sheet under its category'}
+                  </p>
                 </div>
               </div>
 
+              <button
+                onClick={() => setIsSheetModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSaveSheet} className="space-y-4">
+              {/* Category / Department Selection Banner */}
+              <div className="bg-slate-50 border border-slate-200/80 p-3.5 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Category / Department *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomDept(!isCustomDept);
+                      if (!isCustomDept) setCustomDeptName('');
+                    }}
+                    className="text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800 transition-colors flex items-center gap-1"
+                  >
+                    <FolderPlus size={12} />
+                    <span>{isCustomDept ? 'Choose Existing' : '+ Custom Category'}</span>
+                  </button>
+                </div>
+
+                {isCustomDept || formDept === '__CUSTOM__' ? (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Sales & Marketing, Legal, Site Operations..."
+                      className="w-full bg-white border border-emerald-400 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-bold text-slate-900"
+                      value={customDeptName}
+                      onChange={e => setCustomDeptName(e.target.value)}
+                    />
+                    <p className="text-[10px] text-slate-400 font-medium">
+                      Enter any new category name. It will be added to your department hub.
+                    </p>
+                  </div>
+                ) : (
+                  <select
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-bold text-slate-900"
+                    value={formDept}
+                    onChange={e => {
+                      if (e.target.value === '__CUSTOM__') {
+                        setIsCustomDept(true);
+                        setCustomDeptName('');
+                      } else {
+                        setFormDept(e.target.value);
+                      }
+                    }}
+                  >
+                    {allDepartments.map(dept => (
+                      <option key={dept} value={dept}>
+                        📁 {dept}
+                      </option>
+                    ))}
+                    <option value="__CUSTOM__">✨ + Add New Custom Category...</option>
+                  </select>
+                )}
+              </div>
+
+              {/* Sheet Name */}
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Google Sheet URL *</label>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Sheet Name *
+                </label>
                 <input
-                  type="url"
+                  type="text"
                   required
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white font-mono"
-                  value={sheetUrl}
-                  onChange={e => setSheetUrl(e.target.value)}
+                  placeholder="e.g. Attendance Sheet, Vendor Ledger, Site Daily Tracker..."
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all font-semibold"
+                  value={formName}
+                  onChange={e => setFormName(e.target.value)}
                 />
               </div>
 
+              {/* Google Sheet URL */}
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Purpose / Description</label>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Google Sheet URL *
+                </label>
+                <div className="relative">
+                  <input
+                    type="url"
+                    required
+                    placeholder="https://docs.google.com/spreadsheets/d/..."
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all font-mono text-slate-700"
+                    value={formUrl}
+                    onChange={e => setFormUrl(e.target.value)}
+                  />
+                  {formUrl && (
+                    <button
+                      type="button"
+                      onClick={() => window.open(formUrl, '_blank')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2 py-1 rounded-lg transition-colors flex items-center gap-1"
+                    >
+                      <span>Test Link</span>
+                      <ExternalLink size={11} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Purpose / Description */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Purpose / Scope Description
+                </label>
                 <textarea
                   rows={2}
-                  placeholder="Monthly attendance records of all employees..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white"
-                  value={sheetPurpose}
-                  onChange={e => setSheetPurpose(e.target.value)}
+                  placeholder="Describe what this sheet is used for, update cycles, and relevant project notes..."
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all leading-relaxed"
+                  value={formPurpose}
+                  onChange={e => setFormPurpose(e.target.value)}
                 />
               </div>
 
+              {/* Responsible Lead & Update Frequency */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Responsible Person</label>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Responsible Person / Lead
+                  </label>
                   <input
                     type="text"
-                    placeholder="HR Admin"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white"
-                    value={sheetResponsible}
-                    onChange={e => setSheetResponsible(e.target.value)}
+                    placeholder="e.g. HR Admin, Finance Manager..."
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
+                    value={formResponsible}
+                    onChange={e => setFormResponsible(e.target.value)}
                   />
                 </div>
+
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Update Frequency</label>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Update Frequency
+                  </label>
                   <select
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white font-medium"
-                    value={sheetFrequency}
-                    onChange={e => setSheetFrequency(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all font-semibold"
+                    value={formFrequency}
+                    onChange={e => setFormFrequency(e.target.value)}
                   >
                     <option value="Daily">Daily</option>
                     <option value="Weekly">Weekly</option>
@@ -1001,793 +1658,428 @@ export const SystemMaster: React.FC<SystemMasterProps> = ({ currentView, onNavig
                 </div>
               </div>
 
+              {/* Modal Actions */}
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => { resetSheetForm(); setActiveTab('sheets'); }}
-                  className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-xs"
+                  onClick={() => setIsSheetModalOpen(false)}
+                  className="px-4 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-xs transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md shadow-emerald-600/20"
+                  disabled={formSubmitting}
+                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-bold text-xs shadow-md shadow-emerald-600/20 transition-all flex items-center gap-1.5"
                 >
-                  {editingSheetId ? 'Update Sheet' : 'Save & Register Sheet'}
+                  {formSubmitting ? <RefreshCw size={13} className="animate-spin" /> : null}
+                  <span>
+                    {editingSheetId
+                      ? 'Save Changes'
+                      : isCustomDept && customDeptName
+                      ? `Connect to ${customDeptName}`
+                      : `Connect to ${formDept}`}
+                  </span>
                 </button>
               </div>
             </form>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* 4. SHEET GRID CARDS (Matching Image Exactly) */}
-        {activeTab === 'sheets' && (
-          <>
-            {filteredSheets.length === 0 ? (
-              <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center max-w-xl mx-auto space-y-4 shadow-2xs">
-                <div className="w-12 h-12 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-center mx-auto text-slate-400">
-                  <FileSpreadsheet size={24} />
+      {/* 5. CHANGE / MOVE CATEGORY MODAL FOR EXISTING SHEETS */}
+      {isMoveCategoryModalOpen && sheetToMove && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center font-bold">
+                  <FolderKanban size={20} />
                 </div>
                 <div>
-                  <h3 className="text-base font-extrabold text-slate-800">No Sheets Found</h3>
-                  <p className="text-xs text-slate-500 mt-1">Try clearing your search query or selecting another department category.</p>
+                  <h3 className="text-base font-black text-slate-900">Change Sheet Category</h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Move <span className="font-bold text-slate-800">"{sheetToMove.name}"</span> to a new category
+                  </p>
                 </div>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                {visibleCards.map(s => {
-                  const cat = getCategoryDetails(s);
-                  const Icon = cat.icon;
-                  const isStarred = starredIds.has(s.id);
+              <button
+                onClick={() => setIsMoveCategoryModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                <X size={18} />
+              </button>
+            </div>
 
-                  return (
-                    <div
-                      key={s.id}
-                      className="bg-white border border-slate-200/80 hover:border-slate-300 hover:shadow-lg rounded-2xl p-5 flex flex-col justify-between transition-all duration-300 relative group overflow-hidden"
-                    >
-                      <div>
-                        {/* Top Icon & Star Header */}
-                        <div className="flex items-center justify-between mb-4">
-                          <div className={`w-11 h-11 rounded-2xl ${cat.bg} flex items-center justify-center shadow-md shadow-slate-200/60`}>
-                            <Icon size={20} className="text-white" />
-                          </div>
+            <div className="space-y-4">
+              <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Select New Category
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMoveCustomDept(!isMoveCustomDept);
+                      if (!isMoveCustomDept) setMoveCustomDeptName('');
+                    }}
+                    className="text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800 flex items-center gap-1"
+                  >
+                    <FolderPlus size={12} />
+                    <span>{isMoveCustomDept ? 'Choose Existing' : '+ Custom Category'}</span>
+                  </button>
+                </div>
 
-                          <button
-                            onClick={e => toggleStar(s.id, e)}
-                            className="p-1.5 hover:bg-slate-100 rounded-xl text-slate-300 hover:text-amber-400 transition-colors"
-                            title={isStarred ? 'Unmark important' : 'Mark as important'}
-                          >
-                            <Star size={18} className={isStarred ? 'fill-amber-400 text-amber-400' : ''} />
-                          </button>
-                        </div>
-
-                        {/* Title & Description */}
-                        <h3 className="text-base font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors line-clamp-1 leading-snug">
-                          {s.name}
-                        </h3>
-                        <p className="text-xs text-slate-500 mt-1.5 font-medium line-clamp-2 min-h-[32px] leading-relaxed">
-                          {s.purpose || 'Monthly records and connected workflow details.'}
-                        </p>
-                      </div>
-
-                      {/* Bottom Details & Open Action */}
-                      <div className="mt-5 pt-4 border-t border-slate-100 space-y-3.5">
-                        <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
-                          <div className="flex items-center gap-1.5 text-slate-500">
-                            <Users size={13} className="text-slate-400" />
-                            <span>{s.assignedUsers?.length || 12}</span>
-                          </div>
-                          <span>Updated {s.frequency === 'Daily' ? '2h ago' : '1d ago'}</span>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={e => handleOpenSheet(s, e)}
-                            className="flex-1 py-2.5 bg-blue-50 hover:bg-blue-600 text-blue-600 hover:text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-2xs active:scale-98"
-                          >
-                            <span>Open</span>
-                            <ExternalLink size={13} />
-                          </button>
-
-                          {showAdminLayout && (
-                            <div className="relative">
-                              <button
-                                onClick={() => setOpenMenuSheetId(openMenuSheetId === s.id ? null : s.id)}
-                                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
-                              >
-                                <MoreVertical size={16} />
-                              </button>
-
-                              {openMenuSheetId === s.id && (
-                                <div className="absolute right-0 bottom-full mb-1 w-36 bg-white border border-slate-200 rounded-2xl shadow-xl z-30 p-1.5 space-y-1">
-                                  <button
-                                    onClick={() => { setOpenMenuSheetId(null); editSheet(s); }}
-                                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2"
-                                  >
-                                    <Edit2 size={13} /> Edit
-                                  </button>
-                                  <button
-                                    onClick={() => { setOpenMenuSheetId(null); deleteSheet(s.id); }}
-                                    className="w-full text-left px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl flex items-center gap-2"
-                                  >
-                                    <Trash2 size={13} /> Delete
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {isMoveCustomDept || moveToDept === '__CUSTOM__' ? (
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Sales & Marketing, Site Management..."
+                    className="w-full bg-white border border-emerald-400 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 font-bold text-slate-900"
+                    value={moveCustomDeptName}
+                    onChange={e => setMoveCustomDeptName(e.target.value)}
+                  />
+                ) : (
+                  <select
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500 font-bold text-slate-900"
+                    value={moveToDept}
+                    onChange={e => {
+                      if (e.target.value === '__CUSTOM__') {
+                        setIsMoveCustomDept(true);
+                        setMoveCustomDeptName('');
+                      } else {
+                        setMoveToDept(e.target.value);
+                      }
+                    }}
+                  >
+                    {allDepartments.map(dept => (
+                      <option key={dept} value={dept}>
+                        📁 {dept} {sheetToMove.department === dept ? '(Current)' : ''}
+                      </option>
+                    ))}
+                    <option value="__CUSTOM__">✨ + Add New Custom Category...</option>
+                  </select>
+                )}
               </div>
-            )}
 
-            {/* Show More Sheets Button */}
-            {filteredSheets.length > 8 && (
-              <div className="flex justify-center pt-2">
+              <div className="flex justify-end gap-3 pt-2">
                 <button
-                  onClick={() => setShowAllSheets(!showAllSheets)}
-                  className="px-6 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-blue-600 rounded-2xl text-xs font-extrabold transition-all flex items-center gap-2 shadow-2xs"
+                  type="button"
+                  onClick={() => setIsMoveCategoryModalOpen(false)}
+                  className="px-4 py-2 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-xs"
                 >
-                  <span>{showAllSheets ? 'Show Less Sheets' : 'Show More Sheets'}</span>
-                  <ChevronDown size={16} className={`transition-transform ${showAllSheets ? 'rotate-180' : ''}`} />
+                  Cancel
                 </button>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* 5. BOTTOM 3-COLUMN SECTION (Image Matched) */}
-        {activeTab === 'sheets' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pt-4">
-            {/* Column 1: Recently Opened */}
-            <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-2xs space-y-4 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center gap-2 text-slate-800 font-extrabold text-sm mb-4">
-                  <Clock size={16} className="text-blue-600" />
-                  <span>Recently Opened</span>
-                </div>
-
-                <div className="space-y-3">
-                  {recentOpened.slice(0, 3).map((r, idx) => {
-                    const sheet = activeSheetsList.find(s => s.id === r.id) || activeSheetsList[idx % activeSheetsList.length];
-                    const isStarred = starredIds.has(sheet.id);
-
-                    return (
-                      <div
-                        key={sheet.id + idx}
-                        onClick={e => handleOpenSheet(sheet, e)}
-                        className="flex items-center justify-between p-3 hover:bg-slate-50 rounded-2xl transition-colors cursor-pointer group"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100">
-                            <FileSpreadsheet size={18} />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-extrabold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
-                              {sheet.name}
-                            </p>
-                            <p className="text-[10px] text-slate-400 font-medium mt-0.5">{r.openedAt || 'Opened 2 hours ago'}</p>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={e => toggleStar(sheet.id, e)}
-                          className="p-1 text-slate-300 hover:text-amber-400 shrink-0 ml-2"
-                        >
-                          <Star size={16} className={isStarred ? 'fill-amber-400 text-amber-400' : ''} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-slate-100">
                 <button
-                  onClick={() => setSelectedCategory('All')}
-                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center justify-center gap-1.5 w-full py-1"
+                  type="button"
+                  onClick={() =>
+                    handleConfirmMoveCategory(
+                      isMoveCustomDept ? moveCustomDeptName : moveToDept === '__CUSTOM__' ? moveCustomDeptName : moveToDept
+                    )
+                  }
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md shadow-emerald-600/20 flex items-center gap-1.5"
                 >
-                  <span>View All</span>
-                  <ArrowRight size={14} />
+                  <MoveRight size={13} />
+                  <span>Update Category</span>
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* Column 2: Important Sheets */}
-            <div className="bg-white border border-slate-200/80 rounded-3xl p-6 shadow-2xs space-y-4 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center gap-2 text-slate-800 font-extrabold text-sm mb-4">
-                  <Star size={16} className="text-purple-600 fill-purple-100" />
-                  <span>Important Sheets</span>
+      {/* 6. ADD EXISTING / PREVIOUS SHEET TO CATEGORY MODAL */}
+      {isAddExistingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div
+            className="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-700 flex items-center justify-center font-bold">
+                  <MoveRight size={20} />
                 </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Add Existing Sheet to "{targetCategoryForExisting}"
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Select any previous sheet to assign into this category
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAddExistingModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                <X size={18} />
+              </button>
+            </div>
 
-                <div className="space-y-3">
-                  {Array.from(starredIds).slice(0, 3).map(id => {
-                    const sheet = activeSheetsList.find(s => s.id === id) || activeSheetsList[0];
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1 custom-scrollbar">
+              {activeSheetsList.filter(s => s.department !== targetCategoryForExisting).length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-500 font-medium">
+                  All sheets are already in this category!
+                </div>
+              ) : (
+                activeSheetsList
+                  .filter(s => s.department !== targetCategoryForExisting)
+                  .map(sheet => {
+                    const theme = getDepartmentTheme(sheet.department);
+                    const CategoryIcon = theme.icon;
 
                     return (
                       <div
                         key={sheet.id}
-                        onClick={e => handleOpenSheet(sheet, e)}
-                        className="flex items-center justify-between p-3 hover:bg-slate-50 rounded-2xl transition-colors cursor-pointer group"
+                        className="p-3.5 rounded-2xl border border-slate-200/90 hover:border-emerald-300 hover:bg-slate-50/80 transition-all flex items-center justify-between group"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100">
-                            <FileSpreadsheet size={18} />
+                        <div className="flex items-center gap-3 min-w-0 pr-2">
+                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${theme.iconBg}`}>
+                            <CategoryIcon size={16} />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-xs font-extrabold text-slate-800 group-hover:text-blue-600 transition-colors truncate">
-                              {sheet.name}
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-black text-slate-900 truncate">{sheet.name}</span>
+                              <span className="font-mono text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.2 rounded">
+                                {sheet.id}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 font-medium truncate mt-0.5">
+                              Current: <span className="font-bold text-slate-600">{sheet.department}</span>
                             </p>
-                            <p className="text-[10px] text-slate-400 font-medium mt-0.5">Marked as important</p>
                           </div>
                         </div>
 
-                        <Star size={16} className="fill-amber-400 text-amber-400 shrink-0 ml-2" />
+                        <button
+                          onClick={() => handleAddExistingSheetToCategory(sheet.id, targetCategoryForExisting)}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1 shrink-0"
+                        >
+                          <Plus size={13} />
+                          <span>Add to Category</span>
+                        </button>
                       </div>
                     );
-                  })}
+                  })
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setIsAddExistingModalOpen(false)}
+                className="px-4 py-2 text-slate-600 font-bold hover:bg-slate-100 rounded-xl text-xs"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. PERMISSION MANAGEMENT MODAL */}
+      {isPermissionsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div
+            className="bg-white rounded-3xl max-w-3xl w-full p-6 sm:p-8 shadow-2xl border border-slate-200 space-y-6 max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold">
+                  <Shield size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">Sheet Access & Permissions</h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Authorize employees and departments to view specific Google Sheets
+                  </p>
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100">
-                <button
-                  onClick={() => setSelectedCategory('All')}
-                  className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center justify-center gap-1.5 w-full py-1"
+              <button
+                onClick={() => setIsPermissionsModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Sheet Selector Bar */}
+            <div className="bg-slate-50 border border-slate-200/80 p-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <div className="flex-1">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider mb-1">
+                  Selected Google Sheet
+                </label>
+                <select
+                  value={permTargetSheetId}
+                  onChange={e => setPermTargetSheetId(e.target.value)}
+                  className="w-full bg-white border border-slate-200 text-slate-900 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                  <span>View All</span>
-                  <ArrowRight size={14} />
+                  {activeSheetsList.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.id}) — {s.department}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Fast Grant/Clear Actions */}
+              <div className="flex items-center gap-2 self-end sm:self-auto pt-2 sm:pt-0">
+                <button
+                  type="button"
+                  onClick={() => handleSetAllPermissions(true)}
+                  className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
+                  title="Authorize all employees"
+                >
+                  <UserCheck size={14} />
+                  <span>Grant All</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetAllPermissions(false)}
+                  className="px-3 py-2 bg-slate-100 hover:bg-red-50 hover:text-red-700 text-slate-600 border border-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
+                  title="Revoke all access"
+                >
+                  <UserX size={14} />
+                  <span>Clear</span>
                 </button>
               </div>
             </div>
 
-            {/* Column 3: Connect Card Banner */}
-            <div className="bg-gradient-to-br from-emerald-500/10 via-teal-500/10 to-emerald-600/5 border border-emerald-200/80 rounded-3xl p-6 relative overflow-hidden flex flex-col justify-between">
-              <div className="space-y-3 relative z-10">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shadow-lg shadow-emerald-600/20">
-                  <FileSpreadsheet size={24} />
-                </div>
-
-                <h3 className="text-lg font-black text-slate-900 leading-tight">All your important Sheets in one place</h3>
-                <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                  Quick access, organized by department & up to date with real-time permissions.
-                </p>
-              </div>
-
-              {showAdminLayout && (
-                <div className="pt-6 relative z-10">
+            {/* Department Quick Grant Badges */}
+            <div className="space-y-1.5 shrink-0">
+              <p className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                Quick Grant by Department:
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {allDepartments.slice(0, 8).map(dept => (
                   <button
-                    onClick={() => { resetSheetForm(); setActiveTab('add-sheet'); }}
-                    className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-600/20 active:scale-98"
+                    key={dept}
+                    type="button"
+                    onClick={() => handleGrantDepartment(dept)}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-600 rounded-lg text-[11px] font-bold border border-slate-200 transition-all flex items-center gap-1"
                   >
-                    <Plus size={16} />
-                    <span>Connect New Sheet</span>
+                    <Plus size={11} />
+                    <span>{dept}</span>
                   </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 6. ADMIN ASSIGN SHEETS VIEW (3RD SECTION - REDESIGNED PROFESSIONAL MATRIX) */}
-        {showAdminLayout && activeTab === 'assign' && (
-          <div className="space-y-6 max-w-7xl mx-auto pb-10">
-            {/* Enterprise Hero Banner */}
-            <div className="relative overflow-hidden bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-3xl p-6 sm:p-8 shadow-xl border border-slate-800">
-              <div className="absolute right-0 top-0 translate-x-12 -translate-y-12 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
-              <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div className="space-y-2">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 backdrop-blur-md rounded-full text-[11px] font-bold text-blue-300 border border-white/10">
-                    <Shield size={13} className="text-emerald-400" />
-                    <span>SECTION 3 — PERMISSION MATRIX</span>
-                  </div>
-                  <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-                    Assign Sheet Permissions & Access
-                  </h2>
-                  <p className="text-xs sm:text-sm text-slate-300 max-w-2xl font-medium leading-relaxed">
-                    Manage team access scopes, authorize Google Sheet distribution, and configure department permissions.
-                  </p>
-                </div>
-
-                {/* Mode Switcher Toggle */}
-                <div className="bg-slate-800/90 p-1.5 rounded-2xl border border-white/10 backdrop-blur-md flex items-center gap-1 shrink-0 self-start md:self-auto shadow-inner">
-                  <button
-                    onClick={() => setAssignMode('by-sheet')}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-                      assignMode === 'by-sheet'
-                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                        : 'text-slate-400 hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    <FileSpreadsheet size={15} />
-                    <span>By Sheet</span>
-                  </button>
-
-                  <button
-                    onClick={() => setAssignMode('by-user')}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-                      assignMode === 'by-user'
-                        ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                        : 'text-slate-400 hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    <Users size={15} />
-                    <span>By Employee</span>
-                  </button>
-                </div>
+                ))}
               </div>
             </div>
 
-            {/* Top 4 KPI Metrics */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center gap-3.5">
-                <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100 font-bold">
-                  <FileSpreadsheet size={20} />
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Sheets</p>
-                  <p className="text-xl font-black text-slate-900">{activeSheetsList.length}</p>
-                </div>
+            {/* Search & Department Filter */}
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="relative flex-1">
+                <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Filter team members by name, email or department..."
+                  className="w-full bg-slate-50 border border-slate-200 text-slate-800 pl-9 pr-3 py-2 text-xs rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all font-medium"
+                  value={permUserSearch}
+                  onChange={e => setPermUserSearch(e.target.value)}
+                />
               </div>
 
-              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center gap-3.5">
-                <div className="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100 font-bold">
-                  <UserCheck size={20} />
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total Active Grants</p>
-                  <p className="text-xl font-black text-slate-900">{totalAccessGrants}</p>
-                </div>
-              </div>
-
-              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center gap-3.5">
-                <div className="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100 font-bold">
-                  <CheckSquare size={20} />
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Configured Sheets</p>
-                  <p className="text-xl font-black text-slate-900">{configuredSheetsCount}</p>
-                </div>
-              </div>
-
-              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex items-center gap-3.5">
-                <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 font-bold border ${unassignedSheetsCount > 0 ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>
-                  <Info size={20} />
-                </div>
-                <div>
-                  <p className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Unassigned Sheets</p>
-                  <p className={`text-xl font-black ${unassignedSheetsCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>{unassignedSheetsCount}</p>
-                </div>
-              </div>
+              <select
+                value={permDeptFilter}
+                onChange={e => setPermDeptFilter(e.target.value)}
+                className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="All">All Depts</option>
+                {allDepartments.map(d => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            {/* WORKSPACE AREA */}
-            {assignMode === 'by-sheet' ? (
-              /* MODE A: BY SHEET */
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                {/* Left Pane - Select Sheet (4 cols) */}
-                <div className="lg:col-span-4 bg-white border border-slate-200/90 rounded-3xl p-5 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                      <FileSpreadsheet size={15} className="text-blue-600" />
-                      1. Select Sheet
-                    </h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                      {activeSheetsList.length} total
-                    </span>
-                  </div>
+            {/* Team Members Permission Toggle Grid */}
+            <div className="flex-1 overflow-y-auto pr-1 space-y-2 max-h-[350px] custom-scrollbar">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {effectiveUsers
+                  .filter(u => {
+                    const matchSearch =
+                      u.name.toLowerCase().includes(permUserSearch.toLowerCase()) ||
+                      u.email.toLowerCase().includes(permUserSearch.toLowerCase()) ||
+                      (u.department || '').toLowerCase().includes(permUserSearch.toLowerCase());
+                    const matchDept = permDeptFilter === 'All' || (u.department || 'General') === permDeptFilter;
+                    return matchSearch && matchDept;
+                  })
+                  .map(user => {
+                    const isAssigned = (targetPermSheet?.assignedUsers || []).some(
+                      email => email.toLowerCase() === user.email.toLowerCase()
+                    );
 
-                  <div className="relative">
-                    <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Filter sheets..."
-                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 pl-9 pr-3 py-2 text-xs rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                      value={assignSheetSearch}
-                      onChange={e => setAssignSheetSearch(e.target.value)}
-                    />
-                    {assignSheetSearch && (
-                      <button onClick={() => setAssignSheetSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs">
-                        <X size={13} />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="space-y-2.5 max-h-[520px] overflow-y-auto pr-1 custom-scrollbar">
-                    {activeSheetsList
-                      .filter(s =>
-                        s.name.toLowerCase().includes(assignSheetSearch.toLowerCase()) ||
-                        s.department.toLowerCase().includes(assignSheetSearch.toLowerCase()) ||
-                        s.id.toLowerCase().includes(assignSheetSearch.toLowerCase())
-                      )
-                      .map(s => {
-                        const isSelected = assignSelectedSheetId === s.id;
-                        const assignedCount = s.assignedUsers?.length || 0;
-                        return (
-                          <button
-                            key={s.id}
-                            type="button"
-                            onClick={() => setAssignSelectedSheetId(s.id)}
-                            className={`w-full text-left p-3.5 rounded-2xl border transition-all relative overflow-hidden group ${
-                              isSelected
-                                ? 'bg-gradient-to-r from-blue-50 to-indigo-50/80 border-blue-400 text-blue-900 shadow-sm font-bold'
-                                : 'bg-white border-slate-200/80 hover:border-slate-300 text-slate-700 hover:bg-slate-50 font-medium'
+                    return (
+                      <div
+                        key={user.id || user.email}
+                        onClick={() => handleToggleUserPermission(user.email)}
+                        className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between select-none ${
+                          isAssigned
+                            ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950 shadow-2xs'
+                            : 'bg-slate-50/70 border-slate-200 text-slate-700 hover:bg-slate-100 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                          <div
+                            className={`w-8 h-8 rounded-xl flex items-center justify-center text-white font-bold shrink-0 text-xs ${
+                              isAssigned ? 'bg-emerald-600' : 'bg-slate-600'
                             }`}
                           >
-                            <div className="flex items-center justify-between mb-1.5">
-                              <span className="text-xs font-black truncate max-w-[170px]">{s.name}</span>
-                              <span className="font-mono text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{s.id}</span>
-                            </div>
-                            <div className="flex items-center justify-between text-[10px] text-slate-500">
-                              <span className="truncate max-w-[130px] font-medium">{s.department}</span>
-                              <span className={`px-2 py-0.5 rounded-full font-bold ${assignedCount > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                                {assignedCount} {assignedCount === 1 ? 'user' : 'users'}
-                              </span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-
-                {/* Right Pane - Assign Team Accounts (8 cols) */}
-                <div className="lg:col-span-8 bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-6">
-                  {selectedSheetForAssign ? (
-                    <>
-                      {/* Selected Sheet Info Header */}
-                      <div className="bg-slate-50/80 border border-slate-200/70 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 bg-blue-600 text-white rounded-md text-[10px] font-bold font-mono">
-                              {selectedSheetForAssign.id}
-                            </span>
-                            <h3 className="text-base font-black text-slate-900">{selectedSheetForAssign.name}</h3>
-                            <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md text-[10px] font-bold">
-                              {selectedSheetForAssign.department}
-                            </span>
+                            {user.name.slice(0, 2).toUpperCase()}
                           </div>
-                          <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                            {selectedSheetForAssign.purpose || 'Google Sheet permission control and assignment.'}
-                          </p>
+                          <div className="min-w-0">
+                            <p className="text-xs font-black truncate">{user.name}</p>
+                            <p className="text-[10px] text-slate-400 truncate">{user.department || 'General'}</p>
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            onClick={() => handleGrantAllUsersToSheet(selectedSheetForAssign.id)}
-                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1"
-                            title="Authorize all employees"
-                          >
-                            <UserCheck size={14} />
-                            <span>Grant All</span>
-                          </button>
-                          <button
-                            onClick={() => handleClearAllUsersFromSheet(selectedSheetForAssign.id)}
-                            className="px-3 py-1.5 bg-slate-200 hover:bg-red-50 hover:text-red-600 text-slate-600 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
-                            title="Clear all assignments"
-                          >
-                            <UserX size={14} />
-                            <span>Clear</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Department Quick Grant Buttons */}
-                      <div className="space-y-2">
-                        <p className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Quick Grant by Department:</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {['HR & Attendance', 'PMS', 'Finance & Accounts', 'Procurement', 'Operations', 'Engineering'].map(dept => (
-                            <button
-                              key={dept}
-                              type="button"
-                              onClick={() => handleGrantDepartmentToSheet(selectedSheetForAssign.id, dept)}
-                              className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-600 rounded-lg text-[11px] font-bold border border-slate-200 transition-all flex items-center gap-1"
-                            >
-                              <Plus size={11} /> {dept}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Employee Search & Filter Bar */}
-                      <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
-                        <div className="relative flex-1 w-full">
-                          <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                          <input
-                            type="text"
-                            placeholder="Search employee by name, email or department..."
-                            className="w-full bg-slate-50 border border-slate-200 text-slate-800 pl-9 pr-3 py-2 text-xs rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                            value={assignUserSearch}
-                            onChange={e => setAssignUserSearch(e.target.value)}
-                          />
-                          {assignUserSearch && (
-                            <button onClick={() => setAssignUserSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs">
-                              <X size={13} />
-                            </button>
+                        <div
+                          className={`px-2.5 py-1 rounded-xl text-[10px] font-extrabold flex items-center gap-1 shrink-0 ${
+                            isAssigned
+                              ? 'bg-emerald-600 text-white shadow-2xs'
+                              : 'bg-white text-slate-400 border border-slate-200'
+                          }`}
+                        >
+                          {isAssigned ? (
+                            <>
+                              <Check size={11} className="stroke-[3]" />
+                              <span>Allowed</span>
+                            </>
+                          ) : (
+                            <>
+                              <Lock size={10} />
+                              <span>Restricted</span>
+                            </>
                           )}
                         </div>
-
-                        <select
-                          className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
-                          value={assignDeptFilter}
-                          onChange={e => setAssignDeptFilter(e.target.value)}
-                        >
-                          <option value="All">All Departments</option>
-                          <option value="HR & Attendance">HR & Attendance</option>
-                          <option value="PMS">PMS</option>
-                          <option value="Finance & Accounts">Finance & Accounts</option>
-                          <option value="Procurement">Procurement</option>
-                          <option value="Operations">Operations</option>
-                          <option value="Engineering">Engineering</option>
-                          <option value="Management">Management</option>
-                        </select>
                       </div>
-
-                      {/* Employee Cards Permission Matrix Grid */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 max-h-[420px] overflow-y-auto pr-1 custom-scrollbar">
-                        {effectiveUsers
-                          .filter(u => {
-                            const matchSearch = u.name.toLowerCase().includes(assignUserSearch.toLowerCase()) ||
-                              u.email.toLowerCase().includes(assignUserSearch.toLowerCase()) ||
-                              (u.department || '').toLowerCase().includes(assignUserSearch.toLowerCase());
-                            const matchDept = assignDeptFilter === 'All' || (u.department || 'General') === assignDeptFilter;
-                            return matchSearch && matchDept;
-                          })
-                          .map(user => {
-                            const isAssigned = (selectedSheetForAssign.assignedUsers || []).some(
-                              email => email.toLowerCase() === user.email.toLowerCase()
-                            );
-
-                            return (
-                              <div
-                                key={user.id || user.email}
-                                onClick={() => toggleUserAssignment(user.email)}
-                                className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group ${
-                                  isAssigned
-                                    ? 'bg-emerald-50/60 border-emerald-300 text-emerald-950 shadow-2xs'
-                                    : 'bg-white border-slate-200/80 hover:border-slate-300 text-slate-700 hover:bg-slate-50'
-                                }`}
-                              >
-                                <div className="flex items-center gap-3 min-w-0 pr-2">
-                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold shrink-0 text-xs shadow-xs ${
-                                    isAssigned ? 'bg-emerald-600' : 'bg-slate-700'
-                                  }`}>
-                                    {user.name.slice(0, 2).toUpperCase()}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <p className="text-xs font-black truncate">{user.name}</p>
-                                    <p className="text-[10px] text-slate-400 truncate mt-0.5 font-medium">{user.email}</p>
-                                    <div className="flex items-center gap-1.5 mt-1">
-                                      <span className="text-[9px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded">
-                                        {user.department || 'General'}
-                                      </span>
-                                      <span className="text-[9px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.2 rounded">
-                                        {user.role}
-                                      </span>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div className={`w-7 h-7 rounded-xl border flex items-center justify-center shrink-0 transition-all ${
-                                  isAssigned
-                                    ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs scale-105'
-                                    : 'border-slate-300 bg-slate-100 text-slate-400 group-hover:border-slate-400'
-                                }`}>
-                                  {isAssigned ? <Check size={14} className="stroke-[3]" /> : <Lock size={12} />}
-                                </div>
-                              </div>
-                            );
-                          })}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-center py-16 space-y-3">
-                      <FileSpreadsheet size={36} className="text-slate-300 mx-auto" />
-                      <p className="text-sm font-bold text-slate-600">No Sheet Selected</p>
-                      <p className="text-xs text-slate-400">Select a Google Sheet from the left panel to manage permissions.</p>
-                    </div>
-                  )}
-                </div>
+                    );
+                  })}
               </div>
-            ) : (
-              /* MODE B: BY EMPLOYEE */
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                {/* Left Pane - Select Employee (4 cols) */}
-                <div className="lg:col-span-4 bg-white border border-slate-200/90 rounded-3xl p-5 shadow-xs space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                      <Users size={15} className="text-blue-600" />
-                      1. Select Employee
-                    </h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                      {effectiveUsers.length} total
-                    </span>
-                  </div>
+            </div>
 
-                  <div className="relative">
-                    <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Filter team members..."
-                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 pl-9 pr-3 py-2 text-xs rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                      value={assignUserSearch}
-                      onChange={e => setAssignUserSearch(e.target.value)}
-                    />
-                    {assignUserSearch && (
-                      <button onClick={() => setAssignUserSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs">
-                        <X size={13} />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="space-y-2.5 max-h-[520px] overflow-y-auto pr-1 custom-scrollbar">
-                    {effectiveUsers
-                      .filter(u =>
-                        u.name.toLowerCase().includes(assignUserSearch.toLowerCase()) ||
-                        u.email.toLowerCase().includes(assignUserSearch.toLowerCase()) ||
-                        (u.department || '').toLowerCase().includes(assignUserSearch.toLowerCase())
-                      )
-                      .map(u => {
-                        const isSelected = assignSelectedUserId === u.id;
-                        const assignedSheetCount = activeSheetsList.filter(s =>
-                          (s.assignedUsers || []).some(email => email.toLowerCase() === u.email.toLowerCase())
-                        ).length;
-
-                        return (
-                          <button
-                            key={u.id || u.email}
-                            type="button"
-                            onClick={() => setAssignSelectedUserId(u.id)}
-                            className={`w-full text-left p-3.5 rounded-2xl border transition-all flex items-center justify-between group ${
-                              isSelected
-                                ? 'bg-gradient-to-r from-blue-50 to-indigo-50/80 border-blue-400 text-blue-900 shadow-sm font-bold'
-                                : 'bg-white border-slate-200/80 hover:border-slate-300 text-slate-700 hover:bg-slate-50 font-medium'
-                            }`}
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold shrink-0 text-xs ${
-                                isSelected ? 'bg-blue-600' : 'bg-slate-700'
-                              }`}>
-                                {u.name.slice(0, 2).toUpperCase()}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-xs font-black truncate">{u.name}</p>
-                                <p className="text-[10px] text-slate-400 truncate font-medium">{u.department || 'General'}</p>
-                              </div>
-                            </div>
-
-                            <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] shrink-0 ${
-                              assignedSheetCount > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
-                            }`}>
-                              {assignedSheetCount} {assignedSheetCount === 1 ? 'sheet' : 'sheets'}
-                            </span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-
-                {/* Right Pane - Sheet Access Control per Employee (8 cols) */}
-                <div className="lg:col-span-8 bg-white border border-slate-200/90 rounded-3xl p-6 shadow-xs space-y-6">
-                  {selectedUserForAssign ? (
-                    <>
-                      {/* Selected User Header */}
-                      <div className="bg-slate-50/80 border border-slate-200/70 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div className="flex items-center gap-3.5">
-                          <div className="w-12 h-12 rounded-2xl bg-indigo-600 text-white flex items-center justify-center font-black text-sm shadow-md">
-                            {selectedUserForAssign.name.slice(0, 2).toUpperCase()}
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-base font-black text-slate-900">{selectedUserForAssign.name}</h3>
-                              <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-[10px] font-bold">
-                                {selectedUserForAssign.role}
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-500 font-medium">{selectedUserForAssign.email} • {selectedUserForAssign.department || 'General'}</p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            onClick={() => handleGrantAllSheetsToUser(selectedUserForAssign.email)}
-                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1"
-                          >
-                            <CheckSquare size={14} />
-                            <span>Grant All Sheets</span>
-                          </button>
-                          <button
-                            onClick={() => handleRevokeAllSheetsFromUser(selectedUserForAssign.email)}
-                            className="px-3 py-1.5 bg-slate-200 hover:bg-red-50 hover:text-red-600 text-slate-600 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
-                          >
-                            <UserX size={14} />
-                            <span>Revoke All</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Filter Search */}
-                      <div className="relative">
-                        <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <input
-                          type="text"
-                          placeholder="Filter sheets by title or category..."
-                          className="w-full bg-slate-50 border border-slate-200 text-slate-800 pl-9 pr-3 py-2 text-xs rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                          value={assignSheetSearch}
-                          onChange={e => setAssignSheetSearch(e.target.value)}
-                        />
-                        {assignSheetSearch && (
-                          <button onClick={() => setAssignSheetSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs">
-                            <X size={13} />
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Sheet Cards Grid for Selected Employee */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 max-h-[460px] overflow-y-auto pr-1 custom-scrollbar">
-                        {activeSheetsList
-                          .filter(s =>
-                            s.name.toLowerCase().includes(assignSheetSearch.toLowerCase()) ||
-                            s.department.toLowerCase().includes(assignSheetSearch.toLowerCase())
-                          )
-                          .map(sheet => {
-                            const isAssigned = (sheet.assignedUsers || []).some(
-                              email => email.toLowerCase() === selectedUserForAssign.email.toLowerCase()
-                            );
-                            const cat = getCategoryDetails(sheet);
-                            const CategoryIcon = cat.icon;
-
-                            return (
-                              <div
-                                key={sheet.id}
-                                onClick={() => handleToggleSheetForUser(selectedUserForAssign.email, sheet.id)}
-                                className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group ${
-                                  isAssigned
-                                    ? 'bg-emerald-50/60 border-emerald-300 text-emerald-950 shadow-2xs'
-                                    : 'bg-white border-slate-200/80 hover:border-slate-300 text-slate-700 hover:bg-slate-50'
-                                }`}
-                              >
-                                <div className="flex items-center gap-3 min-w-0 pr-2">
-                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 shadow-xs ${cat.bg}`}>
-                                    <CategoryIcon size={18} />
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-1.5">
-                                      <p className="text-xs font-black truncate">{sheet.name}</p>
-                                      <span className="font-mono text-[9px] font-bold text-slate-400 bg-slate-100 px-1 rounded">{sheet.id}</span>
-                                    </div>
-                                    <p className="text-[10px] text-slate-400 truncate mt-0.5 font-medium">{sheet.purpose || sheet.department}</p>
-                                  </div>
-                                </div>
-
-                                <div className={`w-7 h-7 rounded-xl border flex items-center justify-center shrink-0 transition-all ${
-                                  isAssigned
-                                    ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs scale-105'
-                                    : 'border-slate-300 bg-slate-100 text-slate-400 group-hover:border-slate-400'
-                                }`}>
-                                  {isAssigned ? <Check size={14} className="stroke-[3]" /> : <Lock size={12} />}
-                                </div>
-                              </div>
-                            );
-                          })}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-center py-16 space-y-3">
-                      <Users size={36} className="text-slate-300 mx-auto" />
-                      <p className="text-sm font-bold text-slate-600">No Employee Selected</p>
-                      <p className="text-xs text-slate-400">Select an employee from the left panel to configure sheet access.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+            {/* Modal Bottom Footer */}
+            <div className="flex justify-between items-center pt-3 border-t border-slate-100 shrink-0">
+              <p className="text-[11px] text-slate-500 font-medium">
+                Changes take effect immediately across all employee dashboards.
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsPermissionsModalOpen(false)}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
+              >
+                Done
+              </button>
+            </div>
           </div>
-        )}
-
-      </div>
+        </div>
+      )}
     </div>
   );
 };

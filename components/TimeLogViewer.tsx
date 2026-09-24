@@ -1,10 +1,10 @@
 
 import React, { useState, useMemo } from 'react';
 import { TimeLog, Employee, AttendanceRecord, AttendanceValue, User } from '../types';
-import { Clock, Search, Download, CalendarDays, User as UserIcon, Save, X, LogOut, BarChart3, AlertTriangle, TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Clock, Search, Download, CalendarDays, User as UserIcon, Save, X, LogOut, BarChart3, AlertTriangle, TrendingUp, ChevronLeft, ChevronRight, Plus, CheckCircle2, Check, Info, ArrowRight, ShieldCheck, Timer, Sparkles } from 'lucide-react';
 import { format, differenceInMinutes } from 'date-fns';
-import { formatDecimalHours } from '../utils/dateUtils';
-import api, { safeGet, extractPayload, ensureArray } from '../src/utils/api';
+import { formatDecimalHours, formatDateKey } from '../utils/dateUtils';
+import api, { safeGet, extractPayload, ensureArray, invalidateCache } from '../src/utils/api';
 
 interface TimeLogViewerProps {
     timeLogs: Record<string, Record<string, TimeLog[]>>; // empId -> date -> Array of Logs
@@ -32,9 +32,26 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
     const [showAnalysis, setShowAnalysis] = useState(false);
     const [analysisFilters, setAnalysisFilters] = useState({ empId: '', start: '', end: '' });
 
-    // Editing State
-    const [editingKey, setEditingKey] = useState<string | null>(null);
-    const [manualTime, setManualTime] = useState('');
+    // Professional Shift Logout & Edit Modal State
+    const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
+    const [modalLog, setModalLog] = useState<any | null>(null);
+    const [isNewShiftMode, setIsNewShiftMode] = useState(false);
+    const [modalEmpId, setModalEmpId] = useState('');
+    const [modalDate, setModalDate] = useState('');
+    const [modalClockIn, setModalClockIn] = useState('09:30');
+    const [modalClockOut, setModalClockOut] = useState('18:30');
+    const [modalNotes, setModalNotes] = useState('');
+    const [isSavingShift, setIsSavingShift] = useState(false);
+    const [modalError, setModalError] = useState<string | null>(null);
+    const [statusToast, setStatusToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+    // Auto-dismiss status toast
+    React.useEffect(() => {
+        if (statusToast) {
+            const timer = setTimeout(() => setStatusToast(null), 4500);
+            return () => clearTimeout(timer);
+        }
+    }, [statusToast]);
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -116,15 +133,13 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         return () => { isMounted = false; };
     }, [currentUser]);
 
-    // 1. Flatten logs into a workable array
+    // 1. Flatten logs into a workable array with smart deduplication & instant resolution
     const allLogs = useMemo(() => {
-        const logs: (TimeLog & { empName: string, empId: string, department: string, avatar?: string })[] = [];
-        const seenKeys = new Set<string>();
+        const rawLogs: (TimeLog & { empName: string, empId: string, department: string, avatar?: string })[] = [];
 
-        // Process logs by inspecting all keys in timeLogs
+        // Collect all logs with normalized metadata
         Object.entries(timeLogs || {}).forEach(([uKey, dayMap]) => {
             if (!dayMap) return;
-            // Match employee by id or numeric string or users list
             const matchedUser = users?.find?.(u => String(u.id) === uKey || u.employeeId === uKey);
             const emp = employees.find(e => e.id === uKey || String(e.id) === uKey || (matchedUser && e.id === matchedUser.employeeId));
             const targetEmpId = emp?.id || matchedUser?.employeeId || uKey;
@@ -134,23 +149,18 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
             Object.values(dayMap).forEach(dayLogs => {
                 ensureArray(dayLogs).forEach(log => {
                     if (!log) return;
-                    const timeMs = log.clockIn ? Math.floor(new Date(log.clockIn).getTime() / 120000) : 0;
-                    const uniqueKey = log.id ? `${targetEmpId}_${log.id}` : `${targetEmpId}_${log.date}_${timeMs}`;
-                    if (!seenKeys.has(uniqueKey)) {
-                        seenKeys.add(uniqueKey);
-                        logs.push({
-                            ...log,
-                            empName: targetEmpName,
-                            empId: targetEmpId,
-                            department: targetDept,
-                            avatar: emp?.avatar
-                        });
-                    }
+                    rawLogs.push({
+                        ...log,
+                        empName: targetEmpName,
+                        empId: targetEmpId,
+                        department: targetDept,
+                        avatar: emp?.avatar
+                    });
                 });
             });
         });
 
-        // Also check employees list in case any user logs weren't captured by top-level keys
+        // Also check employees list
         employees.forEach(emp => {
             if (!emp.id) return;
             const empLogsMap = timeLogs[emp.id];
@@ -158,24 +168,75 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                 Object.values(empLogsMap).forEach(dayLogs => {
                     ensureArray(dayLogs).forEach(log => {
                         if (!log) return;
-                        const timeMs = log.clockIn ? Math.floor(new Date(log.clockIn).getTime() / 120000) : 0;
-                        const uniqueKey = log.id ? `${emp.id}_${log.id}` : `${emp.id}_${log.date}_${timeMs}`;
-                        if (!seenKeys.has(uniqueKey)) {
-                            seenKeys.add(uniqueKey);
-                            logs.push({
-                                ...log,
-                                empName: emp.name,
-                                empId: emp.id,
-                                department: emp.department,
-                                avatar: emp.avatar
-                            });
-                        }
+                        rawLogs.push({
+                            ...log,
+                            empName: emp.name,
+                            empId: emp.id,
+                            department: emp.department,
+                            avatar: emp.avatar
+                        });
                     });
                 });
             }
         });
 
-        // Sort by Time (Clock In) Descending initially
+        // Smart deduplication: closed records (with clockOut) ALWAYS take precedence over open records
+        const dedupedMap = new Map<string, TimeLog & { empName: string, empId: string, department: string, avatar?: string }>();
+
+        rawLogs.forEach(log => {
+            const dateKey = log.date || (log.clockIn ? log.clockIn.split('T')[0] : '');
+            const clockInTime = log.clockIn ? new Date(log.clockIn).getTime() : 0;
+            const timeSlot = clockInTime > 0 ? Math.round(clockInTime / (10 * 60 * 1000)) : 0;
+            const groupKey = log.id ? `${log.empId}_id_${log.id}` : `${log.empId}_dt_${dateKey}_slot_${timeSlot}`;
+
+            const existing = dedupedMap.get(groupKey);
+
+            if (!existing) {
+                // Check if another entry for this employee on this date exists within 15 mins
+                let matchedKey: string | null = null;
+                for (const [k, ex] of dedupedMap.entries()) {
+                    if (ex.empId === log.empId) {
+                        const exDate = ex.date || (ex.clockIn ? ex.clockIn.split('T')[0] : '');
+                        if (exDate === dateKey) {
+                            const exTime = ex.clockIn ? new Date(ex.clockIn).getTime() : 0;
+                            if (clockInTime === 0 || exTime === 0 || Math.abs(exTime - clockInTime) < 15 * 60 * 1000) {
+                                matchedKey = k;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (matchedKey) {
+                    const ex = dedupedMap.get(matchedKey)!;
+                    if (log.clockOut && !ex.clockOut) {
+                        dedupedMap.set(matchedKey, { ...ex, ...log });
+                    } else if (log.clockOut && ex.clockOut) {
+                        const exOut = new Date(ex.clockOut).getTime();
+                        const logOut = new Date(log.clockOut).getTime();
+                        if (logOut >= exOut || (log.durationHours || 0) > (ex.durationHours || 0)) {
+                            dedupedMap.set(matchedKey, { ...ex, ...log });
+                        }
+                    }
+                } else {
+                    dedupedMap.set(groupKey, log);
+                }
+            } else {
+                if (log.clockOut && !existing.clockOut) {
+                    dedupedMap.set(groupKey, { ...existing, ...log });
+                } else if (log.clockOut && existing.clockOut) {
+                    const exOut = new Date(existing.clockOut).getTime();
+                    const logOut = new Date(log.clockOut).getTime();
+                    if (logOut >= exOut || (log.durationHours || 0) > (existing.durationHours || 0)) {
+                        dedupedMap.set(groupKey, { ...existing, ...log });
+                    }
+                }
+            }
+        });
+
+        const logs = Array.from(dedupedMap.values());
+
+        // Sort by Time (Clock In) Descending
         return logs.sort((a, b) => {
             const aTime = a.clockIn ? new Date(a.clockIn).getTime() : 0;
             const bTime = b.clockIn ? new Date(b.clockIn).getTime() : 0;
@@ -207,6 +268,100 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
     const analysisReport = useMemo(() => {
         if (!analysisFilters.empId) return null;
 
+        const today = format(new Date(), 'yyyy-MM-dd');
+
+        if (analysisFilters.empId === 'ALL') {
+            const teamItems = employees.map(emp => {
+                const empLogs = allLogs.filter(l => l.empId === emp.id);
+
+                // Calculate potential days in range
+                let daysInRangeCount = 0;
+                if (analysisFilters.start && analysisFilters.end) {
+                    const startStr = analysisFilters.start;
+                    const endStr = analysisFilters.end;
+                    const startD = new Date(startStr);
+                    const endD = new Date(endStr);
+                    daysInRangeCount = Math.max(0, Math.ceil((endD.getTime() - startD.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+                }
+
+                const inRange = empLogs.filter(l => {
+                    let ok = true;
+                    if (analysisFilters.start) ok = ok && l.date >= analysisFilters.start;
+                    if (analysisFilters.end) ok = ok && l.date <= analysisFilters.end;
+                    return ok;
+                }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+                // Determine EARLIEST clockIn per day
+                const firstClockInByDate: Record<string, Date> = {};
+                empLogs.forEach(l => {
+                    if (l.clockIn) {
+                        const dt = new Date(l.clockIn);
+                        if (!firstClockInByDate[l.date] || dt < firstClockInByDate[l.date]) {
+                            firstClockInByDate[l.date] = dt;
+                        }
+                    }
+                });
+
+                const processed = inRange.map(l => {
+                    const isMissed = !l.clockOut && l.date < today;
+                    const firstCheckInTime = firstClockInByDate[l.date] || (l.clockIn ? new Date(l.clockIn) : null);
+                    const checkOutTime = l.clockOut ? new Date(l.clockOut) : null;
+                    const isLate = firstCheckInTime
+                        ? (firstCheckInTime.getHours() > 10 || (firstCheckInTime.getHours() === 10 && firstCheckInTime.getMinutes() > 15))
+                        : false;
+                    const isEarlyOut = checkOutTime ? checkOutTime.getHours() < 17 : false;
+                    const score = typeof attendanceData[emp.id]?.[l.date] === 'number' ? (attendanceData[emp.id][l.date] as number) : (l.clockIn ? 1 : 0);
+                    return { ...l, isMissed, isLate, isEarlyOut, score };
+                });
+
+                const validLogs = processed.filter(l => !l.isMissed);
+                const totalHours = validLogs.reduce((acc, curr) => acc + (curr.durationHours || 0), 0);
+                const missedCount = processed.filter(l => l.isMissed).length;
+                const lateDates = new Set(processed.filter(l => l.isLate).map(l => l.date));
+                const lateCount = lateDates.size;
+                const workingDays = new Set(validLogs.map(l => l.date)).size;
+
+                const avgHours = workingDays > 0 ? totalHours / workingDays : 0;
+                const totalScore = validLogs.reduce((acc, curr) => acc + (curr.score || 0), 0);
+                const attendanceImpact = daysInRangeCount > 0 ? (totalScore / daysInRangeCount) * 100 : 0;
+
+                let tier = "INSUFFICIENT DATA";
+                let tierColor = "slate";
+                if (workingDays > 0) {
+                    if (avgHours >= 8 && attendanceImpact >= 85) { tier = "ELITE PERFORMER"; tierColor = "emerald"; }
+                    else if (avgHours >= 7 && attendanceImpact >= 70) { tier = "CORE ASSET"; tierColor = "indigo"; }
+                    else if (avgHours >= 4) { tier = "REGULAR"; tierColor = "blue"; }
+                    else { tier = "UNDER REVIEW"; tierColor = "rose"; }
+                }
+
+                return {
+                    emp,
+                    totalHours,
+                    missedCount,
+                    lateCount,
+                    workingDays,
+                    avgHours,
+                    attendanceImpact,
+                    tier,
+                    tierColor
+                };
+            });
+
+            const teamTotalHours = teamItems.reduce((sum, item) => sum + item.totalHours, 0);
+            const teamTotalDays = teamItems.reduce((sum, item) => sum + item.workingDays, 0);
+            const teamTotalLate = teamItems.reduce((sum, item) => sum + item.lateCount, 0);
+            const teamTotalMissed = teamItems.reduce((sum, item) => sum + item.missedCount, 0);
+
+            return {
+                isTeamSummary: true,
+                items: teamItems,
+                teamTotalHours,
+                teamTotalDays,
+                teamTotalLate,
+                teamTotalMissed
+            };
+        }
+
         const emp = employees.find(e => e.id === analysisFilters.empId);
         const empLogs = allLogs.filter(l => l.empId === analysisFilters.empId);
 
@@ -226,8 +381,6 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
             if (analysisFilters.end) ok = ok && l.date <= analysisFilters.end;
             return ok;
         }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-        const today = format(new Date(), 'yyyy-MM-dd');
 
         // Determine the EARLIEST clockIn for each date for this employee
         const firstClockInByDate: Record<string, Date> = {};
@@ -284,6 +437,7 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         }
 
         return {
+            isTeamSummary: false,
             emp,
             items: processed,
             totalHours,
@@ -402,160 +556,336 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
         document.body.removeChild(link);
     };
 
-    // --- Manual Out & Edit Logic ---
+    // --- Professional Shift Log & Manual Out Logic ---
 
-    const startEditing = (log: any) => {
-        const uniqueKey = log.id || `${log.empId}-${log.date}-${log.clockIn}`;
-        setEditingKey(uniqueKey);
+    const openManualOutModal = (log: any) => {
+        setModalLog(log);
+        setIsNewShiftMode(false);
+        setModalEmpId(log.empId || '');
+        setModalDate(log.date || format(new Date(), 'yyyy-MM-dd'));
+        setModalClockIn(log.clockIn ? format(new Date(log.clockIn), 'HH:mm') : '09:30');
         if (log.clockOut) {
-            setManualTime(format(new Date(log.clockOut), 'HH:mm'));
+            setModalClockOut(format(new Date(log.clockOut), 'HH:mm'));
         } else {
-            // Default to current time if fixing "now", otherwise empty
-            setManualTime(format(new Date(), 'HH:mm'));
+            setModalClockOut(format(new Date(), 'HH:mm'));
+        }
+        setModalNotes(log.notes || '');
+        setModalError(null);
+        setIsShiftModalOpen(true);
+    };
+
+    const openNewShiftModal = () => {
+        setModalLog(null);
+        setIsNewShiftMode(true);
+        setModalEmpId(employees[0]?.id || '');
+        setModalDate(format(new Date(), 'yyyy-MM-dd'));
+        setModalClockIn('09:30');
+        setModalClockOut('18:30');
+        setModalNotes('');
+        setModalError(null);
+        setIsShiftModalOpen(true);
+    };
+
+    const applyPreset = (preset: 'now' | 'standard' | '8hours' | 'fullday') => {
+        if (preset === 'now') {
+            setModalClockOut(format(new Date(), 'HH:mm'));
+        } else if (preset === 'standard') {
+            setModalClockOut('18:30');
+        } else if (preset === '8hours') {
+            const [inH, inM] = modalClockIn.split(':').map(Number);
+            const outH = ((inH || 9) + 8) % 24;
+            setModalClockOut(`${String(outH).padStart(2, '0')}:${String(inM || 0).padStart(2, '0')}`);
+        } else if (preset === 'fullday') {
+            setModalClockOut('19:00');
         }
     };
 
-    const cancelEditing = () => {
-        setEditingKey(null);
-        setManualTime('');
-    };
+    const modalShiftStats = useMemo(() => {
+        if (!modalClockIn || !modalClockOut || !modalDate) return null;
+        try {
+            const [inH, inM] = modalClockIn.split(':').map(Number);
+            const [outH, outM] = modalClockOut.split(':').map(Number);
+            const [y, m, d] = modalDate.split('-').map(Number);
 
-    const saveManualOut = async (log: any) => {
-        if (!manualTime || !manualTime.trim()) return;
+            const start = new Date(y, m - 1, d, inH, inM, 0);
+            const end = new Date(y, m - 1, d, outH, outM, 0);
 
-        const timeValue = manualTime.trim();
-        const [hours, mins] = timeValue.split(':').map(Number);
-        const [year, month, day] = log.date.split('-').map(Number);
-        const end = new Date(year, month - 1, day, hours, mins, 0);
-        const start = new Date(log.clockIn);
+            const diffMs = end.getTime() - start.getTime();
+            if (diffMs <= 0) {
+                return { isValid: false, durationHours: 0, formatted: '0h 0m', error: 'Clock Out time must be after Clock In time' };
+            }
 
-        // Validation: End must be after Start
-        if (end.getTime() <= start.getTime()) {
-            alert("Clock Out time must be after Clock In time.");
+            const durationHours = diffMs / 3600000;
+            const hours = Math.floor(durationHours);
+            const mins = Math.round((durationHours - hours) * 60);
+
+            let val: AttendanceValue = 0;
+            let valLabel = 'Incomplete / Absent (0.0)';
+            let valColor = 'rose';
+
+            if (durationHours >= 7.5) {
+                val = 1;
+                valLabel = 'Full Day Present (1.0)';
+                valColor = 'emerald';
+            } else if (durationHours >= 6) {
+                val = 0.75;
+                valLabel = 'Short Leave (0.75)';
+                valColor = 'blue';
+            } else if (durationHours >= 4) {
+                val = 0.5;
+                valLabel = 'Half Day (0.5)';
+                valColor = 'amber';
+            } else if (durationHours >= 2) {
+                val = 0.25;
+                valLabel = 'Quarter Day (0.25)';
+                valColor = 'orange';
+            }
+
+            return {
+                isValid: true,
+                durationHours,
+                hours,
+                mins,
+                formatted: `${hours}h ${mins}m (${durationHours.toFixed(2)} hrs)`,
+                attendanceVal: val,
+                valLabel,
+                valColor,
+                startIso: start.toISOString(),
+                endIso: end.toISOString()
+            };
+        } catch {
+            return null;
+        }
+    }, [modalClockIn, modalClockOut, modalDate]);
+
+    const saveShiftModal = async () => {
+        if (!modalShiftStats || !modalShiftStats.isValid) {
+            setModalError('Please ensure Clock Out is set after Clock In.');
+            return;
+        }
+        if (!modalEmpId) {
+            setModalError('Please select a valid employee.');
             return;
         }
 
-        const clockOutIso = end.toISOString();
-        const diffMs = end.getTime() - start.getTime();
-        const durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
+        const targetEmp = employees.find(e => e.id === modalEmpId) || { name: modalEmpId, id: modalEmpId };
+        const startIso = modalShiftStats.startIso;
+        const clockOutIso = modalShiftStats.endIso;
+        const durationHours = modalShiftStats.durationHours;
+        const attendanceVal = modalShiftStats.attendanceVal;
 
-        // Calculate Attendance Value based on Hours (Matching App.tsx logic)
-        let attendanceVal: AttendanceValue = 0;
-        if (durationHours >= 7.5) {
-            attendanceVal = 1;
-        } else if (durationHours >= 6) {
-            attendanceVal = 0.75; // Short Leave
-        } else if (durationHours >= 4) {
-            attendanceVal = 0.5; // Half Day
-        } else if (durationHours >= 2) {
-            attendanceVal = 0.25; // Quarter Day
-        } else {
-            attendanceVal = 0; // Absent
-        }
+        const tId = modalLog?.id || `TL-${modalEmpId}-${modalDate}-${Date.now()}`;
+        const aId = `A-${modalEmpId}-${modalDate}`;
 
-        const tId = log.id || `TL-${log.empId}-${log.date}`;
-        const aId = `A-${log.empId}-${log.date}`;
-        try {
-            if (log.id) {
-                await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: clockOutIso }, { withCredentials: true });
-            }
-            await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: clockOutIso, value: attendanceVal, userId: log.empId, date: log.date }, { withCredentials: true });
+        // 1. Identify all target alias keys for this employee
+        const targetKeys = new Set<string>([modalEmpId]);
+        const matchedUser = users?.find(u => u.employeeId === modalEmpId || String(u.id) === modalEmpId);
+        if (matchedUser?.employeeId) targetKeys.add(matchedUser.employeeId);
+        if (matchedUser?.id) targetKeys.add(String(matchedUser.id));
+        const matchedEmp = employees.find(e => e.id === modalEmpId || String(e.id) === modalEmpId);
+        if (matchedEmp?.id) targetKeys.add(matchedEmp.id);
 
-            // Refresh timelogs and attendance from server
-            try {
-                const tlRes = await safeGet('/timelogs', { cacheBust: true });
-                const tlPayload = extractPayload(tlRes);
-                const tlArr = ensureArray(tlPayload);
-                const tlMap: Record<string, Record<string, TimeLog[]>> = {};
-                tlArr.forEach((t: any) => {
-                    if (!t || !t.userId) return;
-                    const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.date || (t.createdAt ? t.createdAt.split('T')[0] : ''));
-                    if (!dateKey) return;
-                    const uId = String(t.userId);
-                    if (!tlMap[uId]) tlMap[uId] = {};
-                    if (!tlMap[uId][dateKey]) tlMap[uId][dateKey] = [];
+        const updatedLogItem: TimeLog = {
+            id: tId,
+            date: modalDate,
+            clockIn: startIso,
+            clockOut: clockOutIso,
+            durationHours: durationHours,
+            notes: modalNotes || (modalLog?.clockOut ? 'Shift updated via Admin' : 'Manual shift logout')
+        };
 
-                    let duration = t.durationHours;
-                    if (!duration && t.startTime && t.endTime) {
-                        const sTime = new Date(t.startTime).getTime();
-                        const eTime = new Date(t.endTime).getTime();
-                        if (eTime > sTime) duration = (eTime - sTime) / 3600000;
-                    }
+        // 2. --- INSTANT OPTIMISTIC STATE UPDATE (Zero Latency) ---
+        setTimeLogs(prev => {
+            const next = { ...prev };
+            targetKeys.forEach(k => {
+                const uLogs = { ...(next[k] || {}) };
+                const dLogs = [...(uLogs[modalDate] || [])];
+                
+                const matchIdx = dLogs.findIndex(l => 
+                    (modalLog?.id && l.id === modalLog.id) ||
+                    (l.id === tId) ||
+                    (l.clockIn && modalLog?.clockIn && l.clockIn === modalLog.clockIn) ||
+                    (!l.clockOut && !modalLog?.clockOut)
+                );
 
-                    tlMap[uId][dateKey].push({
-                        id: t.id,
-                        date: dateKey,
-                        clockIn: t.startTime || t.clockIn,
-                        clockOut: t.endTime || t.clockOut,
-                        durationHours: duration
-                    });
-                });
-                setTimeLogs(prev => ({ ...prev, ...tlMap }));
-            } catch (e) { console.warn('Failed to refresh timelogs after manual out', e); }
-
-            try {
-                const aRes = await safeGet('/attendance', { cacheBust: true });
-                const aPayload = extractPayload(aRes);
-                const aArr = ensureArray(aPayload);
-                const ag: Record<string, AttendanceRecord> = {};
-                aArr.forEach((a: any) => {
-                    if (!a || !a.userId || !a.date) return;
-                    if (!ag[a.userId]) ag[a.userId] = {};
-                    ag[a.userId][a.date] = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
-                });
-                setAttendanceData(ag);
-            } catch (e) { console.warn('Failed to refresh attendance after manual out', e); }
-
-        } catch (err) {
-            console.warn('Manual out update failed, falling back to local update', err);
-            setTimeLogs(prev => {
-                const userLogs = prev[log.empId] || {};
-                const dLogs = userLogs[log.date] || [];
-                const updatedLogs = dLogs.map(l => (l.id === log.id || l.clockIn === log.clockIn) ? { ...l, clockOut: clockOutIso, durationHours: durationHours } : l);
-                return {
-                    ...prev,
-                    [log.empId]: {
-                        ...userLogs,
-                        [log.date]: updatedLogs
-                    }
-                };
-            });
-            setAttendanceData(prev => ({
-                ...prev,
-                [log.empId]: {
-                    ...(prev[log.empId] || {}),
-                    [log.date]: attendanceVal
+                if (matchIdx >= 0) {
+                    dLogs[matchIdx] = { ...dLogs[matchIdx], ...updatedLogItem };
+                } else {
+                    dLogs.unshift(updatedLogItem);
                 }
-            }));
-        }
+                uLogs[modalDate] = dLogs;
+                next[k] = uLogs;
+            });
+            return next;
+        });
 
-        setEditingKey(null);
-        setManualTime('');
+        // Update attendance instantly
+        setAttendanceData(prev => {
+            const next = { ...prev };
+            targetKeys.forEach(k => {
+                next[k] = { ...(next[k] || {}), [modalDate]: attendanceVal };
+            });
+            return next;
+        });
+
+        // Clear active local storage timer instantly
+        try {
+            targetKeys.forEach(k => localStorage.removeItem(`kbt_active_log_${k}`));
+        } catch (e) { /* ignore */ }
+
+        // Close modal and show success toast immediately!
+        setIsShiftModalOpen(false);
+        setStatusToast({
+            message: `Shift logout updated instantly for ${targetEmp.name} (${modalShiftStats.formatted})`,
+            type: 'success'
+        });
+
+        // 3. --- BACKGROUND SERVER PERSISTENCE ---
+        setIsSavingShift(true);
+        setModalError(null);
+
+        try {
+            await Promise.all([
+                api.put(`/timelogs/${encodeURIComponent(tId)}`, {
+                    id: tId,
+                    userId: modalEmpId,
+                    date: modalDate,
+                    startTime: startIso,
+                    endTime: clockOutIso,
+                    notes: modalNotes || (modalLog?.clockOut ? 'Shift updated via Admin' : 'Manual shift logout'),
+                    durationHours
+                }, { withCredentials: true }),
+                api.put(`/attendance/${encodeURIComponent(aId)}`, {
+                    id: aId,
+                    userId: modalEmpId,
+                    date: modalDate,
+                    clockIn: startIso,
+                    clockOut: clockOutIso,
+                    value: attendanceVal
+                }, { withCredentials: true })
+            ]);
+
+            invalidateCache('/timelogs');
+            invalidateCache('/attendance');
+
+            // 4. Background re-fetch to sync canonical database records across all key aliases
+            const isEmployee = currentUser?.role === 'EMPLOYEE';
+            const userEmpId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
+            const url = isEmployee && userEmpId ? `/timelogs?userId=${encodeURIComponent(userEmpId)}` : '/timelogs';
+            
+            const [tlRes, aRes] = await Promise.all([
+                safeGet(url, { cacheBust: true }),
+                safeGet('/attendance', { cacheBust: true })
+            ]);
+
+            const tlArr = ensureArray(extractPayload(tlRes));
+            const tlMap: Record<string, Record<string, TimeLog[]>> = {};
+            tlArr.forEach((t: any) => {
+                if (!t || !t.userId) return;
+                const dateKey = t.startTime ? t.startTime.split('T')[0] : (t.date || (t.createdAt ? t.createdAt.split('T')[0] : ''));
+                if (!dateKey) return;
+                const uId = String(t.userId);
+
+                let duration = t.durationHours;
+                if (!duration && t.startTime && t.endTime) {
+                    const sTime = new Date(t.startTime).getTime();
+                    const eTime = new Date(t.endTime).getTime();
+                    if (eTime > sTime) duration = (eTime - sTime) / 3600000;
+                }
+
+                const logItem = {
+                    id: t.id,
+                    date: dateKey,
+                    clockIn: t.startTime || t.clockIn,
+                    clockOut: t.endTime || t.clockOut,
+                    durationHours: duration
+                };
+
+                const aliases = new Set<string>([uId]);
+                const uMatch = users?.find(u => String(u.id) === uId || u.employeeId === uId);
+                if (uMatch?.employeeId) aliases.add(uMatch.employeeId);
+                if (uMatch?.id) aliases.add(String(uMatch.id));
+                const eMatch = employees.find(e => e.id === uId || String(e.id) === uId);
+                if (eMatch?.id) aliases.add(eMatch.id);
+
+                aliases.forEach(aliasKey => {
+                    if (!tlMap[aliasKey]) tlMap[aliasKey] = {};
+                    if (!tlMap[aliasKey][dateKey]) tlMap[aliasKey][dateKey] = [];
+                    const exists = tlMap[aliasKey][dateKey].some(ex => (t.id && ex.id === t.id) || (ex.clockIn === t.startTime && ex.clockOut === t.endTime));
+                    if (!exists) {
+                        tlMap[aliasKey][dateKey].push(logItem);
+                    }
+                });
+            });
+            setTimeLogs(prev => ({ ...prev, ...tlMap }));
+
+            const aArr = ensureArray(extractPayload(aRes));
+            const ag: Record<string, AttendanceRecord> = {};
+            aArr.forEach((a: any) => {
+                if (!a || !a.userId || !a.date) return;
+                const uId = String(a.userId);
+                const val = a.value == null ? (a.clockIn ? 1 : 0) : a.value;
+                const aliases = new Set<string>([uId]);
+                const uMatch = users?.find(u => String(u.id) === uId || u.employeeId === uId);
+                if (uMatch?.employeeId) aliases.add(uMatch.employeeId);
+                if (uMatch?.id) aliases.add(String(uMatch.id));
+                const eMatch = employees.find(e => e.id === uId || String(e.id) === uId);
+                if (eMatch?.id) aliases.add(eMatch.id);
+
+                aliases.forEach(aliasKey => {
+                    if (!ag[aliasKey]) ag[aliasKey] = {};
+                    ag[aliasKey][a.date] = val;
+                });
+            });
+            setAttendanceData(ag);
+
+        } catch (err: any) {
+            console.error('Failed to save manual shift log:', err);
+        } finally {
+            setIsSavingShift(false);
+        }
     };
 
     return (
         <>
-            <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
+            <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar print:hidden">
+                {/* Toast Notification */}
+                {statusToast && (
+                    <div className="fixed top-20 right-6 z-[150] animate-in slide-in-from-top-4 duration-300">
+                        <div className={`p-4 rounded-2xl shadow-xl border backdrop-blur-md flex items-center gap-3 ${
+                            statusToast.type === 'success' ? 'bg-emerald-50/95 border-emerald-200 text-emerald-900' : 'bg-rose-50/95 border-rose-200 text-rose-900'
+                        }`}>
+                            <div className={`p-2 rounded-xl ${statusToast.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+                                {statusToast.type === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+                            </div>
+                            <span className="text-sm font-bold">{statusToast.message}</span>
+                            <button onClick={() => setStatusToast(null)} className="p-1 text-slate-400 hover:text-slate-600 ml-2">
+                                <X size={14} />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-8 gap-4">
                     <div>
-                        <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
+                        <h2 className="text-2xl md:text-3xl font-extrabold text-primary flex items-center gap-3">
                             <div className="w-10 h-10 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20 shrink-0">
                                 <Clock size={20} />
                             </div>
                             Shift Logs
                         </h2>
-                        <p className="text-slate-500 mt-2 font-medium md:ml-14">Detailed login & logout timings grouped by date.</p>
+                        <p className="text-secondary mt-2 text-sm sm:text-base font-normal md:ml-14">Detailed login & logout timings grouped by date with instant manual shift management.</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                         <button
                             onClick={() => setShowAnalysis(true)}
-                            className="bg-indigo-600 text-white hover:bg-indigo-700 px-6 py-3 rounded-xl flex items-center justify-center gap-2 font-black shadow-lg shadow-indigo-600/20 active:scale-95 transition-all text-sm uppercase tracking-widest whitespace-nowrap"
+                            className="btn btn-secondary"
                         >
                             <BarChart3 size={18} /> Analysis Report
                         </button>
                         <button
                             onClick={handleExport}
-                            className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-5 py-3 rounded-xl flex items-center justify-center gap-2 font-black shadow-sm text-sm uppercase tracking-widest"
+                            className="btn btn-secondary"
                         >
                             <Download size={18} /> Export
                         </button>
@@ -563,13 +893,12 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                 </div>
 
                 <div className="flex flex-wrap gap-3 mb-8">
-
                     <div className="relative flex-1 md:max-w-xs">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={18} />
                         <input
                             type="text"
                             placeholder="Live search by name or ID..."
-                            className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm w-full font-bold"
+                            className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-sm sm:text-base w-full font-medium"
                             value={searchTermInput}
                             onChange={(e) => setSearchTermInput(e.target.value)}
                         />
@@ -580,31 +909,31 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                 {(searchTerm || focusedEmployeeId) && (
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
                         <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-6 rounded-3xl text-white shadow-xl shadow-blue-200">
-                            <div className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80 mb-1">Total Hours Worked</div>
-                            <div className="text-4xl font-black">{formatDecimalHours(selectionStats.totalHours)}</div>
-                            <div className="text-[10px] mt-2 font-bold opacity-60">BASED ON CURRENT SELECTION</div>
+                            <div className="text-xs font-semibold opacity-85 mb-1">Total hours worked</div>
+                            <div className="text-3xl sm:text-4xl font-black">{formatDecimalHours(selectionStats.totalHours)}</div>
+                            <div className="text-xs mt-2 font-medium opacity-75">Based on current selection</div>
                         </div>
                         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
-                            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Days Worked</div>
-                            <div className="text-4xl font-black text-slate-800">{selectionStats.uniqueDays} <span className="text-sm text-slate-400 font-bold uppercase">Days</span></div>
-                            <div className="text-[10px] mt-2 font-bold text-slate-300 tracking-widest uppercase">UNIQUE WORKING DATES</div>
+                            <div className="text-xs font-semibold text-muted mb-1">Days worked</div>
+                            <div className="text-3xl sm:text-4xl font-black text-primary">{selectionStats.uniqueDays} <span className="text-sm text-muted font-semibold">days</span></div>
+                            <div className="text-xs mt-2 font-medium text-muted">Unique working dates</div>
                         </div>
                         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
-                            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Daily Average</div>
-                            <div className="text-4xl font-black text-slate-800">
+                            <div className="text-xs font-semibold text-muted mb-1">Daily average</div>
+                            <div className="text-3xl sm:text-4xl font-black text-primary">
                                 {selectionStats.uniqueDays > 0 ? (selectionStats.totalHours / selectionStats.uniqueDays).toFixed(1) : '0'}
-                                <span className="text-sm text-slate-400 font-bold uppercase ml-1">Hrs/D</span>
+                                <span className="text-sm text-muted font-semibold ml-1">hrs/day</span>
                             </div>
-                            <div className="text-[10px] mt-2 font-bold text-slate-300 tracking-widest uppercase">AVG INTENSITY</div>
+                            <div className="text-xs mt-2 font-medium text-muted">Average intensity</div>
                         </div>
                     </div>
                 )}
 
                 <div className="space-y-8 pb-20">
                     {paginatedDates.length === 0 ? (
-                        <div className="p-12 text-center text-slate-400 bg-white rounded-3xl border border-slate-100">
+                        <div className="p-12 text-center text-muted bg-white rounded-3xl border border-slate-100">
                             <Clock size={48} className="mx-auto mb-4 opacity-20" />
-                            <p>No time logs found matching your search.</p>
+                            <p className="text-base text-secondary font-medium">No time logs found matching your search.</p>
                         </div>
                     ) : (
                         paginatedDates.map(dateKey => {
@@ -617,16 +946,16 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                     {/* Date Header */}
                                     <div className="flex items-end justify-between mb-3 px-1">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-12 h-12 bg-white rounded-xl border border-slate-200 flex flex-col items-center justify-center shadow-sm text-slate-700">
-                                                <span className="text-xs font-bold uppercase text-slate-400">{format(dateObj, 'MMM')}</span>
+                                            <div className="w-12 h-12 bg-white rounded-xl border border-slate-200 flex flex-col items-center justify-center shadow-sm text-primary">
+                                                <span className="text-xs font-bold uppercase text-muted">{format(dateObj, 'MMM')}</span>
                                                 <span className="text-xl font-black leading-none">{format(dateObj, 'd')}</span>
                                             </div>
                                             <div>
-                                                <h3 className="text-lg font-bold text-slate-800">{format(dateObj, 'EEEE, MMMM d, yyyy')}</h3>
-                                                <div className="flex gap-3 text-xs font-medium text-slate-500">
-                                                    <span className="flex items-center gap-1"><UserIcon size={12} /> {stats.total} Present</span>
-                                                    {stats.running > 0 && <span className="flex items-center gap-1 text-green-600 animate-pulse"><Clock size={12} /> {stats.running} Active</span>}
-                                                    <span>Total Hours: {formatDecimalHours(stats.totalHours)}</span>
+                                                <h3 className="text-lg sm:text-xl font-bold text-primary">{format(dateObj, 'EEEE, MMMM d, yyyy')}</h3>
+                                                <div className="flex flex-wrap gap-3 text-xs sm:text-sm font-medium text-secondary mt-0.5">
+                                                    <span className="flex items-center gap-1.5"><UserIcon size={14} /> {stats.total} Present</span>
+                                                    {stats.running > 0 && <span className="flex items-center gap-1.5 text-state-success font-semibold animate-pulse"><Clock size={14} /> {stats.running} Active</span>}
+                                                    <span>Total Hours: <strong className="text-primary font-bold">{formatDecimalHours(stats.totalHours)}</strong></span>
                                                 </div>
                                             </div>
                                         </div>
@@ -635,7 +964,7 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                     {/* Logs Table */}
                                     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
                                         <table className="w-full text-left">
-                                            <thead className="bg-slate-50/50 border-b border-slate-100 text-xs font-bold uppercase text-slate-400">
+                                            <thead className="bg-slate-50/80 border-b border-slate-200/80 text-xs sm:text-sm font-bold text-secondary">
                                                 <tr>
                                                     <th className="p-4 w-16">#</th>
                                                     <th className="p-4">Employee Details</th>
@@ -645,74 +974,60 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                                     <th className="p-4 text-right">Duration</th>
                                                 </tr>
                                             </thead>
-                                            <tbody className="divide-y divide-slate-50">
+                                            <tbody className="divide-y divide-slate-100">
                                                 {dayLogs.map((log, index) => {
                                                     const logUniqueKey = log.id || `${log.empId}-${log.date}-${log.clockIn}`;
-                                                    const isEditing = editingKey === logUniqueKey;
                                                     return (
                                                         <tr key={logUniqueKey} className="hover:bg-slate-50/50 transition-colors group">
-                                                            <td className="p-4 text-xs font-mono text-slate-400">{index + 1}</td>
+                                                            <td className="p-4 text-xs sm:text-sm font-mono text-muted">{index + 1}</td>
                                                             <td className="p-4">
                                                                 <div className="flex items-center gap-3">
                                                                     <div
-                                                                        className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 font-bold text-xs border border-slate-200 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
+                                                                        className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center text-muted font-bold text-sm border border-slate-200 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all shrink-0"
                                                                         onClick={() => log.avatar && window.open(log.avatar, '_blank')}
                                                                     >
                                                                         {log.avatar ? <img src={log.avatar} className="w-full h-full object-cover rounded-full" /> : log.empName.charAt(0)}
                                                                     </div>
                                                                     <div>
-                                                                        <div className="font-bold text-slate-700 text-sm">{log.empName}</div>
-                                                                        <div className="text-[10px] text-slate-400 font-mono">{log.empId}</div>
+                                                                        <div className="font-bold text-primary text-sm sm:text-base leading-snug">{log.empName}</div>
+                                                                        <div className="text-xs text-muted font-mono font-medium">{log.empId}</div>
                                                                     </div>
                                                                 </div>
                                                             </td>
-                                                            <td className="p-4 hidden sm:table-cell text-xs font-bold text-slate-500">
-                                                                <span className="bg-slate-50 px-2 py-1 rounded border border-slate-100">{log.department}</span>
+                                                            <td className="p-4 hidden sm:table-cell text-xs sm:text-sm font-semibold text-secondary">
+                                                                <span className="bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 text-secondary">{log.department}</span>
                                                             </td>
                                                             <td className="p-4 text-center">
-                                                                <span className="font-mono text-xs font-bold text-green-700 bg-green-50 px-2 py-1 rounded border border-green-100">{formatTime(log.clockIn)}</span>
+                                                                <span className="font-mono text-xs sm:text-sm font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded-lg border border-green-200/70 shadow-xs">{formatTime(log.clockIn)}</span>
                                                             </td>
                                                             <td className="p-4 text-center">
-                                                                {isEditing ? (
-                                                                    <div className="flex items-center justify-center gap-1">
-                                                                        <input
-                                                                            type="time"
-                                                                            className="border border-slate-300 rounded px-1 py-0.5 text-xs font-bold w-24 focus:outline-none focus:border-blue-500"
-                                                                            value={manualTime}
-                                                                            onChange={(e) => setManualTime(e.target.value)}
-                                                                        />
-                                                                        <button onClick={() => saveManualOut(log)} className="p-1 bg-green-100 text-green-700 rounded hover:bg-green-200" title="Save"><Save size={14} /></button>
-                                                                        <button onClick={cancelEditing} className="p-1 bg-red-100 text-red-700 rounded hover:bg-red-200" title="Cancel"><X size={14} /></button>
+                                                                {log.clockOut ? (
+                                                                    <div className="inline-flex items-center gap-1.5 group/out">
+                                                                        <span className="font-mono text-xs sm:text-sm font-bold text-rose-700 bg-rose-50/80 px-2.5 py-1 rounded-lg border border-rose-200/70 shadow-xs">{formatTime(log.clockOut)}</span>
+                                                                        {(currentUser?.role === 'ADMIN' || currentUser?.role === 'PC') && (
+                                                                            <button
+                                                                                onClick={() => openManualOutModal(log)}
+                                                                                className="opacity-0 group-hover/out:opacity-100 p-1 text-slate-400 hover:text-blue-600 transition-opacity"
+                                                                                title="Edit Shift Record"
+                                                                            >
+                                                                                <Clock size={14} />
+                                                                            </button>
+                                                                        )}
                                                                     </div>
                                                                 ) : (
-                                                                    log.clockOut ? (
-                                                                        <div className="inline-flex items-center gap-1 group/out">
-                                                                            <span className="font-mono text-xs font-bold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-100">{formatTime(log.clockOut)}</span>
-                                                                            {currentUser?.role === 'ADMIN' && (
-                                                                                <button
-                                                                                    onClick={() => startEditing(log)}
-                                                                                    className="opacity-0 group-hover/out:opacity-100 p-0.5 text-slate-400 hover:text-indigo-600 transition-opacity"
-                                                                                    title="Edit Clock Out"
-                                                                                >
-                                                                                    <Clock size={12} />
-                                                                                </button>
-                                                                            )}
-                                                                        </div>
-                                                                    ) : (
-                                                                        <button
-                                                                            onClick={() => startEditing(log)}
-                                                                            className="text-xs font-bold text-red-500 bg-red-50 border border-red-200 px-3 py-1 rounded-full animate-pulse hover:bg-red-100 transition-colors flex items-center gap-1 mx-auto"
-                                                                        >
-                                                                            <LogOut size={12} /> Manual Out
-                                                                        </button>
-                                                                    )
+                                                                    <button
+                                                                        onClick={() => openManualOutModal(log)}
+                                                                        className="text-xs sm:text-sm font-bold text-rose-700 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-xl hover:bg-rose-100 transition-all flex items-center gap-1.5 mx-auto shadow-xs active:scale-95 group"
+                                                                    >
+                                                                        <LogOut size={13} className="group-hover:translate-x-0.5 transition-transform" /> Manual Out
+                                                                    </button>
                                                                 )}
                                                             </td>
                                                             <td className="p-4 text-right">
                                                                 {log.durationHours ? (
-                                                                    <span className="font-bold text-slate-700 text-sm">{formatDecimalHours(log.durationHours)}</span>
+                                                                    <span className="font-bold text-primary text-sm sm:text-base">{formatDecimalHours(log.durationHours)}</span>
                                                                 ) : (
-                                                                    <span className="text-xs font-bold text-blue-500 bg-blue-50 px-2 py-1 rounded">Active</span>
+                                                                    <span className="text-xs sm:text-sm font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2.5 py-1 rounded-lg animate-pulse">Active</span>
                                                                 )}
                                                             </td>
                                                         </tr>
@@ -729,28 +1044,26 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                     {/* Premium Pagination Controls */}
                     {sortedDates.length > 0 && (
                         <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mt-8 bg-white/60 p-4 rounded-3xl border border-slate-100 backdrop-blur-sm shadow-sm animate-fade-in-up">
-                            <span className="text-xs font-semibold text-slate-500">
-                                Showing dates <span className="text-slate-800 font-extrabold">{Math.min(sortedDates.length, (currentPage - 1) * datesPerPage + 1)}</span> to{' '}
-                                <span className="text-slate-800 font-extrabold">{Math.min(sortedDates.length, currentPage * datesPerPage)}</span> of{' '}
-                                <span className="text-slate-800 font-extrabold">{sortedDates.length}</span> working days
+                            <span className="text-xs sm:text-sm font-medium text-secondary">
+                                Showing dates <span className="text-primary font-bold">{Math.min(sortedDates.length, (currentPage - 1) * datesPerPage + 1)}</span> to{' '}
+                                <span className="text-primary font-bold">{Math.min(sortedDates.length, currentPage * datesPerPage)}</span> of{' '}
+                                <span className="text-primary font-bold">{sortedDates.length}</span> working days
                             </span>
 
                             {totalPages > 1 && (
-                                <div className="flex items-center gap-1">
+                                <div className="flex items-center gap-1.5">
                                     {/* Previous Page */}
                                     <button
                                         onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
                                         disabled={currentPage === 1}
-                                        className={`p-2 rounded-xl border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer ${
-                                            currentPage === 1 ? 'cursor-not-allowed' : 'active:scale-95'
-                                        }`}
+                                        className="btn btn-secondary btn-icon-sm"
                                         title="Previous Page"
                                     >
                                         <ChevronLeft size={16} />
                                     </button>
 
                                     {/* Page Info */}
-                                    <span className="text-xs font-black text-slate-600 bg-white border border-slate-200 px-4 py-2 rounded-xl shadow-sm font-mono">
+                                    <span className="text-xs sm:text-sm font-bold text-secondary bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3.5 py-1.5 rounded-xl shadow-xs font-mono">
                                         {currentPage} / {totalPages}
                                     </span>
 
@@ -758,9 +1071,7 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                     <button
                                         onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
                                         disabled={currentPage === totalPages}
-                                        className={`p-2 rounded-xl border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer ${
-                                            currentPage === totalPages ? 'cursor-not-allowed' : 'active:scale-95'
-                                        }`}
+                                        className="btn btn-secondary btn-icon-sm"
                                         title="Next Page"
                                     >
                                         <ChevronRight size={16} />
@@ -772,11 +1083,298 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                 </div>
             </div>
 
+            {/* Professional Shift Logout & Edit Modal */}
+            {isShiftModalOpen && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200">
+                    <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95 duration-200 flex flex-col">
+                        {/* Modal Header */}
+                        <div className="p-6 bg-gradient-to-r from-blue-600 to-indigo-700 text-white flex justify-between items-center shrink-0">
+                            <div className="flex items-center gap-3.5">
+                                <div className="w-11 h-11 bg-white/15 backdrop-blur-sm rounded-2xl flex items-center justify-center border border-white/20 shadow-inner">
+                                    <Clock size={22} className="text-white" />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-black tracking-tight text-white leading-tight">
+                                        {isNewShiftMode ? 'Create Shift Log' : (modalLog?.clockOut ? 'Edit Shift Record' : 'Record Manual Logout')}
+                                    </h3>
+                                    <p className="text-xs text-blue-100/90 font-medium mt-0.5">
+                                        {isNewShiftMode ? 'Add a new shift entry for staff' : 'Set shift clock-out time and synchronize attendance'}
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setIsShiftModalOpen(false)}
+                                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/80 hover:text-white transition-colors"
+                                title="Close"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="p-6 sm:p-7 space-y-5 overflow-y-auto max-h-[75vh] custom-scrollbar">
+                            {/* Employee Selector (or card if editing) */}
+                            {isNewShiftMode ? (
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Staff Member</label>
+                                    <select
+                                        value={modalEmpId}
+                                        onChange={(e) => setModalEmpId(e.target.value)}
+                                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none cursor-pointer"
+                                    >
+                                        {employees.map(emp => (
+                                            <option key={emp.id} value={emp.id}>
+                                                {emp.name} ({emp.id}) — {emp.department}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            ) : (
+                                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-700 font-bold flex items-center justify-center text-sm border border-blue-200">
+                                            {modalLog?.avatar ? (
+                                                <img src={modalLog.avatar} className="w-full h-full object-cover rounded-full" />
+                                            ) : (
+                                                (modalLog?.empName || modalEmpId).charAt(0).toUpperCase()
+                                            )}
+                                        </div>
+                                        <div>
+                                            <div className="font-bold text-slate-800 text-sm">{modalLog?.empName || modalEmpId}</div>
+                                            <div className="text-xs text-slate-400 font-mono font-medium">{modalEmpId} · {modalLog?.department || 'General'}</div>
+                                        </div>
+                                    </div>
+                                    <span className="text-xs font-bold px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-slate-600 font-mono">
+                                        {modalDate}
+                                    </span>
+                                </div>
+                            )}
+
+                            {/* Date & In / Out Timing Fields */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                {isNewShiftMode && (
+                                    <div className="sm:col-span-2 space-y-1.5">
+                                        <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Shift Date</label>
+                                        <input
+                                            type="date"
+                                            value={modalDate}
+                                            onChange={(e) => setModalDate(e.target.value)}
+                                            className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                        />
+                                    </div>
+                                )}
+
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                                        <span className="w-2 h-2 rounded-full bg-green-500"></span> Clock In Time
+                                    </label>
+                                    <input
+                                        type="time"
+                                        value={modalClockIn}
+                                        onChange={(e) => setModalClockIn(e.target.value)}
+                                        disabled={!isNewShiftMode && currentUser?.role !== 'ADMIN' && currentUser?.role !== 'PC'}
+                                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500"
+                                    />
+                                </div>
+
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                                        <span className="w-2 h-2 rounded-full bg-rose-500"></span> Clock Out Time
+                                    </label>
+                                    <input
+                                        type="time"
+                                        value={modalClockOut}
+                                        onChange={(e) => setModalClockOut(e.target.value)}
+                                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Quick Presets */}
+                            <div className="space-y-2">
+                                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Quick Presets</div>
+                                <div className="flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => applyPreset('now')}
+                                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 border border-slate-200 rounded-xl text-xs font-semibold transition-all text-slate-700 flex items-center gap-1"
+                                    >
+                                        <Timer size={12} /> Now
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyPreset('standard')}
+                                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 border border-slate-200 rounded-xl text-xs font-semibold transition-all text-slate-700"
+                                    >
+                                        🏁 6:30 PM (End of Shift)
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyPreset('8hours')}
+                                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 border border-slate-200 rounded-xl text-xs font-semibold transition-all text-slate-700"
+                                    >
+                                        💼 8.0 Hours
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => applyPreset('fullday')}
+                                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 border border-slate-200 rounded-xl text-xs font-semibold transition-all text-slate-700"
+                                    >
+                                        🏢 7:00 PM
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Live Duration & Attendance Impact Box */}
+                            {modalShiftStats && (
+                                <div className={`p-4 rounded-2xl border transition-all ${
+                                    modalShiftStats.isValid ? 'bg-gradient-to-br from-slate-50 to-blue-50/30 border-blue-100' : 'bg-rose-50 border-rose-200 text-rose-700'
+                                }`}>
+                                    {modalShiftStats.isValid ? (
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                            <div>
+                                                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Shift Duration</div>
+                                                <div className="text-xl font-black text-slate-800 flex items-center gap-2 mt-0.5">
+                                                    <Sparkles size={16} className="text-blue-600" /> {modalShiftStats.formatted}
+                                                </div>
+                                            </div>
+                                            <div className="shrink-0">
+                                                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider border shadow-2xs ${
+                                                    modalShiftStats.attendanceVal === 1 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                                    modalShiftStats.attendanceVal === 0.75 ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                                    modalShiftStats.attendanceVal === 0.5 ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                                                    modalShiftStats.attendanceVal === 0.25 ? 'bg-orange-50 text-orange-700 border-orange-200' :
+                                                    'bg-rose-50 text-rose-700 border-rose-200'
+                                                }`}>
+                                                    <CheckCircle2 size={12} /> {modalShiftStats.valLabel}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-center gap-2 text-xs font-bold">
+                                            <AlertTriangle size={15} /> {modalShiftStats.error}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Reason / Notes */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Note / Reason (Optional)</label>
+                                <input
+                                    type="text"
+                                    placeholder="e.g. Regular shift end, forgotten punch, overtime..."
+                                    value={modalNotes}
+                                    onChange={(e) => setModalNotes(e.target.value)}
+                                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                />
+                            </div>
+
+                            {/* Modal Error */}
+                            {modalError && (
+                                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs font-bold text-rose-700 flex items-center gap-2">
+                                    <AlertTriangle size={14} className="shrink-0" />
+                                    {modalError}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="p-5 bg-slate-50 border-t border-slate-100 flex justify-end items-center gap-3 shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setIsShiftModalOpen(false)}
+                                disabled={isSavingShift}
+                                className="btn btn-secondary px-5 py-2.5 text-sm"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={saveShiftModal}
+                                disabled={isSavingShift || (modalShiftStats && !modalShiftStats.isValid)}
+                                className="btn btn-primary px-6 py-2.5 text-sm flex items-center gap-2 shadow-lg shadow-blue-500/20"
+                            >
+                                {isSavingShift ? (
+                                    <>
+                                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                        Saving...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Save size={16} /> Save Shift Log
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Professional Analysis Modal */}
             {
                 showAnalysis && (
-                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300">
-                        <div className="bg-slate-50 w-full max-w-5xl h-full max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-white/50 animate-in slide-in-from-bottom-8 duration-500">
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300 analysis-modal-parent">
+                        <style>{`
+                            @media print {
+                                .analysis-modal-parent {
+                                    position: absolute !important;
+                                    left: 0 !important;
+                                    top: 0 !important;
+                                    width: 100% !important;
+                                    height: auto !important;
+                                    min-height: 100% !important;
+                                    background: white !important;
+                                    z-index: 99999 !important;
+                                    padding: 0 !important;
+                                    margin: 0 !important;
+                                    display: block !important;
+                                    overflow: visible !important;
+                                }
+                                .analysis-modal-card {
+                                    position: relative !important;
+                                    width: 100% !important;
+                                    max-width: 100% !important;
+                                    height: auto !important;
+                                    max-height: none !important;
+                                    background: white !important;
+                                    border: none !important;
+                                    border-radius: 0 !important;
+                                    box-shadow: none !important;
+                                    display: block !important;
+                                    overflow: visible !important;
+                                    margin: 0 !important;
+                                    padding: 0 !important;
+                                }
+                                .analysis-modal-body {
+                                    overflow: visible !important;
+                                    height: auto !important;
+                                    max-height: none !important;
+                                    background: white !important;
+                                    padding: 0 !important;
+                                    margin: 0 !important;
+                                    display: block !important;
+                                }
+                                .analysis-modal-controls,
+                                .analysis-modal-close-btn,
+                                .analysis-modal-footer-buttons {
+                                    display: none !important;
+                                }
+                                .bg-white.p-6.rounded-\\[2rem\\] {
+                                    page-break-inside: avoid !important;
+                                    break-inside: avoid !important;
+                                }
+                                table {
+                                    page-break-inside: auto !important;
+                                    break-inside: auto !important;
+                                }
+                                tr {
+                                    page-break-inside: avoid !important;
+                                    break-inside: avoid !important;
+                                }
+                            }
+                        `}</style>
+                        <div className="bg-slate-50 w-full max-w-5xl h-full max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-white/50 animate-in slide-in-from-bottom-8 duration-500 analysis-modal-card">
                             {/* Modal Header */}
                             <div className="p-6 sm:p-8 bg-white border-b border-slate-200 flex justify-between items-center shrink-0">
                                 <div className="flex items-center gap-4">
@@ -784,50 +1382,58 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                         <BarChart3 size={24} />
                                     </div>
                                     <div>
-                                        <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Work Analysis Report</h3>
-                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Employee Performance & Attendance Audit</p>
-                                    </div>
-                                </div>
-                                <button onClick={() => setShowAnalysis(false)} className="w-10 h-10 rounded-xl hover:bg-slate-100 flex items-center justify-center text-slate-400 transition-colors">
-                                    <X size={20} />
-                                </button>
+                                         <h3 className="text-xl font-bold text-slate-800 tracking-tight">Work Analysis Report</h3>
+                                         <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-1">
+                                             <p className="text-xs sm:text-sm font-medium text-slate-500">Employee performance & attendance audit</p>
+                                             {analysisFilters.start && analysisFilters.end && (
+                                                 <span className="hidden print:inline-block text-xs font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded">
+                                                     Period: {analysisFilters.start} to {analysisFilters.end}
+                                                 </span>
+                                             )}
+                                         </div>
+                                     </div>
+                                 </div>
+                                 <button onClick={() => setShowAnalysis(false)} className="btn btn-ghost btn-icon analysis-modal-close-btn" title="Close">
+                                     <X size={20} />
+                                 </button>
                             </div>
 
                             {/* Analysis Controls */}
-                            <div className="p-6 sm:p-8 bg-white/50 border-b border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-6 shrink-0">
+                            <div className="p-6 sm:p-8 bg-white/50 border-b border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-6 shrink-0 analysis-modal-controls">
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Staff Member</label>
+                                    <label className="text-xs sm:text-sm font-semibold text-slate-600">Select staff member</label>
                                     <select
                                         value={analysisFilters.empId}
                                         onChange={e => setAnalysisFilters(prev => ({ ...prev, empId: e.target.value }))}
-                                        className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 focus:outline-none appearance-none cursor-pointer"
+                                        className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm sm:text-base font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 focus:outline-none appearance-none cursor-pointer"
                                     >
                                         <option value="">Choose Employee...</option>
+                                        <option value="ALL">All Team Members (Summary)</option>
                                         {employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.id})</option>)}
                                     </select>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">From Date</label>
+                                    <label className="text-xs sm:text-sm font-semibold text-slate-600">From date</label>
                                     <input
                                         type="date"
                                         value={analysisFilters.start}
                                         onChange={e => setAnalysisFilters(prev => ({ ...prev, start: e.target.value }))}
-                                        className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                                        className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm sm:text-base font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">To Date</label>
+                                    <label className="text-xs sm:text-sm font-semibold text-slate-600">To date</label>
                                     <input
                                         type="date"
                                         value={analysisFilters.end}
                                         onChange={e => setAnalysisFilters(prev => ({ ...prev, end: e.target.value }))}
-                                        className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
+                                        className="w-full p-4 bg-white border border-slate-200 rounded-2xl text-sm sm:text-base font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 focus:outline-none"
                                     />
                                 </div>
                             </div>
 
                             {/* Report Body */}
-                            <div className="flex-1 overflow-y-auto p-6 sm:p-8 custom-scrollbar bg-slate-50/30">
+                            <div className="flex-1 overflow-y-auto p-6 sm:p-8 custom-scrollbar bg-slate-50/30 analysis-modal-body">
                                 {analysisReport ? (
                                     <div className="space-y-8">
                                         {/* Metrics Rows */}
@@ -837,45 +1443,81 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                                 <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-4 relative z-10">
                                                     <Clock size={20} />
                                                 </div>
-                                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 relative z-10">Total Hours Working</div>
-                                                <div className="text-3xl font-black text-slate-800 relative z-10">{formatDecimalHours(analysisReport.totalHours)}</div>
-                                                <p className="text-[9px] font-bold text-slate-300 mt-2 relative z-10">SUM OF ALL VERIFIED LOGS</p>
+                                                <div className="text-xs font-semibold text-slate-500 mb-1 relative z-10">Total hours working</div>
+                                                <div className="text-3xl font-black text-slate-800 relative z-10">
+                                                    {formatDecimalHours(analysisReport.isTeamSummary ? (analysisReport as any).teamTotalHours : analysisReport.totalHours)}
+                                                </div>
+                                                <p className="text-xs font-medium text-slate-400 mt-2 relative z-10">Sum of all verified logs</p>
                                             </div>
                                             <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm relative overflow-hidden group">
                                                 <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-50/50 rounded-full -mr-12 -mt-12 transition-transform group-hover:scale-110"></div>
                                                 <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mb-4 relative z-10">
                                                     <CalendarDays size={20} />
                                                 </div>
-                                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 relative z-10">Total Days Worked</div>
-                                                <div className="text-3xl font-black text-slate-800 relative z-10">{analysisReport.workingDays} <span className="text-sm text-slate-300 font-bold uppercase">Days</span></div>
-                                                <p className="text-[9px] font-bold text-slate-300 mt-2 relative z-10">BASED ON LOGGED PRESENCE</p>
+                                                <div className="text-xs font-semibold text-slate-500 mb-1 relative z-10">Total days worked</div>
+                                                <div className="text-3xl font-black text-slate-800 relative z-10">
+                                                    {analysisReport.isTeamSummary ? (analysisReport as any).teamTotalDays : analysisReport.workingDays} <span className="text-sm text-slate-400 font-semibold">days</span>
+                                                </div>
+                                                <p className="text-xs font-medium text-slate-400 mt-2 relative z-10">Based on logged presence</p>
                                             </div>
                                             <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm relative overflow-hidden group">
                                                 <div className="absolute top-0 right-0 w-24 h-24 bg-amber-50/50 rounded-full -mr-12 -mt-12 transition-transform group-hover:scale-110"></div>
                                                 <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center mb-4 relative z-10">
                                                     <Clock size={20} />
                                                 </div>
-                                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 relative z-10">Late Logins</div>
-                                                <div className="text-3xl font-black text-slate-800 relative z-10">{analysisReport.lateCount} <span className="text-sm text-slate-300 font-bold uppercase">Days</span></div>
-                                                <p className="text-[9px] font-bold text-slate-300 mt-2 relative z-10">LOGINS AFTER 10:15 AM</p>
+                                                <div className="text-xs font-semibold text-slate-500 mb-1 relative z-10">Late logins</div>
+                                                <div className="text-3xl font-black text-slate-800 relative z-10">
+                                                    {analysisReport.isTeamSummary ? (analysisReport as any).teamTotalLate : analysisReport.lateCount} <span className="text-sm text-slate-400 font-semibold">days</span>
+                                                </div>
+                                                <p className="text-xs font-medium text-slate-400 mt-2 relative z-10">Logins after 10:15 AM</p>
                                             </div>
                                             <div className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm relative overflow-hidden group">
-                                                <div className={`absolute top-0 right-0 w-32 h-32 bg-${analysisReport.tierColor}-50/50 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110`}></div>
-                                                <div className={`w-10 h-10 bg-${analysisReport.tierColor}-50 text-${analysisReport.tierColor}-600 rounded-xl flex items-center justify-center mb-4 relative z-10`}>
+                                                <div className={`absolute top-0 right-0 w-32 h-32 bg-${analysisReport.isTeamSummary ? 'indigo' : analysisReport.tierColor}-50/50 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-110`}></div>
+                                                <div className={`w-10 h-10 bg-${analysisReport.isTeamSummary ? 'indigo' : analysisReport.tierColor}-50 text-${analysisReport.isTeamSummary ? 'indigo' : analysisReport.tierColor}-600 rounded-xl flex items-center justify-center mb-4 relative z-10`}>
                                                     <TrendingUp size={20} />
                                                 </div>
-                                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 relative z-10">Performance Tier</div>
-                                                <div className={`text-xl font-black text-${analysisReport.tierColor}-600 relative z-10 truncate`}>{analysisReport.tier}</div>
-                                                <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-tighter relative z-10">{analysisReport.emp?.name}</p>
+                                                <div className="text-xs font-semibold text-slate-500 mb-1 relative z-10">
+                                                    {analysisReport.isTeamSummary ? 'Team strength' : 'Performance tier'}
+                                                </div>
+                                                <div className={`text-xl font-black text-${analysisReport.isTeamSummary ? 'indigo' : analysisReport.tierColor}-600 relative z-10 truncate`}>
+                                                    {analysisReport.isTeamSummary ? `${(analysisReport as any).items.length} Members` : analysisReport.tier}
+                                                </div>
+                                                <p className="text-xs font-medium text-slate-500 mt-1 relative z-10">
+                                                    {analysisReport.isTeamSummary ? 'Active roster' : analysisReport.emp?.name}
+                                                </p>
                                             </div>
-                                            <div className={`p-6 rounded-[2rem] border shadow-sm transition-all relative overflow-hidden group ${analysisReport.missedCount > 0 ? 'bg-rose-50 border-rose-100' : 'bg-white border-slate-100'}`}>
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 relative z-10 ${analysisReport.missedCount > 0 ? 'bg-rose-100 text-rose-600' : 'bg-slate-50 text-slate-300'}`}>
+                                            <div className={`p-6 rounded-[2rem] border shadow-sm transition-all relative overflow-hidden group ${
+                                                (analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount) > 0 
+                                                    ? 'bg-rose-50 border-rose-100' 
+                                                    : 'bg-white border-slate-100'
+                                            }`}>
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 relative z-10 ${
+                                                    (analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount) > 0 
+                                                        ? 'bg-rose-100 text-rose-600' 
+                                                        : 'bg-slate-50 text-slate-300'
+                                                }`}>
                                                     <AlertTriangle size={20} />
                                                 </div>
-                                                <div className={`text-[10px] font-black uppercase tracking-widest mb-1 relative z-10 ${analysisReport.missedCount > 0 ? 'text-rose-400' : 'text-slate-400'}`}>Audit Red Flags</div>
-                                                <div className={`text-3xl font-black relative z-10 ${analysisReport.missedCount > 0 ? 'text-rose-600' : 'text-slate-200'}`}>{analysisReport.missedCount}</div>
-                                                <p className={`text-[9px] font-bold mt-2 relative z-10 ${analysisReport.missedCount > 0 ? 'text-rose-400' : 'text-slate-300'}`}>
-                                                    {analysisReport.missedCount > 0 ? 'ACTION REQUIRED: MISSING LOGOUTS' : 'DATA INTEGRITY: 100% SECURE'}
+                                                <div className={`text-xs font-bold mb-1 relative z-10 ${
+                                                    (analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount) > 0 
+                                                        ? 'text-rose-500' 
+                                                        : 'text-slate-500'
+                                                }`}>Audit red flags</div>
+                                                <div className={`text-3xl font-black relative z-10 ${
+                                                    (analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount) > 0 
+                                                        ? 'text-rose-600' 
+                                                        : 'text-slate-300'
+                                                }`}>
+                                                    {analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount}
+                                                </div>
+                                                <p className={`text-xs font-semibold mt-2 relative z-10 ${
+                                                    (analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount) > 0 
+                                                        ? 'text-rose-500' 
+                                                        : 'text-slate-400'
+                                                }`}>
+                                                    {(analysisReport.isTeamSummary ? (analysisReport as any).teamTotalMissed : analysisReport.missedCount) > 0 
+                                                        ? 'Action required: Missing logouts' 
+                                                        : 'Data integrity: 100% secure'}
                                                 </p>
                                             </div>
                                         </div>
@@ -883,64 +1525,131 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                         {/* Detailed Breakdown Table */}
                                         <div className="bg-white rounded-[2rem] border border-slate-200 overflow-hidden shadow-sm">
                                             <div className="p-6 border-b border-slate-50 flex justify-between items-center">
-                                                <span className="text-xs font-black text-slate-800 uppercase tracking-widest">Entry Audit Trail</span>
-                                                <span className="text-[10px] font-bold text-slate-400 uppercase">{analysisReport.items.length} records found</span>
+                                                <span className="text-xs sm:text-sm font-bold text-slate-800">
+                                                    {analysisReport.isTeamSummary ? 'Team Performance Summary' : 'Entry Audit Trail'}
+                                                </span>
+                                                <span className="text-xs font-semibold text-slate-500">
+                                                    {analysisReport.isTeamSummary 
+                                                        ? `${(analysisReport as any).items.length} members analyzed`
+                                                        : `${analysisReport.items.length} records found`}
+                                                </span>
                                             </div>
                                             <div className="overflow-x-auto">
-                                                <table className="w-full text-left">
-                                                    <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-[0.1em]">
-                                                        <tr>
-                                                            <th className="px-6 py-4">Date</th>
-                                                            <th className="px-6 py-4">Status</th>
-                                                            <th className="px-6 py-4 text-center">Clock In</th>
-                                                            <th className="px-6 py-4 text-center">Clock Out</th>
-                                                            <th className="px-6 py-4 text-right">Hours</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-slate-50">
-                                                        {analysisReport.items.map((it, idx) => (
-                                                            <tr key={idx} className={`hover:bg-slate-50/50 transition-colors ${it.isMissed ? 'bg-rose-50/20' : ''}`}>
-                                                                <td className="px-6 py-5">
-                                                                    <div className="font-bold text-slate-700 text-sm">{format(new Date(it.date), 'EEE, MMM d, yyyy')}</div>
-                                                                </td>
-                                                                <td className="px-6 py-5">
-                                                                    <div className="flex flex-col gap-1.5">
-                                                                        {it.isMissed ? (
-                                                                            <span className="px-3 py-1 bg-rose-100 text-rose-600 rounded-lg text-[9px] font-black uppercase tracking-widest border border-rose-200 flex items-center gap-1 w-fit">
-                                                                                <AlertTriangle size={10} /> Missed Logout
+                                                {analysisReport.isTeamSummary ? (
+                                                    <table className="w-full text-left print-table">
+                                                        <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
+                                                            <tr>
+                                                                <th className="px-6 py-4">Staff Member</th>
+                                                                <th className="px-6 py-4 text-center">Days Worked</th>
+                                                                <th className="px-6 py-4 text-center">Total Hours</th>
+                                                                <th className="px-6 py-4 text-center">Late Logins</th>
+                                                                <th className="px-6 py-4 text-center">Audit Flags</th>
+                                                                <th className="px-6 py-4 text-right">Performance Tier</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-slate-50">
+                                                            {(analysisReport as any).items.map((it: any, idx: number) => (
+                                                                <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                                    <td className="px-6 py-5">
+                                                                        <div className="flex items-center gap-3">
+                                                                            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 text-xs font-bold font-mono">
+                                                                                {it.emp?.name ? it.emp.name.split(' ').map((n: string) => n[0]).join('').substring(0, 2).toUpperCase() : 'EE'}
+                                                                            </div>
+                                                                            <div>
+                                                                                <div className="font-bold text-slate-800 text-sm sm:text-base">{it.emp?.name}</div>
+                                                                                <div className="text-xs text-slate-500 font-medium">{it.emp?.id} · {it.emp?.department}</div>
+                                                                            </div>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-center font-bold text-slate-600 text-sm">
+                                                                        {it.workingDays}
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-center font-black text-slate-800 text-sm sm:text-base">
+                                                                        {formatDecimalHours(it.totalHours)}
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-center font-bold text-slate-600 text-sm">
+                                                                        {it.lateCount > 0 ? (
+                                                                            <span className="text-amber-700 bg-amber-50 px-2.5 py-1 rounded text-xs font-bold">
+                                                                                {it.lateCount} days
                                                                             </span>
                                                                         ) : (
-                                                                            <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-lg text-[9px] font-black uppercase tracking-widest border border-emerald-100 flex items-center gap-1 w-fit">
-                                                                                Verified Entry
-                                                                            </span>
+                                                                            <span className="text-slate-400">0</span>
                                                                         )}
-                                                                        <div className="flex gap-1">
-                                                                            {it.isLate && <span className="px-1.5 py-0.5 bg-amber-50 text-amber-600 border border-amber-100 rounded text-[8px] font-bold uppercase">Late In</span>}
-                                                                            {it.isEarlyOut && <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded text-[8px] font-bold uppercase">Early Exit</span>}
-                                                                        </div>
-                                                                    </div>
-                                                                </td>
-                                                                <td className="px-6 py-5 text-center">
-                                                                    <span className="font-mono text-xs font-bold text-slate-500">{formatTime(it.clockIn)}</span>
-                                                                </td>
-                                                                <td className="px-6 py-5 text-center">
-                                                                    {it.isMissed ? (
-                                                                        <span className="text-rose-300 font-black italic text-[10px]">INCOMPLETE</span>
-                                                                    ) : (
-                                                                        <span className="font-mono text-xs font-bold text-slate-500">{formatTime(it.clockOut)}</span>
-                                                                    )}
-                                                                </td>
-                                                                <td className="px-6 py-5 text-right font-black text-slate-700">
-                                                                    {it.isMissed ? (
-                                                                        <span className="text-slate-300">0.00</span>
-                                                                    ) : (
-                                                                        formatDecimalHours(it.durationHours)
-                                                                    )}
-                                                                </td>
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-center font-bold text-slate-600 text-sm">
+                                                                        {it.missedCount > 0 ? (
+                                                                            <span className="text-rose-700 bg-rose-50 px-2.5 py-1 rounded text-xs font-bold">
+                                                                                {it.missedCount} flags
+                                                                            </span>
+                                                                        ) : (
+                                                                            <span className="text-slate-400">0</span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-right font-black">
+                                                                        <span className={`px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-${it.tierColor}-50 text-${it.tierColor}-600 border border-${it.tierColor}-100`}>
+                                                                            {it.tier}
+                                                                        </span>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                ) : (
+                                                    <table className="w-full text-left print-table">
+                                                        <thead className="bg-slate-50 text-xs font-semibold text-slate-600">
+                                                            <tr>
+                                                                <th className="px-6 py-4">Date</th>
+                                                                <th className="px-6 py-4">Status</th>
+                                                                <th className="px-6 py-4 text-center">Clock In</th>
+                                                                <th className="px-6 py-4 text-center">Clock Out</th>
+                                                                <th className="px-6 py-4 text-right">Hours</th>
                                                             </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-slate-50">
+                                                            {analysisReport.items.map((it, idx) => (
+                                                                <tr key={idx} className={`hover:bg-slate-50/50 transition-colors ${it.isMissed ? 'bg-rose-50/20' : ''}`}>
+                                                                    <td className="px-6 py-5">
+                                                                        <div className="font-bold text-slate-700 text-sm sm:text-base">{format(new Date(it.date), 'EEE, MMM d, yyyy')}</div>
+                                                                    </td>
+                                                                    <td className="px-6 py-5">
+                                                                        <div className="flex flex-col gap-1.5">
+                                                                            {it.isMissed ? (
+                                                                                <span className="px-3 py-1 bg-rose-100 text-rose-700 rounded-lg text-xs font-semibold border border-rose-200 flex items-center gap-1.5 w-fit">
+                                                                                    <AlertTriangle size={12} /> Missed logout
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-semibold border border-emerald-100 flex items-center gap-1.5 w-fit">
+                                                                                    Verified entry
+                                                                                </span>
+                                                                            )}
+                                                                            <div className="flex gap-1.5 mt-0.5">
+                                                                                {it.isLate && <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-100 rounded text-xs font-bold uppercase">Late In</span>}
+                                                                                {it.isEarlyOut && <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded text-xs font-bold uppercase">Early Exit</span>}
+                                                                            </div>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-center">
+                                                                        <span className="font-mono text-xs sm:text-sm font-bold text-slate-600">{formatTime(it.clockIn)}</span>
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-center">
+                                                                        {it.isMissed ? (
+                                                                            <span className="text-rose-400 font-bold italic text-xs">Incomplete</span>
+                                                                        ) : (
+                                                                            <span className="font-mono text-xs sm:text-sm font-bold text-slate-600">{formatTime(it.clockOut)}</span>
+                                                                        )}
+                                                                    </td>
+                                                                    <td className="px-6 py-5 text-right font-black text-slate-700 text-sm sm:text-base">
+                                                                        {it.isMissed ? (
+                                                                            <span className="text-slate-400">0.00</span>
+                                                                        ) : (
+                                                                            formatDecimalHours(it.durationHours)
+                                                                        )}
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -950,23 +1659,23 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                                             <UserIcon size={40} className="text-slate-200" />
                                         </div>
                                         <h4 className="text-lg font-black text-slate-800 mb-2">Configure Analysis Parameters</h4>
-                                        <p className="text-sm text-slate-400 max-w-sm font-medium">Please select a team member and define a date range to generate a professional performance audit report.</p>
+                                        <p className="text-sm sm:text-base text-slate-500 max-w-sm font-medium">Please select a team member and define a date range to generate a professional performance audit report.</p>
                                     </div>
                                 )}
                             </div>
 
                             <div className="p-8 bg-white border-t border-slate-200 flex justify-between items-center shrink-0">
-                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest italic flex items-center gap-2">
+                                <div className="text-xs font-medium text-slate-500 italic flex items-center gap-2">
                                     <AlertTriangle size={14} className="text-amber-500" /> This report contains internal audit data strictly for administrative use.
                                 </div>
-                                <div className="flex gap-3">
+                                <div className="flex gap-3 analysis-modal-footer-buttons">
                                     <button
                                         onClick={() => window.print()}
-                                        className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all active:scale-95 shadow-lg shadow-indigo-200 flex items-center gap-2"
+                                        className="btn btn-primary"
                                     >
                                         <Download size={18} /> Download / Print
                                     </button>
-                                    <button onClick={() => setShowAnalysis(false)} className="px-8 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-black text-sm uppercase tracking-widest transition-all active:scale-95">Close</button>
+                                    <button onClick={() => setShowAnalysis(false)} className="btn btn-secondary">Close</button>
                                 </div>
                             </div>
                         </div>

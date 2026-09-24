@@ -96,9 +96,9 @@ const EditModal: React.FC<{
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-xl bg-indigo-100 text-indigo-600"><BookOpen size={18} /></div>
-            <h2 className="text-base font-bold text-slate-800">{initial?.id ? 'Edit Playbook Entry' : 'New Playbook Entry'}</h2>
+            <h2 className="text-base font-bold text-primary">{initial?.id ? 'Edit Playbook Entry' : 'New Playbook Entry'}</h2>
           </div>
-          <button onClick={onClose} className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors"><X size={17} /></button>
+          <button onClick={onClose} className="p-2 rounded-xl text-muted hover:text-primary hover:bg-slate-200 transition-colors"><X size={17} /></button>
         </div>
 
         {/* Body */}
@@ -106,17 +106,17 @@ const EditModal: React.FC<{
 
           {/* Assign type toggle */}
           <div>
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Assign To *</label>
+            <label className="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Assign To *</label>
             <div className="flex gap-2">
               <button
                 onClick={() => setAssignType('designation')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors ${assignType === 'designation' ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm' : 'bg-white border-slate-300 text-slate-600 hover:border-slate-400'}`}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors ${assignType === 'designation' ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm' : 'bg-white border-slate-300 text-secondary hover:border-slate-400'}`}
               >
                 <Users size={15} /> Designation
               </button>
               <button
                 onClick={() => setAssignType('user')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors ${assignType === 'user' ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm' : 'bg-white border-slate-300 text-slate-600 hover:border-slate-400'}`}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors ${assignType === 'user' ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm' : 'bg-white border-slate-300 text-secondary hover:border-slate-400'}`}
               >
                 <User size={15} /> Specific Employee
               </button>
@@ -126,13 +126,13 @@ const EditModal: React.FC<{
           {/* Designation picker */}
           {assignType === 'designation' && (
             <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Designation *</label>
+              <label className="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Designation *</label>
               <input
                 list="desig-list"
                 value={designation}
                 onChange={e => setDesignation(e.target.value)}
                 placeholder="e.g. Facilities Manager"
-                className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-sm"
+                className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-primary placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-sm"
               />
               <datalist id="desig-list">
                 {existingDesignations.map(d => <option key={d} value={d} />)}
@@ -143,26 +143,26 @@ const EditModal: React.FC<{
           {/* Employee picker */}
           {assignType === 'user' && (
             <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Select Employee *</label>
+              <label className="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Select Employee *</label>
               {selectedEmp && (
                 <div className="flex items-center gap-3 mb-2 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-xl">
                   <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
                     {selectedEmp.name.charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-slate-800">{selectedEmp.name}</p>
-                    <p className="text-xs text-indigo-600">{selectedEmp.designation ?? selectedEmp.department}</p>
+                    <p className="text-sm font-semibold text-primary">{selectedEmp.name}</p>
+                    <p className="text-xs text-link">{selectedEmp.designation ?? selectedEmp.department}</p>
                   </div>
-                  <button onClick={() => setUserId('')} className="ml-auto text-slate-400 hover:text-slate-700"><X size={14} /></button>
+                  <button onClick={() => setUserId('')} className="ml-auto text-muted hover:text-primary"><X size={14} /></button>
                 </div>
               )}
               <div className="relative mb-2">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
                 <input
                   value={empSearch}
                   onChange={e => setEmpSearch(e.target.value)}
                   placeholder="Search employee…"
-                  className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
+                  className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2 text-sm text-primary placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20"
                 />
               </div>
               <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 divide-y divide-slate-100">
@@ -172,12 +172,12 @@ const EditModal: React.FC<{
                     onClick={() => { setUserId(emp.id); setEmpSearch(''); }}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-slate-50 transition-colors ${userId === emp.id ? 'bg-indigo-50' : ''}`}
                   >
-                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${userId === emp.id ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${userId === emp.id ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-secondary'}`}>
                       {emp.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <p className="text-sm text-slate-800 font-medium">{emp.name}</p>
-                      <p className="text-xs text-slate-500">{emp.designation ?? emp.department ?? '—'}</p>
+                      <p className="text-sm text-primary font-medium">{emp.name}</p>
+                      <p className="text-xs text-secondary">{emp.designation ?? emp.department ?? '—'}</p>
                     </div>
                   </button>
                 ))}
@@ -187,21 +187,21 @@ const EditModal: React.FC<{
 
           {/* Responsibilities — paragraph */}
           <div>
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Key Responsibilities *</label>
-            <p className="text-xs text-slate-500 mb-2">Write as a paragraph or bullet points. Press Enter for new lines.</p>
+            <label className="block text-xs font-semibold text-muted uppercase tracking-wider mb-2">Key Responsibilities *</label>
+            <p className="text-xs text-muted mb-2">Write as a paragraph or bullet points. Press Enter for new lines.</p>
             <textarea
               value={responsibilities}
               onChange={e => setResp(e.target.value)}
               placeholder="Describe the key responsibilities, duties, and expectations for this role..."
               rows={6}
-              className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-sm leading-relaxed resize-none"
+              className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-primary placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-sm leading-relaxed resize-none"
             />
           </div>
         </div>
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-          <button onClick={onClose} className="px-5 py-2 rounded-xl border border-slate-300 text-slate-600 hover:bg-slate-100 text-sm font-medium transition-colors bg-white">Cancel</button>
+          <button onClick={onClose} className="px-5 py-2 rounded-xl border border-slate-300 text-secondary hover:bg-slate-100 text-sm font-medium transition-colors bg-white">Cancel</button>
           <button
             onClick={handleSave}
             disabled={!responsibilities.trim() || (assignType === 'user' ? !userId : !designation.trim())}
@@ -291,17 +291,17 @@ const RolePlaybookCard: React.FC<{
        {/* Body */}
        <div className="p-4 flex flex-col gap-2.5 flex-1 bg-slate-50">
           {respList.length === 0 ? (
-             <div className="text-slate-400 text-sm italic py-4 text-center">No specific responsibilities listed.</div>
+             <div className="text-muted text-sm italic py-4 text-center">No specific responsibilities listed.</div>
           ) : (
             respList.map((resp, i) => (
               <div key={i} className="bg-white border border-slate-200 rounded-xl p-3.5 flex gap-3.5 items-start shadow-sm hover:border-slate-300 transition-colors group/item">
                  <div className={`w-2 h-2 rounded-full mt-2 shrink-0 shadow-sm ${color.bg}`} />
-                 <p className="text-slate-700 text-sm leading-relaxed">{resp}</p>
+                 <p className="text-primary text-sm leading-relaxed">{resp}</p>
               </div>
             ))
           )}
           <div className="mt-auto pt-4 flex justify-end">
-            <p className="text-[10px] text-slate-400">
+            <p className="text-[10px] text-muted">
               Last updated: {new Date(entry.updatedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
             </p>
           </div>
@@ -417,9 +417,9 @@ export const Playbook: React.FC<PlaybookProps> = ({ currentUser, employees }) =>
         <div>
           <div className="flex items-center gap-3 mb-1">
             <div className="p-2.5 rounded-xl bg-indigo-100 text-indigo-600"><BookOpen size={22} /></div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Playbook</h1>
+            <h1 className="text-2xl font-black text-primary tracking-tight">Playbook</h1>
           </div>
-          <p className="text-sm text-slate-500 ml-12">
+          <p className="text-sm text-secondary ml-12">
             {isAdmin
               ? 'Assign role guides to specific employees or designations.'
               : `Your role guide — responsibilities assigned to you or your designation.`}
@@ -438,28 +438,28 @@ export const Playbook: React.FC<PlaybookProps> = ({ currentUser, employees }) =>
       {/* Search */}
       {isAdmin && (
         <div className="relative mb-6 max-w-sm">
-          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search by employee, designation or role…"
-            className="w-full bg-white border border-slate-300 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 shadow-sm"
+            className="w-full bg-white border border-slate-300 rounded-xl pl-10 pr-4 py-2.5 text-sm text-primary placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 shadow-sm"
           />
         </div>
       )}
 
       {/* Content */}
       {loading ? (
-        <div className="flex items-center justify-center py-24 text-slate-500 gap-3">
+        <div className="flex items-center justify-center py-24 text-muted gap-3">
           <Loader2 size={22} className="animate-spin" /> Loading playbook…
         </div>
       ) : displayed.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-24 text-center">
-          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm mb-4"><BookOpen size={36} className="text-slate-300" /></div>
-          <p className="text-slate-800 font-semibold text-lg">
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm mb-4"><BookOpen size={36} className="text-muted" /></div>
+          <p className="text-primary font-semibold text-lg">
             {isAdmin ? 'No playbook entries yet.' : 'No playbook found for you.'}
           </p>
-          <p className="text-slate-500 text-sm mt-1">
+          <p className="text-secondary text-sm mt-1">
             {isAdmin ? 'Click "Add Entry" to create the first one.' : 'Ask your admin to assign one.'}
           </p>
         </div>
@@ -491,7 +491,7 @@ export const Playbook: React.FC<PlaybookProps> = ({ currentUser, employees }) =>
       )}
 
       {saving && (
-        <div className="fixed bottom-6 right-6 bg-white border border-slate-200 rounded-xl px-5 py-3 text-sm text-slate-800 flex items-center gap-2 shadow-xl z-50">
+        <div className="fixed bottom-6 right-6 bg-white border border-slate-200 rounded-xl px-5 py-3 text-sm text-primary flex items-center gap-2 shadow-xl z-50">
           <Loader2 size={16} className="animate-spin text-indigo-500" /> Saving…
         </div>
       )}

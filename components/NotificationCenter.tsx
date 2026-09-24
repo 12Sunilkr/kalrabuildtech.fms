@@ -213,24 +213,24 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       <div className={`flex flex-col md:flex-row justify-between items-start md:items-end gap-4 ${isOverlay ? 'p-6 border-b' : 'mb-8'}`}>
         <div>
            {onNavigate && !isOverlay && (
-              <button onClick={() => onNavigate((currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)} className="flex items-center gap-1 text-slate-400 hover:text-slate-800 text-xs font-bold uppercase mb-2">
+              <button onClick={() => onNavigate((currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)} className="flex items-center gap-1 text-muted hover:text-primary text-xs font-bold uppercase mb-2">
                  <ArrowLeft size={14}/> Back to Dashboard
               </button>
            )}
-           <h2 className={`${isOverlay ? 'text-xl' : 'text-2xl md:text-3xl'} font-extrabold text-slate-800 flex items-center gap-3`}>
+           <h2 className={`${isOverlay ? 'text-xl' : 'text-2xl md:text-3xl'} font-extrabold text-primary flex items-center gap-3`}>
             <div className="w-10 h-10 bg-slate-800 text-white rounded-xl flex items-center justify-center shadow-lg shrink-0">
               <Bell size={20} />
             </div>
             Notifications
           </h2>
-          {!isOverlay && <p className="text-slate-500 mt-2 font-medium md:ml-14">History and alerts.</p>}
+          {!isOverlay && <p className="text-secondary mt-2 font-medium md:ml-14">History and alerts.</p>}
         </div>
         <div className="flex gap-2">
-            <button onClick={markAllRead} className="bg-white border border-slate-200 text-slate-600 hover:text-blue-600 px-4 py-2 rounded-xl text-sm font-bold shadow-sm transition-all flex items-center gap-2">
+            <button onClick={markAllRead} className="btn btn-secondary">
               <MailOpen size={16} /> Read All
             </button>
             {isOverlay && (
-                <button onClick={onCloseOverlay} className="p-2 hover:bg-slate-100 rounded-full text-slate-400">
+                <button onClick={onCloseOverlay} className="btn btn-ghost btn-icon-sm text-muted hover:text-primary" title="Close">
                     <X size={20}/>
                 </button>
             )}
@@ -240,20 +240,20 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       <div className={`bg-white border border-slate-200 overflow-hidden flex flex-col flex-1 ${isOverlay ? '' : 'rounded-3xl shadow-sm mb-8'}`}>
         <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row gap-3 justify-between items-center bg-slate-50/30">
             <div className="flex gap-2 w-full md:w-auto">
-                <button onClick={() => setFilter('ALL')} className={`flex-1 md:flex-none px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${filter === 'ALL' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>All</button>
-                <button onClick={() => setFilter('UNREAD')} className={`flex-1 md:flex-none px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${filter === 'UNREAD' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>Unread</button>
+                <button onClick={() => setFilter('ALL')} className={`btn btn-sm ${filter === 'ALL' ? 'btn-primary' : 'btn-ghost'}`}>All</button>
+                <button onClick={() => setFilter('UNREAD')} className={`btn btn-sm ${filter === 'UNREAD' ? 'btn-primary' : 'btn-ghost'}`}>Unread</button>
             </div>
             <div className="relative w-full md:w-64">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={16} />
                 <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm outline-none" />
             </div>
         </div>
 
         <div className="divide-y divide-slate-100 overflow-y-auto custom-scrollbar flex-1">
           {loading ? (
-            <div className="p-8 text-center text-slate-500">Loading notifications…</div>
+            <div className="p-8 text-center text-muted">Loading notifications…</div>
           ) : (!Array.isArray(myNotifications) || myNotifications.length === 0) ? (
-            <div className="p-12 text-center text-slate-400 flex flex-col items-center">
+            <div className="p-12 text-center text-muted flex flex-col items-center">
               <Bell size={48} className="mb-4 opacity-10" />
               <p className="text-sm">No notifications found.</p>
             </div>
@@ -263,19 +263,19 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                  <div className="shrink-0 mt-1">{getIcon((note && note.type) as Notification['type'])}</div>
                  <div className="flex-1 min-w-0">
                    <div className="flex justify-between items-center mb-1.5">
-                     <h4 className={`text-sm font-black tracking-tight ${!note?.read ? 'text-slate-900' : 'text-slate-500'}`}>
+                     <h4 className={`text-sm font-black tracking-tight ${!note?.read ? 'text-primary' : 'text-muted'}`}>
                        {note?.title || 'Notification'}
-                       {!note?.read && <span className="ml-2 px-1.5 py-0.5 bg-blue-100 text-[10px] text-blue-600 rounded-md uppercase tracking-wider font-black">New</span>}
+                       {!note?.read && <span className="ml-2 px-1.5 py-0.5 bg-blue-100 text-[10px] text-link rounded-md uppercase tracking-wider font-black">New</span>}
                      </h4>
-                     {note?.time ? <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded-full shrink-0">{formatTime(note.time)}</span> : null}
+                     {note?.time ? <span className="text-[10px] text-muted font-bold bg-slate-100 px-2 py-0.5 rounded-full shrink-0">{formatTime(note.time)}</span> : null}
                    </div>
-                   <p className={`text-sm leading-relaxed ${!note?.read ? 'text-slate-700 font-medium' : 'text-slate-500 font-normal'}`}>
+                   <p className={`text-sm leading-relaxed ${!note?.read ? 'text-primary font-medium' : 'text-muted font-normal'}`}>
                      {formatShortMessage(note?.message || '')}
                    </p>
                  </div>
                  <button 
                    onClick={() => deleteNotification(note && note.id ? note.id : '')} 
-                   className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                   className="btn btn-ghost btn-icon-sm text-muted hover:text-state-danger"
                    title="Delete notification"
                  >
                    <Trash2 size={16} />
@@ -288,10 +288,10 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
         {/* Dynamic Compact Pagination Controls */}
         {myNotifications.length > 0 && (
           <div className="p-4 border-t border-slate-100 flex flex-col sm:flex-row gap-3 items-center justify-between bg-slate-50/50 shrink-0">
-            <span className="text-xs font-semibold text-slate-500">
-              Showing <span className="text-slate-800 font-extrabold">{Math.min(myNotifications.length, (currentPage - 1) * notificationsPerPage + 1)}</span> to{' '}
-              <span className="text-slate-800 font-extrabold">{Math.min(myNotifications.length, currentPage * notificationsPerPage)}</span> of{' '}
-              <span className="text-slate-800 font-extrabold">{myNotifications.length}</span> entries
+            <span className="text-xs font-semibold text-secondary">
+              Showing <span className="text-primary font-extrabold">{Math.min(myNotifications.length, (currentPage - 1) * notificationsPerPage + 1)}</span> to{' '}
+              <span className="text-primary font-extrabold">{Math.min(myNotifications.length, currentPage * notificationsPerPage)}</span> of{' '}
+              <span className="text-primary font-extrabold">{myNotifications.length}</span> entries
             </span>
 
             {totalPages > 1 && (
@@ -299,19 +299,19 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
                 <button
                   onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
-                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer active:scale-95 disabled:active:scale-100 text-xs font-bold shadow-sm"
+                  className="btn btn-secondary btn-sm"
                 >
                   Prev
                 </button>
                 
-                <span className="text-xs font-black text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-lg shadow-sm font-mono">
+                <span className="text-xs font-bold text-secondary bg-white border border-slate-200 px-3 py-1.5 rounded-xl shadow-xs font-mono">
                   {currentPage} / {totalPages}
                 </span>
 
                 <button
                   onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                   disabled={currentPage === totalPages}
-                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-all hover:bg-slate-50 hover:text-indigo-600 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-slate-600 cursor-pointer active:scale-95 disabled:active:scale-100 text-xs font-bold shadow-sm"
+                  className="btn btn-secondary btn-sm"
                 >
                   Next
                 </button>

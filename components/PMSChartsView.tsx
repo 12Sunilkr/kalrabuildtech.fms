@@ -181,7 +181,7 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
         <div className="bg-white rounded-lg shadow-sm p-6">
           <h2 className="text-lg font-semibold text-slate-800 mb-4">Project Status Distribution</h2>
           <div className="w-full h-[300px] min-w-0 min-h-[300px]">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+            <ResponsiveContainer width="100%" height={300} minWidth={1} minHeight={300} debounce={50}>
             <PieChart>
               <Pie
                 data={statusData}
@@ -207,7 +207,7 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
         <div className="bg-white rounded-lg shadow-sm p-6">
           <h2 className="text-lg font-semibold text-slate-800 mb-4">Cost: Planned vs Actual</h2>
           <div className="w-full h-[300px] min-w-0 min-h-[300px]">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+            <ResponsiveContainer width="100%" height={300} minWidth={1} minHeight={300} debounce={50}>
             <BarChart data={costData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} />
@@ -230,7 +230,7 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
         <div className="bg-white rounded-lg shadow-sm p-6">
           <h2 className="text-lg font-semibold text-slate-800 mb-4">Monthly Cost Trend</h2>
           <div className="w-full h-[300px] min-w-0 min-h-[300px]">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+            <ResponsiveContainer width="100%" height={300} minWidth={1} minHeight={300} debounce={50}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />
@@ -253,7 +253,7 @@ export default function PMSChartsView({ onClose }: { onClose: () => void }) {
         <div className="bg-white rounded-lg shadow-sm p-6">
           <h2 className="text-lg font-semibold text-slate-800 mb-4">Monthly Active Projects</h2>
           <div className="w-full h-[300px] min-w-0 min-h-[300px]">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+            <ResponsiveContainer width="100%" height={300} minWidth={1} minHeight={300} debounce={50}>
             <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />

@@ -211,6 +211,22 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
     return typeof sunVal === 'number' && sunVal > 0;
   }, [attendanceData, getSundayOfWeek]);
 
+  // Helper to reliably find matching holiday by exact dateKey or recurring date
+  const findHoliday = useCallback((d: Date): Holiday | undefined => {
+    if (!holidays || !holidays.length) return undefined;
+    const dateKey = formatDateKey(d);
+    return holidays.find(h => {
+      if (!h || !h.date) return false;
+      const cleanHDate = String(h.date).split('T')[0].trim();
+      if (cleanHDate === dateKey) return true;
+      if (h.recurring) {
+        const parts = cleanHDate.split('-').map(Number);
+        return parts.length >= 3 && (d.getMonth() + 1 === parts[1]) && (d.getDate() === parts[2]);
+      }
+      return false;
+    });
+  }, [holidays]);
+
   // Resolve actual effective cell value for display & copy logic
   const resolveCellValue = useCallback((emp: Employee, d: Date): AttendanceValue | null => {
     const currentDay = startOfDay(d);
@@ -225,13 +241,17 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
     if (isArchivedDay || isBeforeTracking) return null;
 
     const record = attendanceData[emp.id]?.[dateKey];
-    if (record !== undefined) return record;
-
     const isSun = isDateSunday(d);
-    const holiday = holidays.find(h => h.date === dateKey);
+    const holiday = findHoliday(d);
 
+    if (holiday) {
+      if (record !== undefined && typeof record === 'number' && record > 0) return record;
+      if (record === 'LEAVE') return 'LEAVE';
+      return 'HOLIDAY';
+    }
+
+    if (record !== undefined) return record;
     if (isSun) return 'OFF';
-    if (holiday) return 'HOLIDAY';
 
     if (isBefore(currentDay, todayStart)) {
       if (workedSundayOfWeek(emp.id, d)) return 'OFF';
@@ -239,7 +259,7 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
     }
 
     return null;
-  }, [attendanceData, holidays, todayStart, workedSundayOfWeek]);
+  }, [attendanceData, findHoliday, todayStart, workedSundayOfWeek]);
 
   // Parse clipboard text string to AttendanceValue
   const parseClipboardText = (text: string): AttendanceValue => {
@@ -661,17 +681,25 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
       const k = formatDateKey(d);
       const val = record[k];
       const isExplicit = val !== undefined;
+      const holiday = findHoliday(d);
 
       if (isBefore(currentDay, trackingStartDate) && !isExplicit) return;
       if (archiveDate && !isBefore(currentDay, archiveDate)) return;
-      if (!isExplicit && !isBefore(currentDay, todayStart)) return;
+      if (!isExplicit && !isBefore(currentDay, todayStart) && !holiday) return;
 
       let effectiveVal: AttendanceValue = 1;
-      if (isExplicit) {
+      if (holiday) {
+        if (isExplicit && typeof val === 'number' && val > 0) {
+          effectiveVal = val;
+        } else if (isExplicit && val === 'LEAVE') {
+          effectiveVal = 'LEAVE';
+        } else {
+          effectiveVal = 'HOLIDAY';
+        }
+      } else if (isExplicit) {
         effectiveVal = val;
       } else {
         if (isDateSunday(d)) effectiveVal = 'OFF';
-        else if (holidays.some(h => h.date === k)) effectiveVal = 'HOLIDAY';
         else if (workedSundayOfWeek(empId, d)) effectiveVal = 'OFF';
         else effectiveVal = 0;
       }
@@ -792,15 +820,17 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
 
               {days.map(d => {
                 const isSun = isDateSunday(d);
-                const holiday = holidays.find(h => h.date === formatDateKey(d));
+                const holiday = findHoliday(d);
                 return (
                   <th
                     key={d.toString()}
                     className={`p-2 min-w-[42px] text-center border-b border-slate-200 border-r border-slate-100 transition-colors ${isSun || holiday ? 'bg-emerald-50/80' : 'bg-slate-50'}`}
-                    title={holiday?.name || (isSun ? 'Sunday' : undefined)}
+                    title={holiday?.name ? `Holiday: ${holiday.name}` : (isSun ? 'Sunday' : undefined)}
                   >
                     <div className={`text-sm font-black ${isSun || holiday ? 'text-emerald-700' : 'text-slate-700'}`}>{format(d, 'd')}</div>
-                    <div className={`text-[9px] font-bold uppercase tracking-wider ${isSun || holiday ? 'text-emerald-600' : 'text-slate-400'}`}>{format(d, 'EEE')}</div>
+                    <div className={`text-[9px] font-bold uppercase tracking-wider ${isSun || holiday ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {holiday ? 'HOL' : format(d, 'EEE')}
+                    </div>
                   </th>
                 );
               })}
@@ -843,7 +873,7 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
 
                     const isSun = isDateSunday(d);
                     const dateKey = formatDateKey(d);
-                    const holiday = holidays.find(h => h.date === dateKey);
+                    const holiday = findHoliday(d);
 
                     const record = attendanceData[emp.id]?.[dateKey];
                     const isExplicitRecord = record !== undefined;
@@ -851,6 +881,14 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
 
                     if (isArchivedDay) {
                       val = null;
+                    } else if (holiday) {
+                      if (isExplicitRecord && typeof record === 'number' && record > 0) {
+                        val = record;
+                      } else if (isExplicitRecord && record === 'LEAVE') {
+                        val = 'LEAVE';
+                      } else {
+                        val = 'HOLIDAY';
+                      }
                     } else if (isExplicitRecord) {
                       // Respect explicit user setting 100% (including explicit 0 Absent, 1 Present, Leave, etc.)
                       val = record;
@@ -861,8 +899,6 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
                       } else {
                         if (isSun) {
                           val = 'OFF';
-                        } else if (holiday) {
-                          val = 'HOLIDAY';
                         } else {
                           if (isBefore(currentDay, todayStart)) {
                             // If employee worked Sunday of this week, auto-compensate un-entered weekday as OFF
@@ -883,8 +919,9 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
                       val = 'CS';
                     }
 
-                    let displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' || val === 'HOLIDAY' ? '—' : (val === 'LEAVE' ? 'L' : (val === 'CO' ? 'C' : (val === 'CS' ? 'CS' : val)))));
+                    let displayText = val === 1 ? '1' : (val === null ? '' : (val === 'OFF' ? '—' : (val === 'HOLIDAY' ? 'H' : (val === 'LEAVE' ? 'L' : (val === 'CO' ? 'C' : (val === 'CS' ? 'CS' : val))))));
                     if (isSun && val === 1) displayText = '1☀';
+                    if (holiday && val === 1) displayText = '1★';
                     if (isArchivedDay || (val === null && isBeforeTracking)) displayText = '-';
 
                     const colorClass = isArchivedDay
@@ -901,6 +938,10 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
                     } else if (isSelected) {
                       selectionStyle = 'ring-1 ring-blue-400 ring-inset bg-blue-50/80 z-10 font-bold';
                     }
+
+                    const cellTitle = isArchivedDay
+                      ? 'Archived'
+                      : (holiday ? `Holiday: ${holiday.name}${val === 1 ? ' (Present)' : ''}` : (val === 'CS' ? 'Compensate: Leave used against Sunday work' : (isSun && val === 1 ? 'Present on Sunday' : (val === 'OFF' ? 'Sunday / Off Day' : 'Double-click to edit, Press Delete to clear'))));
 
                     return (
                       <td
@@ -922,7 +963,7 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
                           handleContextMenu(e, emp.id, d, empIndex, dayIndex);
                         }}
                         className={`p-1 border-r border-slate-100 cursor-pointer text-center relative transition-all ${selectionStyle}`}
-                        title={val === 'CS' ? 'Compensate: Leave used against Sunday work' : (holiday ? `${holiday.name}` : (isSun && val === 1 ? 'Present on Sunday' : 'Double-click to edit, Press Delete to clear'))}
+                        title={cellTitle}
                       >
                         <div className={`w-8 h-8 mx-auto rounded-xl flex items-center justify-center text-[10px] font-black shadow-sm transition-all hover:scale-105 hover:shadow-md ${colorClass} ${val === 1 && !isArchivedDay ? 'border border-slate-200 bg-white hover:bg-slate-50 text-slate-800' : ''}`}>
                           {displayText}

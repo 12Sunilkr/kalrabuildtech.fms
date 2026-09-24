@@ -354,13 +354,13 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                             <td className="p-4 text-right">
                                                 <div className="flex items-center justify-end gap-2">
                                                     {order.status === 'DELIVERED_AWAITING_ADMIN' ? (
-                                                        <button onClick={() => setAdminDetailId(order.id)} className="px-3 py-1 bg-orange-500 text-white rounded text-xs font-bold shadow hover:bg-orange-600">Review</button>
+                                                        <button onClick={() => setAdminDetailId(order.id)} className="btn btn-primary btn-sm">Review</button>
                                                     ) : (
-                                                        <button onClick={() => setAdminDetailId(order.id)} className="text-blue-600 hover:underline text-xs font-bold">Details</button>
+                                                        <button onClick={() => setAdminDetailId(order.id)} className="btn btn-ghost btn-sm text-indigo-600">Details</button>
                                                     )}
 
                                                     {(isAdmin || String(order.orderedBy) === String(currentUser.employeeId)) && (isAdmin || order.status !== 'COMPLETED') && (
-                                                        <button onClick={() => handleDelete(order.id)} className="px-3 py-1 bg-red-600 text-white rounded text-xs font-bold hover:bg-red-700">Delete</button>
+                                                        <button onClick={() => handleDelete(order.id)} className="btn btn-ghost btn-sm text-rose-600 hover:text-rose-700 hover:bg-rose-50">Delete</button>
                                                     )}
                                                 </div>
                                             </td>
@@ -378,7 +378,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
                             <div className="p-6 border-b border-slate-100 flex justify-between items-center">
                                 <h3 className="font-bold text-lg">Order Details: {adminDetailId}</h3>
-                                <button onClick={() => setAdminDetailId(null)}><X size={20} className="text-slate-400" /></button>
+                                <button onClick={() => setAdminDetailId(null)} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Close"><X size={18} /></button>
                             </div>
                             {(() => {
                                 const order = safeOrders.find(o => o.id === adminDetailId);
@@ -426,8 +426,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
 
                                         {order.status === 'DELIVERED_AWAITING_ADMIN' && (
                                             <div className="flex gap-2 mt-6">
-                                                <button onClick={() => handleAdminReview(order.id, true)} className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700">Accept Proof</button>
-                                                <button onClick={() => handleAdminReview(order.id, false)} className="flex-1 py-3 bg-red-100 text-red-600 border border-red-200 rounded-xl font-bold hover:bg-red-200">Reject</button>
+                                                <button onClick={() => handleAdminReview(order.id, true)} className="btn btn-primary flex-1">Accept Proof</button>
+                                                <button onClick={() => handleAdminReview(order.id, false)} className="btn btn-secondary flex-1 text-rose-600 border-rose-200 hover:bg-rose-50">Reject</button>
                                             </div>
                                         )}
                                     </div>
@@ -449,8 +449,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                         <Package size={32} />
                     </div>
                     <div>
-                        <h2 className="text-3xl md:text-4xl font-black text-slate-800 tracking-tight">O2D System</h2>
-                        <p className="text-slate-500 font-semibold tracking-wide flex items-center gap-2">
+                        <h2 className="text-3xl md:text-4xl font-black text-primary tracking-tight">O2D System</h2>
+                        <p className="text-secondary font-semibold tracking-wide flex items-center gap-2">
                             <Clock size={16} className="text-orange-500" />
                             Order to Delivery Tracking System
                         </p>
@@ -459,9 +459,9 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
 
                 <button
                     onClick={() => setShowOrderModal(true)}
-                    className="w-full md:w-auto bg-gradient-to-r from-orange-600 to-amber-700 hover:from-orange-700 hover:to-amber-800 text-white px-8 py-3.5 rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-orange-200 transition-all active:scale-95 font-bold text-lg"
+                    className="btn btn-primary w-full md:w-auto"
                 >
-                    <Plus size={24} className="animate-pulse" />
+                    <Plus size={18} />
                     Create Order
                 </button>
             </div>
@@ -492,27 +492,27 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                             >
                                 <div className={`h-3 ${order.status === 'COMPLETED' ? 'bg-emerald-500' : order.status === 'REJECTED' ? 'bg-rose-500' : 'bg-amber-500'}`}></div>
 
-                                <div className="p-10 flex-1">
+                                    <div className="p-10 flex-1">
                                     <div className="flex justify-between items-start mb-8">
                                         <div className="flex flex-col">
-                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Order Ref</span>
-                                            <span className="font-mono font-black text-slate-600 text-lg uppercase tracking-tight">{order.id?.slice(-8)}</span>
+                                            <span className="text-[10px] font-black text-muted uppercase tracking-widest leading-none mb-1">Order Ref</span>
+                                            <span className="font-mono font-black text-secondary text-lg uppercase tracking-tight">{order.id?.slice(-8)}</span>
                                         </div>
                                         {getStatusBadge(order.status)}
                                     </div>
 
-                                    <h3 className="text-2xl font-black text-slate-800 mb-3 uppercase tracking-tight line-clamp-1">{order.itemName}</h3>
+                                    <h3 className="text-2xl font-black text-primary mb-3 uppercase tracking-tight line-clamp-1">{order.itemName}</h3>
                                     <div className="inline-flex items-center px-4 py-1.5 bg-orange-50 text-orange-700 rounded-full text-sm font-black mb-8 border border-orange-100 shadow-sm">{order.quantity}</div>
 
                                     <div className="space-y-6 flex-1">
                                         <div className="flex items-center gap-4 p-4 bg-slate-50/50 rounded-2xl border border-slate-100 transition-colors group-hover:bg-slate-50">
                                             <div className="w-10 h-10 bg-white shadow-sm text-indigo-500 rounded-xl flex items-center justify-center border border-indigo-50 shrink-0"><UserIcon size={18} /></div>
                                             <div className="flex-1 overflow-hidden">
-                                                <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Path</div>
+                                                <div className="text-[8px] font-black text-muted uppercase tracking-widest leading-none mb-1">Path</div>
                                                 <div className="flex items-center gap-2 overflow-hidden">
-                                                    <span className="text-[10px] font-black text-slate-700 truncate">{requester?.name || order.orderedBy}</span>
-                                                    <ArrowRight size={10} className="text-slate-300 shrink-0" />
-                                                    <span className="text-[10px] font-black text-slate-700 truncate">{approver?.name || order.assignedApprover}</span>
+                                                    <span className="text-[10px] font-black text-primary truncate">{requester?.name || order.orderedBy}</span>
+                                                    <ArrowRight size={10} className="text-muted shrink-0" />
+                                                    <span className="text-[10px] font-black text-primary truncate">{approver?.name || order.assignedApprover}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -521,15 +521,15 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                             <div className="flex items-center gap-3 p-4 bg-slate-50/50 rounded-2xl border border-slate-100">
                                                 <div className="w-8 h-8 bg-white shadow-sm text-orange-500 rounded-lg flex items-center justify-center border border-orange-50 shrink-0"><MapPin size={14} /></div>
                                                 <div className="flex flex-col">
-                                                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Location</span>
-                                                    <span className="text-[10px] font-black text-slate-700 truncate uppercase">{order.siteLocation}</span>
+                                                    <span className="text-[8px] font-black text-muted uppercase tracking-widest leading-none mb-1">Location</span>
+                                                    <span className="text-[10px] font-black text-primary truncate uppercase">{order.siteLocation}</span>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3 p-4 bg-slate-50/50 rounded-2xl border border-slate-100">
                                                 <div className="w-8 h-8 bg-white shadow-sm text-blue-500 rounded-lg flex items-center justify-center border border-blue-50 shrink-0"><Clock size={14} /></div>
                                                 <div className="flex flex-col">
-                                                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">TAT</span>
-                                                    <span className="text-[10px] font-black text-slate-700 truncate">{getTATString(order)}</span>
+                                                    <span className="text-[8px] font-black text-muted uppercase tracking-widest leading-none mb-1">TAT</span>
+                                                    <span className="text-[10px] font-black text-primary truncate">{getTATString(order)}</span>
                                                 </div>
                                             </div>
                                         </div>
@@ -550,14 +550,14 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                     {/* Step 2: Approval Actions (By Assigned Approver) */}
                                     {String(order.assignedApprover) === String(currentUser.employeeId) && order.status === 'PENDING_APPROVAL' && (
                                         <div className="flex gap-3">
-                                            <button onClick={() => handleApprove(order.id, true)} className="flex-1 py-3 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100">Approve</button>
-                                            <button onClick={() => handleApprove(order.id, false)} className="flex-1 py-3 bg-white border border-rose-100 text-rose-500 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-rose-50 transition-all">Reject</button>
+                                            <button onClick={() => handleApprove(order.id, true)} className="btn btn-primary flex-1">Approve</button>
+                                            <button onClick={() => handleApprove(order.id, false)} className="btn btn-secondary flex-1 text-rose-600 border-rose-200 hover:bg-rose-50">Reject</button>
                                         </div>
                                     )}
 
                                     {/* Step 3: Place Vendor Order (By Assigned Approver after approval) */}
                                     {order.status === 'APPROVED_FOR_VENDOR' && String(order.assignedApprover) === String(currentUser.employeeId) && (
-                                        <button onClick={() => setShowVendorModal(order.id)} className="w-full py-4 bg-violet-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-violet-700 transition-all shadow-lg shadow-violet-100 flex items-center justify-center gap-3 group/btn">
+                                        <button onClick={() => setShowVendorModal(order.id)} className="btn btn-primary w-full group/btn">
                                             <Truck size={18} className="transform group-hover:translate-x-1 transition-transform" />
                                             Place Order to Vendor
                                         </button>
@@ -566,7 +566,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                     {/* Step 5: Site Delivery (Only Initiator can upload proof) */}
                                     {order.status === 'ORDERED_TO_VENDOR' && (
                                         String(order.orderedBy) === String(currentUser.employeeId) ? (
-                                            <button onClick={() => setShowDeliveryModal(order.id)} className="w-full py-4 bg-orange-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-orange-700 transition-all shadow-lg shadow-orange-100 flex items-center justify-center gap-3">
+                                            <button onClick={() => setShowDeliveryModal(order.id)} className="btn btn-primary w-full">
                                                 <Camera size={18} />
                                                 Mark Delivered (Photo)
                                             </button>
@@ -606,7 +606,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
                         <div className="p-6 border-b border-slate-100 bg-orange-50/50 flex justify-between items-center shrink-0">
                             <h3 className="text-xl font-extrabold text-orange-900">New Material Request</h3>
-                            <button onClick={() => setShowOrderModal(false)} className="p-2 hover:bg-orange-100 rounded-full text-orange-800"><X size={20} /></button>
+                            <button onClick={() => setShowOrderModal(false)} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Close"><X size={18} /></button>
                         </div>
                         <div className="p-6 space-y-4 overflow-y-auto">
                             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-500 mb-2">
@@ -679,7 +679,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                             </div>
                         </div>
                         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-                            <button onClick={handleCreateOrder} className="px-5 py-2.5 bg-orange-600 text-white rounded-xl font-bold shadow-lg shadow-orange-600/20 w-full">Initiate Order</button>
+                            <button onClick={handleCreateOrder} className="btn btn-primary w-full">Initiate Order</button>
                         </div>
                     </div>
                 </div>
@@ -702,8 +702,8 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                         />
 
                         <div className="flex gap-3">
-                            <button onClick={() => setShowVendorModal(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200">Cancel</button>
-                            <button onClick={handlePlaceToVendor} className="flex-1 py-3 bg-purple-600 text-white font-bold rounded-xl hover:bg-purple-700 shadow-lg shadow-purple-600/20">Confirm Order</button>
+                            <button onClick={() => setShowVendorModal(null)} className="btn btn-secondary flex-1">Cancel</button>
+                            <button onClick={handlePlaceToVendor} className="btn btn-primary flex-1">Confirm Order</button>
                         </div>
                     </div>
                 </div>
@@ -727,7 +727,7 @@ export const MaterialOrders: React.FC<MaterialOrdersProps> = ({ orders, setOrder
                                 <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleCaptureProof} />
                             </label>
                         )}
-                        <button onClick={() => setShowDeliveryModal(null)} className="mt-4 text-slate-400 font-bold text-sm hover:text-slate-600">Cancel</button>
+                        <button onClick={() => setShowDeliveryModal(null)} className="btn btn-secondary w-full mt-4">Cancel</button>
                     </div>
                 </div>
             )}

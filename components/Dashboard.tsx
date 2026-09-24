@@ -28,11 +28,36 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
   const isSundayToday = isDateSunday(currentDate);
   const currentYear = currentDate.getFullYear().toString();
 
+  // Helper for parsing any birthDate string/format safely
+  const getBirthdayParts = (birthDateStr?: string | number | Date) => {
+    if (!birthDateStr) return null;
+    if (typeof birthDateStr === 'string') {
+      const clean = birthDateStr.trim().split('T')[0].split(' ')[0];
+      if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(clean)) {
+        const parts = clean.split(/[-/]/);
+        const m = parseInt(parts[1], 10) - 1;
+        const d = parseInt(parts[2], 10);
+        if (!isNaN(m) && !isNaN(d)) return { month: m, day: d };
+      }
+      if (/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(clean)) {
+        const parts = clean.split(/[-/]/);
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        if (!isNaN(m) && !isNaN(d)) return { month: m, day: d };
+      }
+    }
+    const dob = new Date(birthDateStr);
+    if (!isNaN(dob.getTime())) {
+      return { month: dob.getMonth(), day: dob.getDate() };
+    }
+    return null;
+  };
+
   // Birthday Logic
   const birthdaysToday = employees.filter(emp => {
-      if (!emp.birthDate) return false;
-      const dob = new Date(emp.birthDate);
-      return getDate(dob) === getDate(currentDate) && getMonth(dob) === getMonth(currentDate);
+    if (!emp.birthDate) return false;
+    const parts = getBirthdayParts(emp.birthDate);
+    return parts && parts.day === getDate(currentDate) && parts.month === getMonth(currentDate);
   });
 
   let presentToday = 0;
@@ -156,7 +181,9 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
                     <span className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-black uppercase tracking-wider rounded-full border border-emerald-100 shadow-sm">
                         <Activity size={12} /> System Live
                     </span>
-                    <p className="text-slate-500 font-bold text-xs">{format(currentDate, 'EEEE, MMMM do, yyyy')}</p>
+                    <time dateTime={format(currentDate, 'yyyy-MM-dd')} className="text-slate-600 font-semibold text-sm">
+                      {format(currentDate, 'EEEE, MMMM do, yyyy')}
+                    </time>
                 </div>
             </div>
         </div>
@@ -250,8 +277,8 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
             </div>
           </div>
           
-          <div className="h-80 w-full min-w-0 min-h-[320px]">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+          <div className="h-80 w-full min-w-0 min-h-[320px] relative">
+            <ResponsiveContainer width="100%" height={320} minWidth={1} minHeight={320} debounce={50}>
               <BarChart data={chartData} margin={{top: 10, right: 10, left: -20, bottom: 0}}>
                 <defs>
                     <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
@@ -291,76 +318,74 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
         </div>
 
         <div className="space-y-6 animate-fade-in-up" style={{ animationDelay: '500ms' }}>
-          <div className="bg-slate-900 p-8 rounded-[3rem] shadow-2xl shadow-slate-900/20 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-8 text-white/5 transform group-hover:scale-110 transition-transform">
-                <Target size={120} />
-            </div>
-            <h3 className="text-xl font-black text-white mb-8 relative z-10 flex items-center gap-3">
+          <div className="bg-white p-7 md:p-8 rounded-[2.5rem] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.03)] border border-slate-100 relative overflow-hidden group">
+            <h3 className="text-xl font-black text-slate-800 mb-6 relative z-10 flex items-center gap-3">
+               <Zap className="text-amber-500" size={22} />
                Quick Utilities
             </h3>
-            <div className="space-y-4 relative z-10">
+            <div className="space-y-3.5 relative z-10">
                 <button 
                   onClick={handleGenerateReport}
-                  className="w-full flex items-center justify-between p-5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 text-white hover:bg-white/20 transition-all group/item"
+                  className="w-full flex items-center justify-between p-4 bg-slate-50/80 hover:bg-indigo-50/50 rounded-2xl border border-slate-100 hover:border-indigo-200 text-slate-800 transition-all duration-200 group/item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 >
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/20 transition-transform duration-300 group-hover/item:scale-110">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shadow-sm transition-transform duration-300 group-hover/item:scale-105">
                       <Download size={20} />
                     </div>
                     <div className="text-left">
-                      <span className="block text-sm font-black tracking-tight leading-none mb-1">Export Data</span>
-                      <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Attendance CSV</span>
+                      <span className="block text-sm font-black text-slate-800 tracking-tight leading-none mb-1">Export Attendance</span>
+                      <span className="text-xs text-slate-500 font-medium">Download CSV Report</span>
                     </div>
                   </div>
-                  <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />
+                  <ChevronRight size={18} className="text-slate-400 transform group-hover/item:translate-x-1 transition-transform" />
                 </button>
 
                 <button 
                   onClick={() => onNavigate(ViewMode.LEAVES)}
-                  className="w-full flex items-center justify-between p-5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 text-white hover:bg-white/20 transition-all group/item"
+                  className="w-full flex items-center justify-between p-4 bg-slate-50/80 hover:bg-indigo-50/50 rounded-2xl border border-slate-100 hover:border-indigo-200 text-slate-800 transition-all duration-200 group/item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                 >
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-500/20 transition-transform duration-300 group-hover/item:scale-110">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 bg-orange-50 text-orange-600 rounded-xl flex items-center justify-center shadow-sm transition-transform duration-300 group-hover/item:scale-105">
                       <RefreshCw size={20} />
                     </div>
                     <div className="text-left">
-                      <span className="block text-sm font-black tracking-tight leading-none mb-1">Leaves Portal</span>
-                      <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Leave Management</span>
+                      <span className="block text-sm font-black text-slate-800 tracking-tight leading-none mb-1">Leaves Portal</span>
+                      <span className="text-xs text-slate-500 font-medium">Leave Management</span>
                     </div>
                   </div>
-                  <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />
+                  <ChevronRight size={18} className="text-slate-400 transform group-hover/item:translate-x-1 transition-transform" />
                 </button>
 
                 {currentUser?.role !== 'PC' && (
                   <button 
                     onClick={() => onNavigate(ViewMode.EMPLOYEES)}
-                    className="w-full flex items-center justify-between p-5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 text-white hover:bg-white/20 transition-all group/item"
+                    className="w-full flex items-center justify-between p-4 bg-slate-50/80 hover:bg-indigo-50/50 rounded-2xl border border-slate-100 hover:border-indigo-200 text-slate-800 transition-all duration-200 group/item focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
                   >
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-500/20 transition-transform duration-300 group-hover/item:scale-110">
+                    <div className="flex items-center gap-3.5">
+                      <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center shadow-sm transition-transform duration-300 group-hover/item:scale-105">
                         <UserCog size={20} />
                       </div>
                       <div className="text-left">
-                        <span className="block text-sm font-black tracking-tight leading-none mb-1">Team Control</span>
-                        <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">Employee Master</span>
+                        <span className="block text-sm font-black text-slate-800 tracking-tight leading-none mb-1">Team Control</span>
+                        <span className="text-xs text-slate-500 font-medium">Employee Master</span>
                       </div>
                     </div>
-                    <ChevronRight size={18} className="text-white/30 transform group-hover/item:translate-x-1 transition-transform" />
+                    <ChevronRight size={18} className="text-slate-400 transform group-hover/item:translate-x-1 transition-transform" />
                   </button>
                 )}
             </div>
           </div>
           
-          <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-8 rounded-[3rem] text-white shadow-xl shadow-blue-500/20 relative overflow-hidden group">
+          <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-7 md:p-8 rounded-[2.5rem] text-white shadow-xl shadow-blue-500/20 relative overflow-hidden group">
             <div className="absolute bottom-0 right-0 p-4 text-white/10 transform rotate-12 translate-x-4 translate-y-4">
                 <Target size={160} />
             </div>
-            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/60 mb-3">System Insights</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-white/75 mb-3">System Insights</p>
             <h4 className="text-xl font-black mb-4 tracking-tight leading-tight">Your team's efficiency is peaking today.</h4>
-            <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-white/20 rounded-full overflow-hidden">
                 <div className="h-full bg-white w-3/4 rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)]"></div>
             </div>
-            <p className="mt-4 text-[10px] font-bold text-white/50 italic">75% of scheduled tasks are in progress.</p>
+            <p className="mt-4 text-xs font-semibold text-white/90">75% of scheduled tasks are in progress.</p>
           </div>
         </div>
       </div>

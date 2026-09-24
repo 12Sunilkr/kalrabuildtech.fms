@@ -112,26 +112,26 @@ const RoleModal: React.FC<{ d: DesigLayout; pb: PlaybookEntry[]; onClose: () => 
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200" onClick={e => e.stopPropagation()}>
         <div className="p-5 border-b border-slate-100 flex justify-between items-start bg-gradient-to-r from-indigo-50 to-slate-50">
           <div>
-            <h2 className="text-lg font-bold text-slate-800">{d.title}</h2>
+            <h2 className="text-lg font-bold text-primary">{d.title}</h2>
             <span className="inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-semibold">
               <Briefcase size={12} />{d.designation}
             </span>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"><X size={18} /></button>
+          <button onClick={onClose} className="btn btn-ghost btn-icon-sm text-muted hover:text-primary" title="Close"><X size={18} /></button>
         </div>
         <div className="p-5 max-h-[55vh] overflow-y-auto">
           {entry ? (
             <>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5"><Target size={14} className="text-indigo-500" />Key Responsibilities</p>
+              <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-3 flex items-center gap-1.5"><Target size={14} className="text-indigo-500" />Key Responsibilities</p>
               <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-                <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">{resp}</p>
+                <p className="text-sm text-primary leading-relaxed whitespace-pre-line">{resp}</p>
               </div>
             </>
           ) : (
             <div className="flex flex-col items-center py-8 text-center gap-2">
-              <BookOpen size={28} className="text-slate-300" />
-              <p className="text-slate-500 font-medium text-sm">No Playbook entry yet</p>
-              <p className="text-slate-400 text-xs">Admin can add this in the <span className="text-indigo-500 font-medium">Playbook</span> section.</p>
+              <BookOpen size={28} className="text-muted" />
+              <p className="text-secondary font-medium text-sm">No Playbook entry yet</p>
+              <p className="text-muted text-xs">Admin can add this in the <span className="text-link font-medium">Playbook</span> section.</p>
             </div>
           )}
         </div>
@@ -177,15 +177,15 @@ export const OrganizationTree: React.FC<{ employees: Employee[] }> = ({ employee
 
       {/* ── Top bar ── */}
       <div style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 20px', background:'#fff', borderBottom:'1px solid #e2e8f0', flexShrink:0, boxShadow:'0 1px 3px rgba(0,0,0,0.06)' }}>
-        <span style={{ fontWeight:700, fontSize:16, color:'#1e293b', letterSpacing:'-0.3px' }}>Organization Tree</span>
-        <div style={{ display:'flex', alignItems:'center', background:'#f1f5f9', borderRadius:8, padding:'3px 4px', border:'1px solid #e2e8f0', gap:2 }}>
-          <button onClick={() => setZoom(p => parseFloat(Math.max(0.25, p - 0.1).toFixed(2)))} style={btnStyle} title="Zoom out"><ZoomOut size={14} /></button>
-          <span style={{ padding:'0 10px', fontSize:11, fontWeight:600, color:'#64748b', minWidth:46, textAlign:'center' }}>{Math.round(zoom*100)}%</span>
-          <button onClick={() => setZoom(p => parseFloat(Math.min(2, p + 0.1).toFixed(2)))}  style={btnStyle} title="Zoom in"><ZoomIn size={14} /></button>
+        <span style={{ fontWeight:700, fontSize:16, color:'var(--color-text-primary)', letterSpacing:'-0.3px' }}>Organization Tree</span>
+        <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-xl p-1 border border-slate-200 dark:border-slate-700 gap-1">
+          <button onClick={() => setZoom(p => parseFloat(Math.max(0.25, p - 0.1).toFixed(2)))} className="btn btn-ghost btn-icon-sm text-secondary hover:text-primary" title="Zoom out"><ZoomOut size={14} /></button>
+          <span style={{ padding:'0 10px', fontSize:11, fontWeight:600, color:'var(--color-text-secondary)', minWidth:46, textAlign:'center' }}>{Math.round(zoom*100)}%</span>
+          <button onClick={() => setZoom(p => parseFloat(Math.min(2, p + 0.1).toFixed(2)))} className="btn btn-ghost btn-icon-sm text-secondary hover:text-primary" title="Zoom in"><ZoomIn size={14} /></button>
           <div style={{ width:1, height:16, background:'#cbd5e1', margin:'0 2px' }} />
-          <button onClick={autoFit} style={btnStyle} title="Fit to screen"><Maximize size={14} /></button>
+          <button onClick={autoFit} className="btn btn-ghost btn-icon-sm text-secondary hover:text-primary" title="Fit to screen"><Maximize size={14} /></button>
         </div>
-        <span style={{ marginLeft:'auto', fontSize:11, color:'#94a3b8' }}>Click to expand · Right-click for Playbook</span>
+        <span style={{ marginLeft:'auto', fontSize:11, color:'var(--color-text-muted)' }}>Click to expand · Right-click for Playbook</span>
       </div>
 
       {/* ── Canvas ── */}
@@ -274,8 +274,3 @@ export const OrganizationTree: React.FC<{ employees: Employee[] }> = ({ employee
   );
 };
 
-const btnStyle: React.CSSProperties = {
-  display:'flex', alignItems:'center', justifyContent:'center',
-  padding:6, color:'#64748b', background:'transparent', border:'none', cursor:'pointer',
-  borderRadius:6, transition:'background 0.15s, color 0.15s',
-};

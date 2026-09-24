@@ -50,6 +50,7 @@ if (process.env.VITE_GEMINI_API_KEY && !process.env.GEMINI_API_KEY) {
 
 // Track database changes to optimize background sync operations
 global.dbChanged = true;
+global.isTaskSchemaEnsured = false;
 
 // Initialize Gemini Client
 let genAI = null;
@@ -211,7 +212,7 @@ async function isFileFullyWritten(filePath, checkDelayMs = 1500) {
   }
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret_change_me';
+const JWT_SECRET = process.env.JWT_SECRET || 'kbt_dev_jwt_secret_rotated_secure_2026_xYz';
 // In production we must have a real JWT_SECRET configured
 if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !String(process.env.JWT_SECRET).trim())) {
   console.error('FATAL: NODE_ENV=production but JWT_SECRET is not set. Aborting startup.');
@@ -227,11 +228,12 @@ try {
   SQL = await initSqlJs();
   console.log('sql.js initialized');
 
-  if (fs.existsSync(dbFile)) {
+  if (fs.existsSync(dbFile) && isDbValidFile(dbFile)) {
     const buff = fs.readFileSync(dbFile);
     db = new SQL.Database(new Uint8Array(buff));
     console.log('Loaded existing DB:', dbFile);
   } else {
+    console.warn(`[Database Init] Database file is missing, empty, or invalid. Initializing and seeding a new database at: ${dbFile}`);
     // If DB doesn't exist, create and seed it. In production we create the DB
     // to ensure persistence (set DB_FILE explicitly to control location).
     // Note: If you prefer to provide an existing DB in production, set DB_FILE
@@ -334,48 +336,50 @@ try {
           name TEXT,
           email TEXT UNIQUE,
           password TEXT,
-          plain_password TEXT,
           role TEXT,
           employeeId TEXT
         )`);
-        const insert = db.prepare('INSERT INTO users (name, email, password, plain_password, role, employeeId) VALUES (?,?,?,?,?,?)');
-        insert.run(['Admin User', 'admin@example.com', bcrypt.hashSync('admin123', 10), 'admin123', 'ADMIN', null]);
-        insert.run(['Administrator', 'admin@fms.com', bcrypt.hashSync('admin', 10), 'admin', 'ADMIN', null]);
+        const insert = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
+        insert.run(['Admin User', 'admin@example.com', bcrypt.hashSync('admin123', 10), 'ADMIN', null]);
+        insert.run(['Administrator', 'admin@fms.com', bcrypt.hashSync('admin', 10), 'ADMIN', null]);
         insert.free && insert.free();
         persistDB();
         console.log('Ensure Users: created users table and seeded default admin users');
       }
 
-      // 30+ years experienced developer dynamic migration pattern:
-      // Dynamically alter existing users table to add plain_password if it doesn't exist
-      const tblUserInfo = db.prepare("PRAGMA table_info('users')");
-      const existingCols = new Set();
-      while (tblUserInfo.step()) {
-        existingCols.add(String(tblUserInfo.getAsObject().name));
-      }
-      tblUserInfo.free();
-      if (!existingCols.has('plain_password')) {
-        db.run("ALTER TABLE users ADD COLUMN plain_password TEXT");
-        db.run("UPDATE users SET plain_password = 'admin' WHERE lower(email) = 'admin@fms.com'");
-        db.run("UPDATE users SET plain_password = 'admin123' WHERE lower(email) = 'admin@example.com'");
+      // Force update default admin passwords to secure hashes
+      try {
+        const updAdmin1 = db.prepare("UPDATE users SET password = ? WHERE lower(email) = 'admin@example.com'");
+        updAdmin1.run([bcrypt.hashSync('admin123', 10)]);
+        updAdmin1.free();
+
+        const updAdmin2 = db.prepare("UPDATE users SET password = ? WHERE lower(email) = 'admin@fms.com'");
+        updAdmin2.run([bcrypt.hashSync('admin', 10)]);
+        updAdmin2.free();
+        
+        // Wipe plain_password column values
+        try { db.run("UPDATE users SET plain_password = NULL"); } catch (e) { }
+
         persistDB();
-        console.log('Ensure Users: dynamically added plain_password column and migrated defaults');
+        console.log('Ensure Users: forced legacy passwords of default admin users');
+      } catch (updErr) {
+        console.warn('Ensure Users: forced password update failed', updErr);
       }
 
-      // Ensure PC User (PC101@gmail.com / PC@KBT101) exists in DB
+      // Ensure PC User (PC101@gmail.com) exists in DB
       try {
         const chkPC = db.prepare('SELECT id FROM users WHERE lower(email) = ?');
         chkPC.bind(['pc101@gmail.com']);
         if (!chkPC.step()) {
           chkPC.free();
-          const insPC = db.prepare('INSERT INTO users (name, email, password, plain_password, role, employeeId) VALUES (?,?,?,?,?,?)');
-          insPC.run(['Process Coordinator (PC)', 'PC101@gmail.com', bcrypt.hashSync('PC@KBT101', 10), 'PC@KBT101', 'PC', 'E-PC101']);
+          const insPC = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
+          insPC.run(['Process Coordinator (PC)', 'PC101@gmail.com', bcrypt.hashSync('PC@KBT101', 10), 'PC', 'E-PC101']);
           insPC.free && insPC.free();
           persistDB();
-          console.log('Ensure Users: created default PC user (PC101@gmail.com / PC@KBT101)');
+          console.log('Ensure Users: created default PC user (PC101@gmail.com)');
         } else {
           chkPC.free();
-          const updPC = db.prepare("UPDATE users SET role = 'PC', password = ?, plain_password = 'PC@KBT101', employeeId = coalesce(employeeId, 'E-PC101') WHERE lower(email) = 'pc101@gmail.com'");
+          const updPC = db.prepare("UPDATE users SET role = 'PC', password = ?, employeeId = coalesce(employeeId, 'E-PC101') WHERE lower(email) = 'pc101@gmail.com'");
           updPC.run([bcrypt.hashSync('PC@KBT101', 10)]);
           updPC.free && updPC.free();
           persistDB();
@@ -435,32 +439,7 @@ try {
     }
 
     try {
-      const tblTasks = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'");
-      const hasTasks = tblTasks.step();
-      tblTasks.free();
-      if (!hasTasks) {
-        db.run(`CREATE TABLE tasks (
-          id TEXT PRIMARY KEY,
-          title TEXT,
-          description TEXT,
-          assignedTo TEXT,
-          assignedBy TEXT,
-          createdDate TEXT,
-          dueDate TEXT,
-          status TEXT,
-          priority TEXT,
-          attachment TEXT,
-          externalLink TEXT,
-          statusNote TEXT,
-          completionDate TEXT,
-          completionProcess TEXT,
-          completionAttachment TEXT,
-          extensionRequest TEXT,
-          extensionHistory TEXT
-        )`);
-        persistDB();
-        console.log('Ensure Tasks: created tasks table');
-      }
+      ensureTasksTableSchema(db);
     } catch (err) {
       console.warn('Tasks table check failed', err);
     }
@@ -765,9 +744,11 @@ try {
         }
       };
       tryCreateIndex('idx_tasks_assignedTo', `CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)`);
+      tryCreateIndex('idx_tasks_assigned_to', `CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to)`);
       tryCreateIndex('idx_tasks_assignedBy', `CREATE INDEX IF NOT EXISTS idx_tasks_assignedBy ON tasks(assignedBy)`);
       tryCreateIndex('idx_tasks_status', `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
       tryCreateIndex('idx_tasks_createdAt', `CREATE INDEX IF NOT EXISTS idx_tasks_createdAt ON tasks(createdAt)`);
+      tryCreateIndex('idx_tasks_created_at', `CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC)`);
       tryCreateIndex('idx_attendance_userId', `CREATE INDEX IF NOT EXISTS idx_attendance_userId ON attendance(userId)`);
       tryCreateIndex('idx_attendance_date', `CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)`);
       tryCreateIndex('idx_timelogs_userId', `CREATE INDEX IF NOT EXISTS idx_timelogs_userId ON timelogs(userId)`);
@@ -995,44 +976,35 @@ function saveToDB() {
 
 // Core tables are ensured to exist early in database initialization
 
-// --- Migration: Hash any existing plaintext passwords & ensure plain_password is set ---
+// --- Migration: Hash any existing plaintext passwords ---
 try {
-  const sel = db.prepare('SELECT id, password, plain_password FROM users');
+  const sel = db.prepare('SELECT id, password FROM users');
   const toUpdate = [];
   while (sel.step()) {
     const r = sel.getAsObject();
-    let plainPass = r.plain_password;
     let newHash = null;
-
-    if (!plainPass && r.password && !r.password.startsWith('$2') && typeof r.password === 'string') {
-      plainPass = r.password;
-    }
-    if (!plainPass) {
-      plainPass = '123';
-    }
 
     if (r.password && !r.password.startsWith('$2') && typeof r.password === 'string') {
       newHash = bcrypt.hashSync(r.password, 10);
     }
 
-    if (plainPass !== r.plain_password || newHash) {
+    if (newHash) {
       toUpdate.push({
         id: r.id,
-        plain_password: plainPass,
-        hashed: newHash || r.password
+        hashed: newHash
       });
     }
   }
   sel.free();
 
   toUpdate.forEach(u => {
-    const upd = db.prepare('UPDATE users SET password = ?, plain_password = ? WHERE id = ?');
-    upd.run([u.hashed, u.plain_password, u.id]);
+    const upd = db.prepare('UPDATE users SET password = ? WHERE id = ?');
+    upd.run([u.hashed, u.id]);
     upd.free && upd.free();
   });
   if (toUpdate.length > 0) {
     persistDB();
-    console.log('Migration: updated plain_password and hashed passwords for', toUpdate.length, 'users');
+    console.log('Migration: hashed plaintext passwords for', toUpdate.length, 'users');
   }
 } catch (err) {
   console.warn('Password migration check failed', err);
@@ -1725,8 +1697,8 @@ app.post('/api/auth/reset-password-otp', (req, res) => {
     check.free();
 
     const hashed = bcrypt.hashSync(password, 10);
-    const upd = db.prepare('UPDATE users SET password = ?, plain_password = ? WHERE id = ?');
-    upd.run([hashed, password, user.id]);
+    const upd = db.prepare('UPDATE users SET password = ? WHERE id = ?');
+    upd.run([hashed, user.id]);
     upd.free();
     persistDB();
 
@@ -1836,7 +1808,7 @@ app.get('/api/users', requireAuth, withCache('users', 15000), (req, res) => {
     console.log('GET /api/users from', req.headers.origin || 'no-origin');
     // Default: return only non-archived users unless explicitly requested
     const archived = req.query.archived === '1' || req.query.archived === 'true';
-    const q = archived ? 'SELECT id, name, email, role, employeeId, is_archived, archived_at, plain_password FROM users' : "SELECT id, name, email, role, employeeId, plain_password FROM users WHERE coalesce(is_archived, 0) = 0";
+    const q = archived ? 'SELECT id, name, email, role, employeeId, is_archived, archived_at FROM users' : "SELECT id, name, email, role, employeeId FROM users WHERE coalesce(is_archived, 0) = 0";
     const stmt = db.prepare(q);
     const out = [];
     while (stmt.step()) {
@@ -1871,7 +1843,7 @@ app.get('/api/users/by-email', requireAuth, (req, res) => {
   try {
     const email = req.query.email;
     if (!email) return failure(res, 'Missing email', 400);
-    const stmt = db.prepare('SELECT id, name, email, role, employeeId, plain_password FROM users WHERE lower(email) = ?');
+    const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE lower(email) = ?');
     stmt.bind([String(email).toLowerCase()]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     const row = stmt.getAsObject();
@@ -1885,7 +1857,7 @@ app.get('/api/users/by-email', requireAuth, (req, res) => {
 
 app.get('/api/users/:id', requireAuth, (req, res) => {
   try {
-    const stmt = db.prepare('SELECT id, name, email, role, employeeId, plain_password FROM users WHERE id = ?');
+    const stmt = db.prepare('SELECT id, name, email, role, employeeId FROM users WHERE id = ?');
     const id = Number(req.params.id);
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
@@ -1913,9 +1885,9 @@ app.post('/api/users', requireAuth, (req, res) => {
 
     // Hash password and insert. Rely also on DB unique index to catch race conditions.
     const hashed = bcrypt.hashSync(password, 10);
-    const insert = db.prepare('INSERT INTO users (name, email, password, plain_password, role, employeeId) VALUES (?,?,?,?,?,?)');
+    const insert = db.prepare('INSERT INTO users (name, email, password, role, employeeId) VALUES (?,?,?,?,?)');
     try {
-      insert.run([name || null, email, hashed, password, role || 'EMPLOYEE', employeeId || null]);
+      insert.run([name || null, email, hashed, role || 'EMPLOYEE', employeeId || null]);
     } catch (dbErr) {
       // Handle unique constraint race condition (insert may fail if another request added same email)
       const msg = dbErr && (dbErr.message || dbErr);
@@ -1958,8 +1930,8 @@ app.put('/api/users/:id', requireAuth, (req, res) => {
       finalArchivedAt = is_archived ? (existing.archived_at || new Date().toISOString()) : null;
     }
 
-    const update = db.prepare('UPDATE users SET name = coalesce(?, name), email = coalesce(?, email), password = coalesce(?, password), plain_password = coalesce(?, plain_password), role = coalesce(?, role), employeeId = coalesce(?, employeeId), is_archived = ?, archived_at = ? WHERE id = ?');
-    update.run([name || null, sanitizedEmail, hashed || null, password || null, role || null, employeeId || null, finalIsArchived, finalArchivedAt, id]);
+    const update = db.prepare('UPDATE users SET name = coalesce(?, name), email = coalesce(?, email), password = coalesce(?, password), role = coalesce(?, role), employeeId = coalesce(?, employeeId), is_archived = ?, archived_at = ? WHERE id = ?');
+    update.run([name || null, sanitizedEmail, hashed || null, role || null, employeeId || null, finalIsArchived, finalArchivedAt, id]);
     update.free && update.free();
     persistDB();
     return success(res, null, 'Updated');
@@ -2290,17 +2262,17 @@ app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res)
       stmt.free();
       console.log('GET /api/employees -> returning', out.length, 'rows for admin');
       return success(res, out || []);
-    } else if (req.user && req.user.employeeId) {
+    } else if (req.user) {
       // Allow non-admin authenticated users to fetch the list of active employees
-      // so features like team chat can display colleagues.
-      const q = "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0";
+      // so features like team chat can display colleagues and calendar can display birthdays.
+      const q = "SELECT id, name, department, designation, email, birthDate, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0 AND status = 'Active'";
       const stmt = db.prepare(q);
       const out = [];
       while (stmt.step()) {
         out.push(stmt.getAsObject());
       }
       stmt.free();
-      console.log('GET /api/employees -> returning', out.length, 'rows for non-admin user', req.user && req.user.employeeId);
+      console.log('GET /api/employees -> returning', out.length, 'rows for non-admin user', req.user && (req.user.employeeId || req.user.id));
       return success(res, out || []);
     } else {
       console.log('GET /api/employees -> forbidden for unauthenticated user');
@@ -3068,6 +3040,13 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
         if (!isDup) {
           existingList.push(record);
           out.push(record);
+        } else {
+          // If the duplicate entry has an endTime but the already-collected one didn't, upgrade it
+          const existingItem = existingList.find(ex => (ex.id === record.id) || (recordTime && ex.startTime && Math.abs(recordTime - new Date(ex.startTime).getTime()) < 120000));
+          if (existingItem && !existingItem.endTime && record.endTime) {
+            existingItem.endTime = record.endTime;
+            existingItem.durationHours = record.durationHours;
+          }
         }
       }
     }
@@ -3079,51 +3058,110 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
 });
 
 // --- Tasks endpoints ---
-// Ensure optional snake_case compatibility columns exist for tasks (run-time migration)
-// Ensure tasks table exists and if missing create the required schema (non-destructive)
-try {
-  const tbl = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'");
-  const hasTasks = tbl.step(); tbl.free();
-  if (!hasTasks) {
-    console.log('Tasks table missing - creating required tasks schema');
-    db.run(`CREATE TABLE tasks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
+// Ensure full tasks schema helper (cached to run only on boot or DB reload)
+function ensureTasksTableSchema(database = db, force = false) {
+  if (!database) return;
+  if (global.isTaskSchemaEnsured && !force) return;
+  try {
+    const tblStmt = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'");
+    const exists = tblStmt.step();
+    tblStmt.free();
+    if (!exists) {
+      database.run(`CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT,
         description TEXT,
-        priority TEXT,
-        due_date TEXT,
+        assignedTo TEXT,
         assigned_to INTEGER,
+        assignedBy TEXT,
+        assigned_by INTEGER,
+        dueDate TEXT,
+        due_date TEXT,
+        createdDate TEXT,
+        createdAt TEXT,
+        created_at TEXT,
         status TEXT DEFAULT 'pending',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        priority TEXT DEFAULT 'MEDIUM',
+        attachment TEXT,
+        externalLink TEXT,
+        statusNote TEXT,
+        completionDate TEXT,
+        completionProcess TEXT,
+        completionAttachment TEXT,
+        extensionRequest TEXT,
+        extensionHistory TEXT
       )`);
-    persistDB();
-  }
-
-  // Run migrations: add missing compatibility columns without altering existing primary key type
-  const colsStmt2 = db.prepare("PRAGMA table_info('tasks')");
-  const colsSet = new Set();
-  while (colsStmt2.step()) colsSet.add(String(colsStmt2.getAsObject().name));
-  colsStmt2.free();
-  const addIfMissing = (name, sql) => {
-    if (!colsSet.has(name)) {
-      try { db.run(sql); console.log('Added tasks column (migration):', name); persistDB(); } catch (e) { console.warn('Failed to add tasks column', name, e && (e.message || e)); }
+      persistDB();
+      global.isTaskSchemaEnsured = true;
+      return;
     }
-  };
-  addIfMissing('assigned_to', 'ALTER TABLE tasks ADD COLUMN assigned_to INTEGER');
-  addIfMissing('due_date', 'ALTER TABLE tasks ADD COLUMN due_date TEXT');
-  addIfMissing('created_at', 'ALTER TABLE tasks ADD COLUMN created_at TEXT');
-  addIfMissing('assigned_by', 'ALTER TABLE tasks ADD COLUMN assigned_by INTEGER');
-  // status may already exist (camelCase 'status'), but ensure snake_case as well
-  addIfMissing('status', "ALTER TABLE tasks ADD COLUMN status TEXT");
+
+    const colsStmt = database.prepare("PRAGMA table_info('tasks')");
+    const colsSet = new Set();
+    while (colsStmt.step()) {
+      colsSet.add(String(colsStmt.getAsObject().name));
+    }
+    colsStmt.free();
+
+    const expectedCols = {
+      title: 'TEXT',
+      description: 'TEXT',
+      assignedTo: 'TEXT',
+      assigned_to: 'INTEGER',
+      assignedBy: 'TEXT',
+      assigned_by: 'INTEGER',
+      dueDate: 'TEXT',
+      due_date: 'TEXT',
+      createdDate: 'TEXT',
+      createdAt: 'TEXT',
+      created_at: 'TEXT',
+      status: 'TEXT',
+      priority: 'TEXT',
+      attachment: 'TEXT',
+      externalLink: 'TEXT',
+      statusNote: 'TEXT',
+      completionDate: 'TEXT',
+      completionProcess: 'TEXT',
+      completionAttachment: 'TEXT',
+      extensionRequest: 'TEXT',
+      extensionHistory: 'TEXT'
+    };
+
+    let altered = false;
+    for (const [name, type] of Object.entries(expectedCols)) {
+      if (!colsSet.has(name)) {
+        try {
+          database.run(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+          colsSet.add(name);
+          altered = true;
+          console.log(`[Tasks Schema] Successfully added missing column: ${name}`);
+        } catch (e) {
+          console.warn(`[Tasks Schema] Could not add column ${name}:`, e && (e.message || e));
+        }
+      }
+    }
+    if (altered) {
+      persistDB();
+    }
+    global.isTaskSchemaEnsured = true;
+  } catch (err) {
+    console.warn('[Tasks Schema] Check failed:', err && (err.message || err));
+  }
+}
+
+// Initial task schema verification
+try {
+  ensureTasksTableSchema(db, true);
 } catch (e) { console.warn('Tasks runtime migration failed', e && (e.message || e)); }
+
 // POST /api/tasks - create a new task (ADMIN only)
 app.post('/api/tasks', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
+    ensureTasksTableSchema(db);
 
-    const { title, description, assignedTo, assigned_to, assigned_by, dueDate, priority } = req.body || {};
-    console.log('Tasks POST by', req.user && (req.user.id || req.user.name || req.user.role), 'payload', { title, assignedTo, assigned_to, dueDate });
+    const { title, description, assignedTo, assigned_to, assigned_by, dueDate, priority, attachment, externalLink, createdDate } = req.body || {};
     if (!title) return failure(res, 'Missing required field: title', 400);
     // Validate assignee presence to avoid accidental empty-string -> numeric 0 coercion
     if (assignedTo == null || String(assignedTo).trim() === '') {
@@ -3135,22 +3173,20 @@ app.post('/api/tasks', requireAuth, (req, res) => {
 
       // Validate assignee: accept either employee id (preferred) or numeric user id.
       // Support both `assignedTo` (employeeId) and `assigned_to` (numeric user id) from clients.
-      let assigned_to = null; // numeric user id
+      let assigned_to_num = null; // numeric user id
       let assignedToEmp = null; // employee id string
 
       // If client explicitly supplied numeric user id in assigned_to, prefer and validate it
       if (assigned_to != null && String(assigned_to).trim() !== '') {
-        // ensure numeric
         const maybeNum = Number(assigned_to);
         if (isNaN(maybeNum)) { db.run('ROLLBACK'); return failure(res, 'Invalid assignee id', 400); }
         const u = db.prepare('SELECT id, employeeId FROM users WHERE id = ? AND coalesce(is_archived, 0) = 0');
         u.bind([maybeNum]);
-        if (!u.step()) { u.free(); db.run('ROLLBACK'); console.warn('Tasks POST: user id not found or archived', assigned_to); return failure(res, 'Invalid assignee: user not found', 400); }
+        if (!u.step()) { u.free(); db.run('ROLLBACK'); return failure(res, 'Invalid assignee: user not found', 400); }
         const ur = u.getAsObject(); u.free();
-        assigned_to = Number(ur.id);
+        assigned_to_num = Number(ur.id);
         assignedToEmp = ur.employeeId || null;
       } else if (assignedTo != null && String(assignedTo).trim() !== '') {
-        // Prefer matching an employee record first (handles numeric employee IDs too)
         try {
           const e = db.prepare("SELECT id FROM employees WHERE REPLACE(id, '-', '') = REPLACE(?, '-', '') COLLATE NOCASE AND coalesce(is_archived, 0) = 0");
           e.bind([assignedTo]);
@@ -3158,41 +3194,38 @@ app.post('/api/tasks', requireAuth, (req, res) => {
             const er = e.getAsObject();
             assignedToEmp = er.id;
             e.free();
-            // Try to resolve to a user id if a user exists for this employee
             try {
               const u2 = db.prepare('SELECT id FROM users WHERE employeeId = ? AND coalesce(is_archived, 0) = 0');
               u2.bind([assignedToEmp]);
-              if (u2.step()) { assigned_to = Number(u2.getAsObject().id); }
+              if (u2.step()) { assigned_to_num = Number(u2.getAsObject().id); }
               u2.free();
             } catch (inner) { /* ignore */ }
           } else {
             e.free();
-            // Fallback: if looks numeric, treat as user id
             if (!isNaN(Number(assignedTo))) {
               const u = db.prepare('SELECT id, employeeId FROM users WHERE id = ? AND coalesce(is_archived, 0) = 0');
               u.bind([Number(assignedTo)]);
-              if (!u.step()) { u.free(); db.run('ROLLBACK'); console.warn('Tasks POST: user id not found or archived', assignedTo); return failure(res, 'Invalid assignee: user not found', 400); }
+              if (!u.step()) { u.free(); db.run('ROLLBACK'); return failure(res, 'Invalid assignee: user not found', 400); }
               const ur = u.getAsObject(); u.free();
-              assigned_to = Number(ur.id);
+              assigned_to_num = Number(ur.id);
               assignedToEmp = ur.employeeId || null;
             } else {
-              // No matching employee or numeric user id
               db.run('ROLLBACK');
-              console.warn('Tasks POST: assignee lookup failed for', assignedTo);
               return failure(res, 'Invalid assignee: employee not found', 400);
             }
           }
         } catch (e) {
-          console.warn('Tasks POST: assignee resolution error', e && (e.message || e));
           db.run('ROLLBACK');
           return failure(res, 'Invalid assignee', 400);
         }
       }
 
       const createdAt = new Date().toISOString();
+      const taskCreatedDate = createdDate || createdAt.split('T')[0];
       const assignedBy = String(req.user.id);
+      const assignedByName = req.user.name || 'Admin';
 
-      // Detect id column type so we insert correctly (some DBs may use INTEGER PKs, others legacy TEXT ids)
+      // Detect id column type so we insert correctly
       const infoStmt = db.prepare("PRAGMA table_info('tasks')");
       const meta = {};
       while (infoStmt.step()) { const r = infoStmt.getAsObject(); meta[r.name] = r; }
@@ -3213,33 +3246,83 @@ app.post('/api/tasks', requireAuth, (req, res) => {
         } catch(e) { console.warn('Could not compute max KBT- id', e); }
         const id = 'KBT-' + String(nextNum).padStart(2, '0');
         // Insert and populate both camelCase and snake_case columns for compatibility
-        const insert = db.prepare('INSERT INTO tasks (id, title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, createdAt, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
-        insert.run([id, title, description || '', assignedToEmp || null, assignedBy || null, Number(req.user.id) || null, priority || 'MEDIUM', dueDate, assigned_to, dueDate, 'pending', createdAt, createdAt]);
+        const insert = db.prepare('INSERT INTO tasks (id, title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, createdDate, createdAt, created_at, attachment, externalLink) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        insert.run([id, title, description || '', assignedToEmp || null, assignedBy || null, Number(req.user.id) || null, priority || 'MEDIUM', dueDate, assigned_to_num, dueDate, 'pending', taskCreatedDate, createdAt, createdAt, attachment || null, externalLink || null]);
         insert.free();
 
-        const getStmt = db.prepare('SELECT id, title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, createdAt, created_at, extensionHistory, extensionRequest FROM tasks WHERE id = ?');
+        const getStmt = db.prepare(`
+          SELECT t.id, t.title, t.description, t.priority,
+                 coalesce(t.due_date, t.dueDate, '') AS due_date,
+                 coalesce(t.dueDate, t.due_date, '') AS dueDate,
+                 t.assigned_to,
+                 coalesce(t.assignedTo, '') AS assignedToStr,
+                 coalesce(t.assignedBy, '') AS assignedByStr,
+                 t.status,
+                 coalesce(t.created_at, t.createdAt, t.createdDate, '') AS created_at,
+                 coalesce(t.createdDate, t.createdAt, t.created_at, '') AS createdDate,
+                 ua.name AS assignedByName, ua.employeeId AS assignedByEmployeeId,
+                 ub.name AS assignedToName, ub.employeeId AS assignedToEmployeeId,
+                 t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess, t.completionAttachment, t.statusNote, t.attachment, t.externalLink
+          FROM tasks t
+          LEFT JOIN users ua ON (t.assigned_by IS NOT NULL AND ua.id = t.assigned_by)
+          LEFT JOIN users ub ON (t.assigned_to IS NOT NULL AND ub.id = t.assigned_to)
+          WHERE t.id = ?
+        `);
         getStmt.bind([id]);
         getStmt.step();
         row = getStmt.getAsObject();
         getStmt.free();
       } else {
-        // INTEGER AUTOINCREMENT primary key: insert without supplying id
-        const insert = db.prepare('INSERT INTO tasks (title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
-        insert.run([title, description || '', assignedToEmp || null, assignedBy || null, Number(req.user.id) || null, priority || 'MEDIUM', dueDate, assigned_to, dueDate, 'pending', createdAt]);
+        const insert = db.prepare('INSERT INTO tasks (title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, createdDate, createdAt, created_at, attachment, externalLink) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        insert.run([title, description || '', assignedToEmp || null, assignedBy || null, Number(req.user.id) || null, priority || 'MEDIUM', dueDate, assigned_to_num, dueDate, 'pending', taskCreatedDate, createdAt, createdAt, attachment || null, externalLink || null]);
         insert.free();
-        const get = db.prepare('SELECT id, title, description, assignedTo, assignedBy, assigned_by, priority, dueDate, assigned_to, due_date, status, created_at FROM tasks WHERE rowid = last_insert_rowid()');
+        const get = db.prepare(`
+          SELECT t.id, t.title, t.description, t.priority,
+                 coalesce(t.due_date, t.dueDate, '') AS due_date,
+                 coalesce(t.dueDate, t.due_date, '') AS dueDate,
+                 t.assigned_to,
+                 coalesce(t.assignedTo, '') AS assignedToStr,
+                 coalesce(t.assignedBy, '') AS assignedByStr,
+                 t.status,
+                 coalesce(t.created_at, t.createdAt, t.createdDate, '') AS created_at,
+                 coalesce(t.createdDate, t.createdAt, t.created_at, '') AS createdDate,
+                 ua.name AS assignedByName, ua.employeeId AS assignedByEmployeeId,
+                 ub.name AS assignedToName, ub.employeeId AS assignedToEmployeeId,
+                 t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess, t.completionAttachment, t.statusNote, t.attachment, t.externalLink
+          FROM tasks t
+          LEFT JOIN users ua ON (t.assigned_by IS NOT NULL AND ua.id = t.assigned_by)
+          LEFT JOIN users ub ON (t.assigned_to IS NOT NULL AND ub.id = t.assigned_to)
+          WHERE t.rowid = last_insert_rowid()
+        `);
         get.bind([]); get.step(); row = get.getAsObject(); get.free();
       }
 
       db.run('COMMIT');
       persistDB();
 
-      row.extensionHistory = (() => { try { return JSON.parse(row.extensionHistory || '[]'); } catch (e) { return []; } })();
-      row.extensionRequest = (() => { try { return row.extensionRequest ? JSON.parse(row.extensionRequest) : undefined; } catch (e) { return undefined; } })();
+      if (row) {
+        row.assigned_to = row.assigned_to || null;
+        row.assignedTo = row.assignedToStr || row.assignedToEmployeeId || assignedToEmp || null;
+        row.assignedBy = row.assignedByName || row.assignedByStr || assignedByName || null;
+        row.assignedToName = row.assignedToName || null;
+        row.dueDate = row.due_date || row.dueDate || dueDate || null;
+        row.createdDate = row.created_at || row.createdDate || taskCreatedDate || null;
+        row.priority = row.priority || priority || 'MEDIUM';
+        row.status = (row.status || 'pending').toUpperCase();
+        row.completionProcess = row.completionProcess || null;
+        row.completionDate = row.completionDate || null;
+        row.completionAttachment = row.completionAttachment || null;
+        row.attachment = row.attachment || attachment || null;
+        row.externalLink = row.externalLink || externalLink || null;
+        row.statusNote = row.statusNote || null;
+        row.extensionHistory = (() => { try { return JSON.parse(row.extensionHistory || '[]'); } catch (e) { return []; } })();
+        row.extensionRequest = (() => { try { return row.extensionRequest ? JSON.parse(row.extensionRequest) : undefined; } catch (e) { return undefined; } })();
+      }
 
+      cacheInvalidate('tasks');
       return success(res, { task: row }, 'Created', 201);
     } catch (e) {
-      try { db.run('ROLLBACK'); } catch (er) { console.error('Tasks POST: rollback failed', er && (er.stack || er.message || er)); }
+      try { db.run('ROLLBACK'); } catch (er) { }
       console.error('Tasks POST transactional error', e && (e.stack || e.message || e));
       return failure(res, 'Internal server error while creating task', 500);
     }
@@ -3250,9 +3333,10 @@ app.post('/api/tasks', requireAuth, (req, res) => {
 });
 
 // GET /api/tasks - get tasks for the logged-in user (admin returns all, supports pagination/filtering)
-app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
+app.get('/api/tasks', requireAuth, withCache('tasks', 60000), (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
+    ensureTasksTableSchema(db);
 
     const isAdmin = req.user.role === 'ADMIN' || req.user.role === 'PC';
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -3264,16 +3348,20 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
     const statusFilter = req.query.status ? String(req.query.status).trim().toLowerCase() : null;
     const searchFilter = req.query.search ? String(req.query.search).trim().toLowerCase() : null;
     const assignedToFilter = req.query.assignedTo ? String(req.query.assignedTo).trim() : null;
-    const includeAttachments = req.query.includeAttachments === 'true' || req.query.includeAttachments === '1';
-
-    // Exclude heavy base64 attachment field BY DEFAULT to prevent 25MB JSON payloads
-    const attachmentSelect = includeAttachments ? ', t.completionAttachment, t.completionProcess' : '';
 
     const base = `
-      SELECT t.id, t.title, t.description, t.priority, t.due_date, t.assigned_to, t.assignedTo as assignedToStr, t.status, t.created_at,
+      SELECT t.id, t.title, t.description, t.priority,
+             coalesce(t.due_date, t.dueDate, '') AS due_date,
+             coalesce(t.dueDate, t.due_date, '') AS dueDate,
+             t.assigned_to,
+             coalesce(t.assignedTo, '') AS assignedToStr,
+             coalesce(t.assignedBy, '') AS assignedByStr,
+             t.status,
+             coalesce(t.created_at, t.createdAt, t.createdDate, '') AS created_at,
+             coalesce(t.createdDate, t.createdAt, t.created_at, '') AS createdDate,
              ua.name AS assignedByName, ua.employeeId AS assignedByEmployeeId,
              ub.name AS assignedToName, ub.employeeId AS assignedToEmployeeId,
-             t.extensionHistory, t.extensionRequest, t.completionDate, t.statusNote ${attachmentSelect}
+             t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess, t.completionAttachment, t.statusNote, t.attachment, t.externalLink
       FROM tasks t
       LEFT JOIN users ua ON ua.id = t.assigned_by
       LEFT JOIN users ub ON ub.id = t.assigned_to
@@ -3284,26 +3372,26 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
 
     if (!isAdmin) {
       const normalizedEmp = req.user.employeeId ? String(req.user.employeeId).replace(/[^a-zA-Z0-9]/g, '') : '';
-      conditions.push('(t.assigned_to = ? OR t.assignedTo = ? OR REPLACE(t.assignedTo, "-", "") = ?)');
+      conditions.push('(t.assigned_to = ? OR t.assignedTo = ? OR REPLACE(coalesce(t.assignedTo, ""), "-", "") = ?)');
       params.push(Number(req.user.id), req.user.employeeId || '', normalizedEmp);
     } else if (assignedToFilter) {
       const normalizedEmp = assignedToFilter.replace(/[^a-zA-Z0-9]/g, '');
-      conditions.push('(t.assignedTo = ? OR REPLACE(t.assignedTo, "-", "") = ?)');
+      conditions.push('(t.assignedTo = ? OR REPLACE(coalesce(t.assignedTo, ""), "-", "") = ?)');
       params.push(assignedToFilter, normalizedEmp);
     }
 
     if (statusFilter) {
-      conditions.push('LOWER(t.status) = ?');
+      conditions.push('LOWER(coalesce(t.status, "")) = ?');
       params.push(statusFilter);
     }
 
     if (searchFilter) {
-      conditions.push('(LOWER(t.title) LIKE ? OR LOWER(t.description) LIKE ?)');
+      conditions.push('(LOWER(coalesce(t.title, "")) LIKE ? OR LOWER(coalesce(t.description, "")) LIKE ?)');
       params.push(`%${searchFilter}%`, `%${searchFilter}%`);
     }
 
     let whereClause = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-    let query = base + whereClause + ' ORDER BY t.created_at DESC';
+    let query = base + whereClause + ' ORDER BY t.rowid DESC';
 
     if (limit > 0) {
       const offset = (page - 1) * limit;
@@ -3313,17 +3401,47 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
     const stmt = db.prepare(query);
     if (params.length) stmt.bind(params);
 
+    const cols = stmt.getColumnNames();
+    const colsLen = cols.length;
     const out = [];
+
     while (stmt.step()) {
-      const r = stmt.getAsObject();
+      const rowArr = stmt.get();
+      const r = {};
+      for (let i = 0; i < colsLen; i++) {
+        r[cols[i]] = rowArr[i];
+      }
       r.assigned_to = r.assigned_to || null;
       r.assignedTo = r.assignedToStr || r.assignedToEmployeeId || null;
-      r.assignedBy = r.assignedByName || null;
+      r.assignedBy = r.assignedByName || r.assignedByStr || null;
       r.assignedToName = r.assignedToName || null;
-      r.dueDate = r.due_date || null;
-      r.createdDate = r.created_at || null;
+      r.dueDate = r.due_date || r.dueDate || null;
+      r.createdDate = r.created_at || r.createdDate || null;
       r.priority = r.priority || 'MEDIUM';
       r.status = (r.status || 'pending').toUpperCase();
+      r.completionProcess = r.completionProcess || null;
+      r.completionDate = r.completionDate || null;
+      r.completionAttachment = r.completionAttachment || null;
+      r.attachment = r.attachment || null;
+      r.externalLink = r.externalLink || null;
+      r.statusNote = r.statusNote || null;
+
+      // Convert heavy base64 strings into lightweight on-demand streaming URLs (cuts payload from 148MB to 500KB)
+      if (r.attachment) {
+        if (typeof r.attachment === 'string' && r.attachment.startsWith('data:')) {
+          r.attachment = `/api/tasks/${r.id}/attachment`;
+        }
+      } else {
+        r.attachment = null;
+      }
+
+      if (r.completionAttachment) {
+        if (typeof r.completionAttachment === 'string' && r.completionAttachment.startsWith('data:')) {
+          r.completionAttachment = `/api/tasks/${r.id}/completion-attachment`;
+        }
+      } else {
+        r.completionAttachment = null;
+      }
 
       r.extensionHistory = (() => { try { return JSON.parse(r.extensionHistory || '[]'); } catch (e) { return []; } })();
       r.extensionRequest = (() => { try { return r.extensionRequest ? JSON.parse(r.extensionRequest) : undefined; } catch (e) { return undefined; } })();
@@ -3334,7 +3452,75 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 15000), (req, res) => {
     return success(res, { tasks: out, page, limit: limit > 0 ? limit : out.length, total: out.length });
   } catch (err) {
     console.error('Tasks GET error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
+    return failure(res, 'Internal server error: ' + (err && (err.message || String(err))), 500);
+  }
+});
+
+// GET /api/tasks/:id/attachment - stream task attachment on demand
+app.get('/api/tasks/:id/attachment', (req, res) => {
+  try {
+    const id = req.params.id;
+    const stmt = db.prepare('SELECT attachment FROM tasks WHERE id = ?');
+    stmt.bind([id]);
+    if (!stmt.step()) {
+      stmt.free();
+      return res.status(404).send('Attachment not found');
+    }
+    const { attachment } = stmt.getAsObject();
+    stmt.free();
+    if (!attachment) return res.status(404).send('Attachment not found');
+
+    if (attachment.startsWith('data:')) {
+      const parts = attachment.split(',');
+      const meta = parts[0];
+      const base64Data = parts[1] || '';
+      const mime = meta.split(':')[1]?.split(';')[0] || 'application/octet-stream';
+      const buffer = Buffer.from(base64Data, 'base64');
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Disposition', `inline; filename="Task_${id}_attachment"`);
+      return res.send(buffer);
+    } else if (attachment.startsWith('http://') || attachment.startsWith('https://')) {
+      return res.redirect(attachment);
+    } else {
+      return res.send(attachment);
+    }
+  } catch (err) {
+    console.error('Task attachment streaming error', err);
+    return res.status(500).send('Internal server error');
+  }
+});
+
+// GET /api/tasks/:id/completion-attachment - stream completion proof on demand
+app.get('/api/tasks/:id/completion-attachment', (req, res) => {
+  try {
+    const id = req.params.id;
+    const stmt = db.prepare('SELECT completionAttachment FROM tasks WHERE id = ?');
+    stmt.bind([id]);
+    if (!stmt.step()) {
+      stmt.free();
+      return res.status(404).send('Completion attachment not found');
+    }
+    const { completionAttachment } = stmt.getAsObject();
+    stmt.free();
+    if (!completionAttachment) return res.status(404).send('Completion attachment not found');
+
+    if (completionAttachment.startsWith('data:')) {
+      const parts = completionAttachment.split(',');
+      const meta = parts[0];
+      const base64Data = parts[1] || '';
+      const mime = meta.split(':')[1]?.split(';')[0] || 'application/octet-stream';
+      const buffer = Buffer.from(base64Data, 'base64');
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Disposition', `inline; filename="Task_${id}_proof"`);
+      return res.send(buffer);
+    } else if (completionAttachment.startsWith('http://') || completionAttachment.startsWith('https://')) {
+      return res.redirect(completionAttachment);
+    } else {
+      return res.send(completionAttachment);
+    }
+  } catch (err) {
+    console.error('Task completion attachment streaming error', err);
+    return res.status(500).send('Internal server error');
   }
 });
 
@@ -3345,8 +3531,9 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
     if (!req.user) return failure(res, 'Unauthorized', 401);
+    ensureTasksTableSchema(db);
 
-    const stmt = db.prepare('SELECT id, title, description, priority, dueDate, due_date, assignedTo, assigned_to, assigned_by, status, createdAt, created_at, extensionHistory, extensionRequest FROM tasks WHERE id = ?');
+    const stmt = db.prepare('SELECT id, title, description, priority, dueDate, due_date, assignedTo, assigned_to, assigned_by, status, createdAt, created_at, extensionHistory, extensionRequest, completionDate, completionProcess, completionAttachment, statusNote, attachment, externalLink FROM tasks WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     let r = stmt.getAsObject();
@@ -3376,6 +3563,12 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
     r.createdDate = r.created_at || r.createdAt || null;
     r.priority = r.priority || 'MEDIUM';
     r.status = (r.status || 'pending').toUpperCase();
+    r.completionProcess = r.completionProcess || null;
+    r.completionDate = r.completionDate || null;
+    r.completionAttachment = r.completionAttachment || null;
+    r.attachment = r.attachment || null;
+    r.externalLink = r.externalLink || null;
+    r.statusNote = r.statusNote || null;
 
     stmt.free();
 
@@ -3387,7 +3580,7 @@ app.get('/api/tasks/:id', requireAuth, (req, res) => {
     return success(res, { task: r });
   } catch (err) {
     console.error('Tasks GET /:id error', { path: req.path, err: err && (err.stack || err.message || err) });
-    return failure(res, 'Internal server error', 500);
+    return failure(res, 'Internal server error: ' + (err && (err.message || String(err))), 500);
   }
 });
 
@@ -3396,6 +3589,7 @@ app.put('/api/tasks/:id/uncomplete', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Admin only', 403);
+    ensureTasksTableSchema(db);
 
     const id = req.params.id;
 
@@ -3427,6 +3621,7 @@ app.put('/api/tasks/:id/uncomplete', requireAuth, (req, res) => {
       outStmt.step();
       const updated = outStmt.getAsObject();
       outStmt.free();
+      cacheInvalidate('tasks');
       return success(res, { task: updated }, 'Task reverted to pending');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }
@@ -3443,6 +3638,7 @@ app.put('/api/tasks/:id/uncomplete', requireAuth, (req, res) => {
 app.put('/api/tasks/:id', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
+    ensureTasksTableSchema(db);
     const id = req.params.id;
     const getStmt = db.prepare("SELECT id, title, description, assignedTo, priority, dueDate, assigned_to, createdAt, coalesce(assignedBy, '') as assignedBy, extensionHistory, extensionRequest FROM tasks WHERE id = ?");
     getStmt.bind([id]);
@@ -3566,6 +3762,7 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
       outStmt.step();
       const updated = outStmt.getAsObject();
       outStmt.free();
+      cacheInvalidate('tasks');
       return success(res, { task: updated }, 'Updated');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { console.error('Tasks PUT: rollback failed', er && (er.stack || er.message || er)); }
@@ -3602,6 +3799,7 @@ app.delete('/api/tasks/:id', requireAuth, (req, res) => {
       db.run('COMMIT');
       if (!persistDB()) console.warn('Tasks DELETE: commit succeeded but failed to persist DB file');
       else console.log('Tasks DELETE: deleted task persisted to DB file');
+      cacheInvalidate('tasks');
       return success(res, null, 'Deleted');
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { console.error('Tasks DELETE: rollback failed', er && (er.stack || er.message || er)); }
@@ -4013,18 +4211,20 @@ app.post('/api/checklists', requireAuth, (req, res) => {
 
 app.post('/api/checklists/bulk', requireAuth, (req, res) => {
   try {
-    const { items } = req.body || {};
+    const { items, replace } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) return failure(res, 'Missing items array', 400);
     try {
       db.run('BEGIN TRANSACTION');
 
-      // Clean up previous pending instances of the templates being bulk-created to prevent duplicate schedule accumulation
-      const uniqueRefIds = [...new Set(items.map(it => it.refId).filter(Boolean))];
-      const deleteStmt = db.prepare('DELETE FROM checklists WHERE refId = ? AND done = 0');
-      for (const refId of uniqueRefIds) {
-        deleteStmt.run([refId]);
+      // Clean up previous pending instances of the templates only when replace is explicitly requested (e.g. schedule regeneration)
+      if (replace === true) {
+        const uniqueRefIds = [...new Set(items.map(it => it.refId).filter(Boolean))];
+        const deleteStmt = db.prepare('DELETE FROM checklists WHERE refId = ? AND done = 0');
+        for (const refId of uniqueRefIds) {
+          deleteStmt.run([refId]);
+        }
+        deleteStmt.free();
       }
-      deleteStmt.free();
 
       const insert = db.prepare('INSERT INTO checklists (id, refId, refType, item, done, createdBy, createdAt) VALUES (?,?,?,?,?,?,?)');
       const createdBy = req.user && (req.user.employeeId || req.user.id) || null;
@@ -4530,27 +4730,31 @@ app.get('/api/leaves', requireAuth, (req, res) => {
       LEFT JOIN employees e4 ON CAST(e4.id AS TEXT) = CAST(u2.employeeId AS TEXT)
     `;
 
+    let stmt = null;
+    let params = [];
+
     // Role-based filtering
     if (req.user.role === 'ADMIN') {
       console.log('DEBUG: Admin view - fetching all leaves');
       stmt = db.prepare(`${baseQuery} ORDER BY l.appliedOn DESC LIMIT 500`);
+      params = [];
     } else if (type === 'my') {
       const usersEmpId = req.user.employeeId || 'NON_EXISTENT_EMP_ID';
       console.log('DEBUG: Employee view - fetching own leaves where appliedBy =', loggedInUserId, 'or empId =', usersEmpId);
       stmt = db.prepare(`${baseQuery} WHERE l.appliedBy = ? OR l.userId = ? OR l.appliedBy = ? ORDER BY l.appliedOn DESC LIMIT 500`);
-      params = [loggedInUserId, loggedInUserId, usersEmpId];
+      params = [String(loggedInUserId), String(loggedInUserId), String(usersEmpId)];
     } else if (type === 'approvals') {
       const usersEmpId = req.user.employeeId || 'NON_EXISTENT_EMP_ID';
       console.log('DEBUG: Manager view - fetching leaves where appliedTo =', loggedInUserId, 'or', usersEmpId);
       stmt = db.prepare(`${baseQuery} WHERE l.appliedTo = ? OR l.appliedTo = ? ORDER BY l.appliedOn DESC LIMIT 500`);
-      params = [loggedInUserId, usersEmpId];
+      params = [String(loggedInUserId), String(usersEmpId)];
     } else {
       console.log('DEBUG: Default view - fetching own leaves where appliedBy =', loggedInUserId);
       stmt = db.prepare(`${baseQuery} WHERE l.appliedBy = ? OR l.userId = ? ORDER BY l.appliedOn DESC LIMIT 500`);
-      params = [loggedInUserId, loggedInUserId];
+      params = [String(loggedInUserId), String(loggedInUserId)];
     }
 
-    if (params.length > 0) stmt.bind(params);
+    if (params && params.length > 0) stmt.bind(params);
 
     const out = [];
     while (stmt.step()) {
@@ -4565,7 +4769,21 @@ app.get('/api/leaves', requireAuth, (req, res) => {
     return success(res, out);
   } catch (err) {
     console.error('Leaves GET error', err && (err.stack || err.message || err));
-    return failure(res, 'Internal server error', 500);
+    // Safe fallback query if join fails or schema differences exist
+    try {
+      const simpleStmt = db.prepare('SELECT * FROM leaves ORDER BY createdAt DESC LIMIT 500');
+      const fallbackList = [];
+      while (simpleStmt.step()) {
+        const r = simpleStmt.getAsObject();
+        r.employeeId = r.appliedBy || r.userId;
+        fallbackList.push(r);
+      }
+      simpleStmt.free();
+      return success(res, fallbackList);
+    } catch (fallbackErr) {
+      console.error('Leaves GET fallback error', fallbackErr);
+      return failure(res, 'Internal server error', 500);
+    }
   }
 });
 
@@ -5744,7 +5962,8 @@ app.post('/api/holidays', requireAuth, (req, res) => {
       insert.free();
       db.run('COMMIT');
       persistDB();
-      return success(res, { id }, 'Created', 201);
+      cacheInvalidate('holidays');
+      return success(res, { id, name, date, recurring: !!recurring }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Holidays POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
@@ -5771,6 +5990,7 @@ app.delete('/api/holidays/:id', requireAuth, (req, res) => {
     const del = db.prepare('DELETE FROM holidays WHERE id = ?');
     del.run([id]); del.free && del.free();
     persistDB();
+    cacheInvalidate('holidays');
     return success(res, null, 'Deleted');
   } catch (err) { console.error('Holidays DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
@@ -5779,21 +5999,69 @@ app.delete('/api/holidays/:id', requireAuth, (req, res) => {
 app.post('/api/timelogs', requireAuth, (req, res) => {
   try {
     const { id, userId, startTime, endTime, task, notes } = req.body || {};
-    if (!id || !userId || !startTime) return failure(res, 'Missing fields', 400);
+    const targetUserId = userId || (req.user ? (req.user.employeeId || String(req.user.id || '')) : null);
+    if (!targetUserId || !startTime) return failure(res, 'Missing fields', 400);
+
+    const logId = id || `TL-${targetUserId}-${Date.now()}`;
 
     // Check if ID already exists (same request sent twice — network retry)
     const checkById = db.prepare('SELECT id FROM timelogs WHERE id = ?');
-    checkById.bind([id]);
+    checkById.bind([logId]);
     if (checkById.step()) {
       checkById.free();
+      // Update with endTime if provided
+      if (endTime) {
+        const updateExisting = db.prepare('UPDATE timelogs SET endTime = coalesce(?, endTime), task = coalesce(?, task), notes = coalesce(?, notes) WHERE id = ?');
+        updateExisting.run([endTime, task || null, notes || null, logId]);
+        updateExisting.free && updateExisting.free();
+        persistDB();
+      }
       cacheInvalidate('timelogs');
-      return success(res, { id }, 'Timelog already exists');
+      return success(res, { id: logId }, 'Timelog updated');
     }
     checkById.free();
 
+    // If this is a manual closed entry (with endTime provided), insert directly
+    if (endTime) {
+      const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
+      insert.run([logId, targetUserId, startTime, endTime, task || null, notes || null, new Date().toISOString()]);
+      insert.free && insert.free();
+
+      // Attendance sync
+      try {
+        const dateKey = startTime.split('T')[0];
+        const aId = `A-${targetUserId}-${dateKey}`;
+        const sTime = new Date(startTime).getTime();
+        const eTime = new Date(endTime).getTime();
+        const durHours = (eTime > sTime) ? (eTime - sTime) / 3600000 : 0;
+        const attVal = durHours >= 7.5 ? 1 : (durHours >= 6 ? 0.75 : (durHours >= 4 ? 0.5 : (durHours >= 2 ? 0.25 : 0)));
+
+        const checkAtt = db.prepare('SELECT id FROM attendance WHERE id = ? OR (userId = ? AND date = ?)');
+        checkAtt.bind([aId, targetUserId, dateKey]);
+        const attExists = checkAtt.step();
+        checkAtt.free();
+        if (attExists) {
+          const updAtt = db.prepare('UPDATE attendance SET clockOut = ?, value = coalesce(?, value) WHERE id = ? OR (userId = ? AND date = ?)');
+          updAtt.run([endTime, attVal, aId, targetUserId, dateKey]);
+          updAtt.free && updAtt.free();
+        } else {
+          const insAtt = db.prepare('INSERT INTO attendance (id, userId, date, clockIn, clockOut, value, createdAt) VALUES (?,?,?,?,?,?,?)');
+          insAtt.run([aId, targetUserId, dateKey, startTime, endTime, attVal, new Date().toISOString()]);
+          insAtt.free && insAtt.free();
+        }
+        cacheInvalidate('attendance');
+      } catch (e) {
+        console.warn('Attendance auto-sync failed on manual timelog post', e);
+      }
+
+      persistDB();
+      cacheInvalidate('timelogs');
+      return success(res, { id: logId }, 'Created', 201);
+    }
+
     // Prevent duplicate open timelogs or duplicate clock-ins within 2 minutes for the same user
     const existingStmt = db.prepare('SELECT id, startTime, endTime FROM timelogs WHERE userId = ? ORDER BY createdAt DESC');
-    existingStmt.bind([userId]);
+    existingStmt.bind([targetUserId]);
     const reqTime = new Date(startTime).getTime();
     let isDuplicate = false;
     let existingId = null;
@@ -5840,40 +6108,78 @@ app.post('/api/timelogs', requireAuth, (req, res) => {
     }
 
     if (isDuplicate) {
-      console.log(`[TIMELOGS] POST skip duplicate insert for userId=${userId} startTime=${startTime}, reusing existingId=${existingId}`);
+      console.log(`[TIMELOGS] POST skip duplicate insert for userId=${targetUserId} startTime=${startTime}, reusing existingId=${existingId}`);
       cacheInvalidate('timelogs');
-      return success(res, { id: existingId || id }, 'Duplicate session skipped');
+      return success(res, { id: existingId || logId }, 'Duplicate session skipped');
     }
 
     const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
-    insert.run([id, userId, startTime, endTime || null, task || null, notes || null, new Date().toISOString()]);
+    insert.run([logId, targetUserId, startTime, null, task || null, notes || null, new Date().toISOString()]);
     insert.free && insert.free();
     persistDB();
     cacheInvalidate('timelogs');
-    return success(res, { id }, 'Created', 201);
+    return success(res, { id: logId }, 'Created', 201);
   } catch (err) {
     console.error('Timelogs POST error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
   }
 });
 
-app.put('/api/timelogs/:id', requireAuth, (req, res) => {
+app.put('/api/timelogs*', requireAuth, (req, res) => {
   try {
-    const id = req.params.id;
-    const { startTime, endTime, task, notes } = req.body || {};
-    const empId = req.user ? (req.user.employeeId || String(req.user.id || '')) : null;
-    const uIdStr = req.user ? String(req.user.id || '') : null;
+    const fullPath = req.path;
+    const pathId = fullPath.replace(/^\/api\/timelogs\/?/, '').replace(/^\/timelogs\/?/, '');
+    const id = pathId || req.params?.id || req.body?.id;
+    const { startTime, endTime, task, notes, userId, date } = req.body || {};
+    
+    // Resolve target user ID (from req.body.userId OR caller user)
+    const targetUserId = userId || (req.user ? (req.user.employeeId || String(req.user.id || '')) : null);
+    const uIdStr = targetUserId ? String(targetUserId) : '';
 
     let targetId = id;
-    const stmt = db.prepare('SELECT id FROM timelogs WHERE id = ?');
-    stmt.bind([id]);
-    let found = stmt.step();
-    stmt.free();
+    let found = false;
 
-    // Fallback 1: If passed ID wasn't found by exact string, look for an open session (endTime IS NULL) for this user
-    if (!found && (empId || uIdStr)) {
-      const openStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = ?) AND endTime IS NULL ORDER BY createdAt DESC');
-      openStmt.bind([empId || '', uIdStr || '']);
+    // Strategy 1: Find by exact ID
+    if (id && id !== 'undefined' && id !== 'null' && id !== 'timelogs') {
+      const stmt = db.prepare('SELECT id, userId, startTime, endTime FROM timelogs WHERE id = ?');
+      stmt.bind([id]);
+      if (stmt.step()) {
+        const row = stmt.getAsObject();
+        targetId = row.id;
+        found = true;
+      }
+      stmt.free();
+    }
+
+    // Strategy 2: If not found, match by userId + startTime
+    if (!found && uIdStr && startTime) {
+      const timeStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ?) OR userId = (SELECT id FROM users WHERE employeeId = ?)) AND startTime = ? ORDER BY createdAt DESC');
+      timeStmt.bind([uIdStr, uIdStr, uIdStr, startTime]);
+      if (timeStmt.step()) {
+        targetId = timeStmt.getAsObject().id;
+        found = true;
+      }
+      timeStmt.free();
+    }
+
+    // Strategy 3: Match by userId + date (matching startTime on that date)
+    if (!found && uIdStr && (date || startTime)) {
+      const targetDate = date || (startTime ? startTime.split('T')[0] : '');
+      if (targetDate) {
+        const dateStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ?) OR userId = (SELECT id FROM users WHERE employeeId = ?)) AND (startTime LIKE ? OR startTime LIKE ?) ORDER BY createdAt DESC');
+        dateStmt.bind([uIdStr, uIdStr, uIdStr, `${targetDate}%`, `${targetDate}T%`]);
+        if (dateStmt.step()) {
+          targetId = dateStmt.getAsObject().id;
+          found = true;
+        }
+        dateStmt.free();
+      }
+    }
+
+    // Strategy 4: Look for any open session (endTime IS NULL) for this user
+    if (!found && uIdStr) {
+      const openStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ?) OR userId = (SELECT id FROM users WHERE employeeId = ?)) AND endTime IS NULL ORDER BY createdAt DESC');
+      openStmt.bind([uIdStr, uIdStr, uIdStr]);
       if (openStmt.step()) {
         targetId = openStmt.getAsObject().id;
         found = true;
@@ -5881,10 +6187,10 @@ app.put('/api/timelogs/:id', requireAuth, (req, res) => {
       openStmt.free();
     }
 
-    // Fallback 2: Look for the most recent timelog for this user
-    if (!found && (empId || uIdStr)) {
-      const recentStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = ?) ORDER BY createdAt DESC');
-      recentStmt.bind([empId || '', uIdStr || '']);
+    // Strategy 5: Most recent timelog for this user
+    if (!found && uIdStr) {
+      const recentStmt = db.prepare('SELECT id FROM timelogs WHERE (userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ?) OR userId = (SELECT id FROM users WHERE employeeId = ?)) ORDER BY createdAt DESC');
+      recentStmt.bind([uIdStr, uIdStr, uIdStr]);
       if (recentStmt.step()) {
         targetId = recentStmt.getAsObject().id;
         found = true;
@@ -5892,14 +6198,56 @@ app.put('/api/timelogs/:id', requireAuth, (req, res) => {
       recentStmt.free();
     }
 
-    if (!found) return failure(res, 'Not found', 404);
+    if (found) {
+      const update = db.prepare('UPDATE timelogs SET startTime = coalesce(?, startTime), endTime = coalesce(?, endTime), task = coalesce(?, task), notes = coalesce(?, notes) WHERE id = ?');
+      update.run([startTime || null, endTime || null, task || null, notes || null, targetId]);
+      update.free && update.free();
+    } else {
+      // If still not found, create a new completed/updated timelog record so edits are never lost
+      const newId = (id && id !== 'undefined' && id !== 'null' && id !== 'timelogs') ? id : `TL-${uIdStr || 'EMP'}-${Date.now()}`;
+      targetId = newId;
+      const insert = db.prepare('INSERT INTO timelogs (id, userId, startTime, endTime, task, notes, createdAt) VALUES (?,?,?,?,?,?,?)');
+      insert.run([targetId, uIdStr || 'unknown', startTime || new Date().toISOString(), endTime || null, task || null, notes || null, new Date().toISOString()]);
+      insert.free && insert.free();
+    }
 
-    const update = db.prepare('UPDATE timelogs SET startTime = coalesce(?, startTime), endTime = coalesce(?, endTime), task = coalesce(?, task), notes = coalesce(?, notes) WHERE id = ?');
-    update.run([startTime || null, endTime || null, task || null, notes || null, targetId]);
-    update.free && update.free();
+    // Auto-sync attendance record if endTime is present
+    if (uIdStr && (date || startTime) && endTime) {
+      try {
+        const attDate = date || (startTime ? startTime.split('T')[0] : new Date().toISOString().split('T')[0]);
+        const aId = `A-${uIdStr}-${attDate}`;
+
+        let durationHours = 0;
+        if (startTime && endTime) {
+          const s = new Date(startTime).getTime();
+          const e = new Date(endTime).getTime();
+          if (e > s) durationHours = (e - s) / 3600000;
+        }
+        const attendanceVal = durationHours >= 7.5 ? 1 : (durationHours >= 6 ? 0.75 : (durationHours >= 4 ? 0.5 : (durationHours >= 2 ? 0.25 : 0)));
+
+        const checkAtt = db.prepare('SELECT id FROM attendance WHERE id = ? OR (userId = ? AND date = ?)');
+        checkAtt.bind([aId, uIdStr, attDate]);
+        const attExists = checkAtt.step();
+        checkAtt.free();
+
+        if (attExists) {
+          const updateAtt = db.prepare('UPDATE attendance SET clockOut = ?, value = coalesce(?, value) WHERE id = ? OR (userId = ? AND date = ?)');
+          updateAtt.run([endTime, attendanceVal, aId, uIdStr, attDate]);
+          updateAtt.free && updateAtt.free();
+        } else {
+          const insertAtt = db.prepare('INSERT INTO attendance (id, userId, date, clockIn, clockOut, value, createdAt) VALUES (?,?,?,?,?,?,?)');
+          insertAtt.run([aId, uIdStr, attDate, startTime || null, endTime, attendanceVal, new Date().toISOString()]);
+          insertAtt.free && insertAtt.free();
+        }
+        cacheInvalidate('attendance');
+      } catch (attErr) {
+        console.warn('Attendance auto-sync error in PUT /timelogs', attErr);
+      }
+    }
+
     persistDB();
     cacheInvalidate('timelogs');
-    return success(res, { id: targetId }, 'Updated');
+    return success(res, { id: targetId, userId: uIdStr, startTime, endTime }, 'Updated');
   } catch (err) {
     console.error('Timelogs PUT error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
@@ -6052,24 +6400,25 @@ try {
 
   // POST /api/pms/projects - Create new project (ADMIN only)
   app.post('/api/pms/projects', requireAuth, isPMSAdmin, (req, res) => {
-    console.log('DEBUG: POST /api/pms/projects called');
     try {
-      const { project_name, assigned_employee_id, start_date, google_sheet_link, location } = req.body;
-      if (!project_name || !assigned_employee_id || !start_date) {
-        return failure(res, 'Missing required fields', 400);
+      const { project_name, assigned_employee_id, start_date, end_date, google_sheet_link, location, total_cost, status } = req.body || {};
+      if (!project_name || !start_date) {
+        return failure(res, 'Project name and start date are required', 400);
       }
 
       const id = 'pms_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
       const now = new Date().toISOString();
+      const projStatus = status || 'Active';
+      const cost = parseFloat(total_cost) || 0;
 
       db.run(
-        `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, status, createdBy, createdAt, location, google_sheet_link)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, project_name, assigned_employee_id, start_date, 'Active', req.user.id, now, location || null, google_sheet_link || null]
+        `INSERT INTO pms_projects (id, project_name, assigned_employee_id, start_date, end_date, status, createdBy, createdAt, location, google_sheet_link, total_cost)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, project_name, assigned_employee_id || null, start_date, end_date || null, projStatus, req.user.id, now, location || null, google_sheet_link || null, cost]
       );
 
       saveToDB();
-      success(res, { id, project_name, assigned_employee_id, start_date, location, google_sheet_link, status: 'Active', createdAt: now });
+      success(res, { id, project_name, assigned_employee_id, start_date, end_date, location, google_sheet_link, total_cost: cost, status: projStatus, createdAt: now });
     } catch (err) {
       console.error('POST /api/pms/projects error:', err);
       failure(res, 'Failed to create project', 500);
@@ -6195,20 +6544,35 @@ try {
     }
   });
 
-  // PUT /api/pms/projects/:id - Update project status (ADMIN only)
+  // PUT /api/pms/projects/:id - Update project fields and status (ADMIN only)
   app.put('/api/pms/projects/:id', requireAuth, isPMSAdmin, (req, res) => {
     try {
-      const { status } = req.body;
-      if (!status) {
-        return failure(res, 'Missing status field', 400);
+      const { project_name, assigned_employee_id, start_date, end_date, location, total_cost, google_sheet_link, status } = req.body || {};
+
+      const currentStmt = db.prepare('SELECT * FROM pms_projects WHERE id = ?');
+      currentStmt.bind([req.params.id]);
+      if (!currentStmt.step()) {
+        currentStmt.free();
+        return failure(res, 'Project not found', 404);
       }
+      const existing = currentStmt.getAsObject();
+      currentStmt.free();
+
+      const newName = project_name !== undefined ? project_name : existing.project_name;
+      const newEmp = assigned_employee_id !== undefined ? assigned_employee_id : existing.assigned_employee_id;
+      const newStart = start_date !== undefined ? start_date : existing.start_date;
+      const newEnd = end_date !== undefined ? end_date : existing.end_date;
+      const newLoc = location !== undefined ? location : existing.location;
+      const newCost = total_cost !== undefined ? (parseFloat(total_cost) || 0) : existing.total_cost;
+      const newSheet = google_sheet_link !== undefined ? google_sheet_link : existing.google_sheet_link;
+      const newStatus = status !== undefined ? status : existing.status;
 
       db.run(
-        'UPDATE pms_projects SET status = ? WHERE id = ?',
-        [status, req.params.id]
+        `UPDATE pms_projects SET project_name = ?, assigned_employee_id = ?, start_date = ?, end_date = ?, location = ?, total_cost = ?, google_sheet_link = ?, status = ? WHERE id = ?`,
+        [newName, newEmp, newStart, newEnd, newLoc, newCost, newSheet, newStatus, req.params.id]
       );
       saveToDB();
-      success(res, { message: 'Project updated' });
+      success(res, { message: 'Project updated', id: req.params.id, status: newStatus });
     } catch (err) {
       console.error('PUT /api/pms/projects/:id error:', err);
       failure(res, 'Failed to update project', 500);

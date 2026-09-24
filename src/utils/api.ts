@@ -2,25 +2,12 @@ import axios from 'axios';
 import { dedupedGet, swrGet, invalidateCache, setCached, getCachedEntry } from './requestCache';
 
 // Single shared axios instance for all frontend API calls.
-// Use a relative base so all requests go to the frontend service at `/api`.
 const api = axios.create({
   baseURL: '/api',
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
-    // NOTE: Do NOT set Cache-Control: no-store globally — it prevents all
-    // browser-level caching and forces every request to hit the network.
-    // Cache-control headers are set per-request only when needed.
   }
-});
-
-// Keep request interceptor minimal
-api.interceptors.request.use((cfg) => {
-  const token = localStorage.getItem('kbt_token');
-  if (token && cfg.headers) {
-    cfg.headers['Authorization'] = `Bearer ${token}`;
-  }
-  return cfg;
 });
 
 // Automatically clear the entire client-side request cache on any data-modifying action (POST, PUT, DELETE)

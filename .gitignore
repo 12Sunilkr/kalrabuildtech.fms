@@ -30,3 +30,14 @@ dist-ssr
 *.sln
 *.sw?
 node_modules
+
+# Database files
+*.sqlite
+*.db
+server/database.sqlite
+
+# Cache and temporary exports
+server/deletes.log
+logs/
+*.log
+

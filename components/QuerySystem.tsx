@@ -114,13 +114,13 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
     <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-8">
         <div>
-          <h2 className="text-2xl md:text-3xl font-extrabold text-slate-800 flex items-center gap-3">
+          <h2 className="text-2xl md:text-3xl font-extrabold text-primary flex items-center gap-3">
             <div className="w-10 h-10 bg-teal-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-teal-500/20 shrink-0">
               <HelpCircle size={20} />
             </div>
             Query Box
           </h2>
-          <p className="text-slate-500 mt-2 font-medium md:ml-14">
+          <p className="text-secondary mt-2 font-medium md:ml-14">
             Ask questions, raise tickets, or seek help from colleagues.
           </p>
         </div>
@@ -137,20 +137,20 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
         <div className="flex gap-2 bg-white p-1 rounded-xl shadow-sm border border-slate-200">
           <button
             onClick={() => setActiveTab('INBOX')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'INBOX' ? 'bg-teal-500 text-white shadow' : 'text-slate-500 hover:bg-slate-50'}`}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'INBOX' ? 'bg-teal-500 text-white shadow' : 'text-secondary hover:bg-slate-50'}`}
           >
             {currentUser.role === 'ADMIN' ? 'All Queries (Monitor)' : 'Received (Inbox)'}
           </button>
           <button
             onClick={() => setActiveTab('SENT')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'SENT' ? 'bg-teal-500 text-white shadow' : 'text-slate-500 hover:bg-slate-50'}`}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeTab === 'SENT' ? 'bg-teal-500 text-white shadow' : 'text-secondary hover:bg-slate-50'}`}
           >
             Sent by Me
           </button>
         </div>
 
         <div className="relative w-full md:w-72 shrink-0">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={18} />
           <input
             type="text"
             placeholder="Search queries..."
@@ -163,7 +163,7 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
 
       <div className="space-y-4">
         {filteredQueries.length === 0 ? (
-          <div className="text-center py-20 bg-white rounded-3xl border border-slate-100 text-slate-400">
+          <div className="text-center py-20 bg-white rounded-3xl border border-slate-100 text-muted">
             <HelpCircle size={48} className="mx-auto mb-4 opacity-20" />
             <p className="font-medium">No queries found.</p>
           </div>
@@ -185,25 +185,25 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                         <span className={`px-4 py-1.5 text-[10px] font-black rounded-full uppercase tracking-widest shadow-sm ${q.status === 'RESOLVED' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-teal-50 text-teal-700 border border-teal-100'}`}>
                           {q.status}
                         </span>
-                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Ref: #{q.id?.split('-').pop()?.toUpperCase()}</span>
+                        <span className="text-[10px] text-muted font-bold uppercase tracking-widest">Ref: #{q.id?.split('-').pop()?.toUpperCase()}</span>
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Generated On</div>
-                      <div className="text-[10px] font-black text-slate-600">{displayDate ? format(new Date(displayDate), 'MMM d, yyyy') : 'N/A'}</div>
+                      <div className="text-[10px] font-black text-muted uppercase tracking-widest leading-none mb-1">Generated On</div>
+                      <div className="text-[10px] font-black text-secondary">{displayDate ? format(new Date(displayDate), 'MMM d, yyyy') : 'N/A'}</div>
                     </div>
                   </div>
 
-                  <h3 className="font-black text-slate-800 text-xl mb-3 line-clamp-1 leading-tight group-hover:text-teal-600 transition-colors uppercase tracking-tight">{q.subject || 'UNTITLED QUERY'}</h3>
-                  <p className="text-sm text-slate-500 mb-8 line-clamp-3 italic min-h-[3rem] bg-slate-50/50 p-6 rounded-[2rem] border border-slate-100 leading-relaxed">"{q.message || 'No description provided.'}"</p>
+                  <h3 className="font-black text-primary text-xl mb-3 line-clamp-1 leading-tight group-hover:text-teal-600 transition-colors uppercase tracking-tight">{q.subject || 'UNTITLED QUERY'}</h3>
+                  <p className="text-sm text-secondary mb-8 line-clamp-3 italic min-h-[3rem] bg-slate-50/50 p-6 rounded-[2rem] border border-slate-100 leading-relaxed">"{q.message || 'No description provided.'}"</p>
 
                   <div className="grid grid-cols-2 gap-4 mb-8">
                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                      <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">From</div>
-                      <div className="text-[10px] font-black text-slate-800 truncate">{sender || 'Unknown'}</div>
+                      <div className="text-[8px] font-black text-muted uppercase tracking-widest leading-none mb-1">From</div>
+                      <div className="text-[10px] font-black text-primary truncate">{sender || 'Unknown'}</div>
                     </div>
                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                      <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">To</div>
+                      <div className="text-[8px] font-black text-muted uppercase tracking-widest leading-none mb-1">To</div>
                       <div className="text-[10px] font-black text-teal-600 truncate">{receiver || 'Assignee'}</div>
                     </div>
                   </div>
@@ -255,13 +255,13 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
                         {q.status === 'RESOLVED' && q.response && (
                           <div className="bg-emerald-50/50 p-6 rounded-[2rem] border border-emerald-100 relative group/resp">
                             <div className="absolute -top-2.5 left-6 bg-emerald-600 text-white text-[8px] font-black px-3 py-1 rounded-full uppercase tracking-tighter">Resolution Response</div>
-                            <p className="text-xs text-slate-700 font-bold leading-relaxed italic mt-1">"{q.response}"</p>
+                            <p className="text-xs text-primary font-bold leading-relaxed italic mt-1">"{q.response}"</p>
                           </div>
                         )}
                         <div className="flex justify-between items-center">
                           <div className="flex flex-col">
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Last Updated</span>
-                            <span className="text-[10px] font-black text-slate-600">{q.updatedAt ? format(new Date(q.updatedAt), 'MMM d, h:mm a') : 'N/A'}</span>
+                            <span className="text-[10px] font-black text-muted uppercase tracking-widest">Last Updated</span>
+                            <span className="text-[10px] font-black text-secondary">{q.updatedAt ? format(new Date(q.updatedAt), 'MMM d, h:mm a') : 'N/A'}</span>
                           </div>
                           {currentUser.role === 'ADMIN' && (
                             <button

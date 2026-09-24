@@ -66,7 +66,7 @@ export default function WeeklyPlanner({ projectId, onChange }: { projectId?: num
               className="px-3 py-2 sm:py-2.5 bg-slate-50 border-none rounded-2xl text-xs sm:text-sm font-bold text-slate-600 focus:ring-2 focus:ring-indigo-100 transition-all cursor-pointer"
             />
           </div>
-          <button className="p-2 sm:p-2.5 rounded-2xl hover:bg-slate-50 relative text-slate-500 transition-colors flex-shrink-0">
+          <button className="btn btn-ghost btn-icon-sm relative" title="Notifications">
             <Bell size={20} />
             <span className="absolute top-1 right-1 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></span>
           </button>
@@ -81,15 +81,16 @@ export default function WeeklyPlanner({ projectId, onChange }: { projectId?: num
         <div className="flex items-center gap-4 sm:gap-8 mb-12 sm:mb-16 animate-fade-in">
           <button
             onClick={() => { if (onChange) onChange(); }}
-            className="p-2.5 sm:p-3 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all active:scale-95 shadow-sm flex-shrink-0"
+            className="btn btn-secondary btn-icon flex-shrink-0"
+            title="Back"
           >
-            <ChevronRight size={20} className="rotate-180 text-slate-600 sm:w-6 sm:h-6" />
+            <ChevronRight size={20} className="rotate-180" />
           </button>
           <div className="min-w-0">
-            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-slate-800 tracking-tight uppercase leading-none mb-1 sm:mb-2 truncate">
-              {project?.project_name || 'PROJECT'}
+            <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-primary tracking-tight leading-none mb-1 sm:mb-2 truncate">
+              {project?.project_name || 'Project'}
             </h1>
-            <p className="text-slate-400 font-bold tracking-wide text-xs sm:text-sm uppercase">
+            <p className="text-muted font-medium text-xs sm:text-sm">
               Daily Work Records
             </p>
           </div>
@@ -99,10 +100,10 @@ export default function WeeklyPlanner({ projectId, onChange }: { projectId?: num
         {!showNewDayForm ? (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 sm:mb-8 animate-fade-in">
-              <h2 className="text-lg sm:text-2xl font-bold text-slate-800">Daily Records History</h2>
+              <h2 className="text-lg sm:text-2xl font-bold text-primary">Daily Records History</h2>
               <button
                 onClick={() => { setSelectedDate(new Date().toISOString().split('T')[0]); setShowNewDayForm(true); }}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 sm:px-6 py-2.5 sm:py-3 rounded-2xl shadow-lg shadow-indigo-600/20 active:scale-95 transition-all font-bold flex items-center justify-center gap-2 text-sm w-full sm:w-auto"
+                className="btn btn-primary w-full sm:w-auto"
               >
                 <Plus size={18} />
                 New Day Log
@@ -139,7 +140,7 @@ export default function WeeklyPlanner({ projectId, onChange }: { projectId?: num
                 if (groups.length === 0 && (searchQuery || searchDate)) {
                   return (
                     <div className="col-span-full py-10 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
-                      <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">No records match your filters</p>
+                      <p className="text-slate-400 font-medium text-sm">No records match your filters</p>
                     </div>
                   );
                 }
@@ -168,7 +169,8 @@ export default function WeeklyPlanner({ projectId, onChange }: { projectId?: num
                                 fetchJSON(`/api/pms/daily-work?project_id=${projectId}&work_date=${group.date}`, { method: 'DELETE' }).then(() => loadDailyLogs());
                               }
                             }}
-                            className="p-1 sm:p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                            className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                            title="Delete Daily Records"
                           >
                             <Trash2 size={14} />
                           </button>
@@ -176,7 +178,7 @@ export default function WeeklyPlanner({ projectId, onChange }: { projectId?: num
                       </div>
 
                       <div className="pt-3 sm:pt-4 border-t border-slate-50 flex items-center justify-between group-hover:px-1 transition-all mt-auto">
-                        <span className="text-[9px] sm:text-[10px] font-black text-slate-500 uppercase tracking-widest">VIEW DAILY LOGS</span>
+                        <span className="text-xs font-semibold text-slate-500">View daily logs</span>
                         <ChevronRight size={14} className="text-slate-300 group-hover:text-indigo-600 group-hover:translate-x-1 transition-all sm:w-4 sm:h-4" />
                       </div>
                     </div>

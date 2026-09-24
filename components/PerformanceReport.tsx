@@ -93,8 +93,8 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  empTasks = empTasks.filter(t => {
  const ds = getDisplayStatus(t);
  
- // Overdue tasks should always be included regardless of the date filter
- if (ds === 'OVERDUE') return true;
+  // Overdue tasks and active objections should always be included regardless of the date filter
+  if (ds === 'OVERDUE' || ds === 'EXTENSION_REQUESTED') return true;
 
  const isFinished = ds === 'COMPLETED' || ds === 'TERMINATED';
  const normalizeDate = (dStr?: string | null) => {
@@ -126,16 +126,15 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  // Pending — exact same predicate as Task Manager PENDING tab
  const pending = assignedTasks.filter(({ ds }) => ds === 'PENDING').length;
 
- // Objections — exact same predicate as Task Manager OBJECTIONS tab
- const objections = assignedTasks.filter(({ task, ds }) => {
- const t = task as any;
- return Boolean(
- t.extensionRequest &&
- t.extensionRequest.status === 'PENDING' &&
- task.status === 'EXTENSION_REQUESTED' &&
- ds !== 'TERMINATED' && ds !== 'COMPLETED' && ds !== 'OVERDUE' && ds !== 'PENDING'
- );
- }).length;
+  // Objections — exact same predicate as Task Manager OBJECTIONS tab
+  const objections = assignedTasks.filter(({ task }) => {
+    const t = task as any;
+    return Boolean(
+      t.extensionRequest &&
+      t.extensionRequest.status === 'PENDING' &&
+      t.status === 'EXTENSION_REQUESTED'
+    );
+  }).length;
 
  // Task Score % — incomplete / total (0% means all tasks are completed)
  const incompleteTasks = total - completed;
@@ -191,34 +190,63 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
     return effectiveDoer === targetEmpId || effectiveBuddy === targetEmpId;
   });
 
- const today = new Date().toISOString().split('T')[0];
- 
- // Filter by date range. If no explicit filter, default to current year.
- // crucially: only include tasks UP TO TODAY so future schedule does not break the KPI score.
- let filtered = empInstances.filter(i => {
- // Overdue tasks should always be included regardless of the date filter
- if ((i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < today) return true;
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Filter by date range. If no explicit filter, default to current year.
+  // CRUCIAL: Completed tasks are evaluated by their actual completion date (completedDate), not past schedule!
+  let filtered = empInstances.filter(i => {
+    const isDone = i.status === 'COMPLETED';
+    const effectiveDate = isDone ? (i.completedDate || i.date) : i.date;
 
- if (fromDate && toDate) {
- return i.date >= fromDate && i.date <= toDate;
- }
- return i.date.startsWith(new Date().getFullYear().toString());
- });
- 
- // Cap to today
- filtered = filtered.filter(i => i.date <= today);
+    // Overdue tasks should always be included regardless of the date filter so incomplete tasks are flagged
+    if ((i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < today) return true;
 
- // Exclude MISSED_EXCUSED from scoring (MISSED_EXCUSED = admin approved the excuse, no score impact).
+    if (fromDate && toDate) {
+      if (isDone) {
+        // When completed, count in KPI on the day it was completed!
+        return effectiveDate >= fromDate && effectiveDate <= toDate;
+      }
+      return i.date >= fromDate && i.date <= toDate;
+    }
+
+    if (isDone) {
+      return effectiveDate.startsWith(new Date().getFullYear().toString());
+    }
+    return i.date.startsWith(new Date().getFullYear().toString());
+  });
+  
+  // Cap to today: only include tasks scheduled up to today or completed on/before today
+  filtered = filtered.filter(i => {
+    if (i.status === 'COMPLETED') {
+      const compDate = i.completedDate || i.date;
+      return compDate <= today;
+    }
+    return i.date <= today;
+  });
+
+ // Exclude STOPPED and MISSED_EXCUSED from scoring (stopping a routine does NOT penalize or affect the KPI score).
  // EXCUSE_REQUESTED = unapproved transfer request pending admin decision, so it remains assigned to the user and is included in KPI report!
- const scorableFiltered = filtered.filter(i => i.status !== 'MISSED_EXCUSED');
+ const scorableFiltered = filtered.filter(i => i.status !== 'MISSED_EXCUSED' && i.status !== 'STOPPED');
 
  const total = scorableFiltered.length;
  const completed = scorableFiltered.filter(i => i.status === 'COMPLETED').length;
  const pending = scorableFiltered.filter(i => (i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date === today).length;
  const overdue = scorableFiltered.filter(i => (i.status === 'PENDING' || i.status === 'EXCUSE_REQUESTED') && i.date < today).length;
- // Logic: 0% = all done, 100% = nothing done
- const pct = total > 0 ? Math.round(((total - completed) / total) * 100) : 0;
- return { total, completed, pending, overdue, pct, instances: filtered.sort((a, b) => b.date.localeCompare(a.date)) };
+  // Logic: 0% = all done, 100% = nothing done
+  const incompleteTasks = Math.max(0, total - completed);
+  const pct = total > 0 ? Math.round((incompleteTasks / total) * 100) : 0;
+ return { 
+ total, 
+ completed, 
+ pending, 
+ overdue, 
+ pct, 
+ instances: filtered.sort((a, b) => {
+ const dateA = a.status === 'COMPLETED' ? (a.completedDate || a.date) : a.date;
+ const dateB = b.status === 'COMPLETED' ? (b.completedDate || b.date) : b.date;
+ return dateB.localeCompare(dateA);
+ }) 
+ };
  };
 
  const getWorkAnalysis = (empId: string) => {
@@ -358,7 +386,15 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  })
  ].sort((a, b) => a.date.localeCompare(b.date));
 
- return (
+  const objectionTasks = selectedStats.empTasks.filter(t => {
+    return Boolean(
+      t.extensionRequest &&
+      t.extensionRequest.status === 'PENDING' &&
+      t.status === 'EXTENSION_REQUESTED'
+    );
+  }).sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+
+  return (
  <div className="p-4 md:p-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar print:bg-white print:overflow-visible print:h-auto print:static">
  <style>{`
  @media print {
@@ -622,7 +658,39 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  </div>
  )}
 
- {/* ── FOOTER ── */}
+  {/* ── OBJECTIONS RAISED ── */}
+  {objectionTasks.length > 0 && (
+  <div className="mb-4">
+  <div className="flex items-center gap-2 mb-2.5">
+  <div className="w-1 h-4 bg-purple-500 rounded-full"></div>
+  <h3 className="text-[11px] font-black text-slate-700 uppercase tracking-[0.12em]">Objections Raised</h3>
+  </div>
+  <div className="bg-white border border-purple-100 rounded-xl overflow-hidden print:border-purple-200">
+  <table className="w-full text-left text-sm border-collapse table-fixed">
+  <thead className="bg-purple-50">
+  <tr>
+  <th className="py-2 px-3 text-[10px] font-black text-purple-600 uppercase tracking-wider w-[35%]">Task Title</th>
+  <th className="py-2 px-3 text-[10px] font-black text-purple-600 uppercase tracking-wider w-[15%]">Orig. Due</th>
+  <th className="py-2 px-3 text-[10px] font-black text-purple-600 uppercase tracking-wider w-[15%]">Req. Ext.</th>
+  <th className="py-2 px-3 text-[10px] font-black text-purple-600 uppercase tracking-wider w-[35%]">Objection Reason</th>
+  </tr>
+  </thead>
+  <tbody className="divide-y divide-purple-50">
+  {objectionTasks.map(t => (
+  <tr key={t.id}>
+  <td className="py-2 px-3 text-xs font-bold text-slate-700 align-top break-words pr-4">{t.title}</td>
+  <td className="py-2 px-3 text-xs font-bold text-slate-500 align-top">{t.dueDate ? t.dueDate.split('T')[0] : 'N/A'}</td>
+  <td className="py-2 px-3 text-xs font-bold text-purple-600 align-top">{t.extensionRequest?.requestedDate || 'N/A'}</td>
+  <td className="py-2 px-3 text-xs font-medium text-slate-600 align-top break-words pr-2">{t.extensionRequest?.reason || 'No reason provided'}</td>
+  </tr>
+  ))}
+  </tbody>
+  </table>
+  </div>
+  </div>
+  )}
+
+  {/* ── FOOTER ── */}
  <div className="pt-4 mt-3 border-t border-slate-200 flex justify-between items-end print:pt-3">
  <div>
  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3">Authorized Signature</div>
@@ -710,7 +778,15 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  })
  ].sort((a, b) => a.date.localeCompare(b.date));
 
- const totalCombined = stats.total + checkStats.total;
+  const bulkObjectionTasks = stats.empTasks.filter(t => {
+    return Boolean(
+      t.extensionRequest &&
+      t.extensionRequest.status === 'PENDING' &&
+      t.status === 'EXTENSION_REQUESTED'
+    );
+  }).sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+
+  const totalCombined = stats.total + checkStats.total;
  const incompleteCombined = (stats.total - stats.completed) + (checkStats.total - checkStats.completed);
  const bulkCombinedScore = totalCombined > 0 ? Math.round((incompleteCombined / totalCombined) * 100) : 0;
 
@@ -831,7 +907,34 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  </>
  )}
 
- {/* Table - Bulk Print */}
+  {/* Objections History - Bulk Print */}
+  {bulkObjectionTasks.length > 0 && (
+  <>
+  <h3 className="text-lg font-black text-purple-600 mb-4 mt-8 uppercase tracking-tight">Objections Raised</h3>
+  <table className="print-table w-full text-left text-sm border-collapse mb-8 table-fixed">
+  <thead>
+  <tr className="border-b-2 border-purple-200 bg-purple-50">
+  <th className="py-3 px-2 text-[11px] font-black text-purple-600 uppercase tracking-wider w-[35%]">TASK TITLE</th>
+  <th className="py-3 px-2 text-[11px] font-black text-purple-600 uppercase tracking-wider w-[15%]">ORIG. DUE</th>
+  <th className="py-3 px-2 text-[11px] font-black text-purple-600 uppercase tracking-wider w-[15%]">REQ. EXT.</th>
+  <th className="py-3 px-2 text-[11px] font-black text-purple-600 uppercase tracking-wider w-[35%]">OBJECTION REASON</th>
+  </tr>
+  </thead>
+  <tbody className="divide-y divide-purple-100">
+  {bulkObjectionTasks.map(t => (
+  <tr key={t.id}>
+  <td className="py-2.5 px-2 font-bold text-slate-700 text-xs align-top break-words pr-4">{t.title}</td>
+  <td className="py-2.5 px-2 font-medium text-slate-500 text-xs align-top">{t.dueDate ? t.dueDate.split('T')[0] : 'N/A'}</td>
+  <td className="py-2.5 px-2 font-bold text-purple-600 text-xs align-top">{t.extensionRequest?.requestedDate || 'N/A'}</td>
+  <td className="py-2.5 px-2 font-medium text-slate-600 text-xs align-top break-words pr-2">{t.extensionRequest?.reason || 'No reason provided'}</td>
+  </tr>
+  ))}
+  </tbody>
+  </table>
+  </>
+  )}
+
+  {/* Table - Bulk Print */}
  <h3 className="text-lg font-black text-slate-800 mb-4 mt-8 uppercase tracking-tight">Complete Task History</h3>
  <table className="print-table w-full text-left text-sm border-collapse table-fixed">
  <thead>

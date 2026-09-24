@@ -37,7 +37,6 @@ export interface User {
   role: Role;
   name: string;
   employeeId?: string; // Link to Employee record if role is EMPLOYEE
-  plain_password?: string;
 }
 
 export type AttendanceValue = 1 | 0 | 0.5 | 0.25 | 0.75 | 'HOLIDAY' | 'OFF' | 'CO' | 'LEAVE' | 'CS';
@@ -52,6 +51,8 @@ export interface TimeLog {
   clockIn: string;    // ISO string
   clockOut?: string;  // ISO string
   durationHours?: number;
+  notes?: string;
+  task?: string;
 }
 
 export interface MonthlyStats {
@@ -323,6 +324,7 @@ export interface Holiday {
   date: string; // YYYY-MM-DD
   name: string;
   description?: string;
+  recurring?: boolean;
 }
 
 export interface Reminder {

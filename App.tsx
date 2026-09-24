@@ -66,11 +66,7 @@ const App: React.FC = () => {
 
       // Keep requests as-provided. Frontend should use relative /api paths.
       reqInit.headers = new Headers(reqInit.headers || {} as HeadersInit);
-      const token = localStorage.getItem('kbt_token');
-      if (token) {
-        reqInit.headers.set('Authorization', `Bearer ${token}`);
-      }
-      // Do not read from localStorage anymore. Authentication uses cookies or explicit Authorization headers.
+      // Authentication uses cookies exclusively.
 
       if (!reqInit.credentials) reqInit.credentials = 'include';
       // NOTE: Do NOT force cache:'no-store' here — caching is managed by the
@@ -164,7 +160,21 @@ const App: React.FC = () => {
                       setArchivedEmployees(archivedArr);
                     })
                     .catch(err => console.warn('Background archived employees fetch failed', err))
-                : Promise.resolve()
+                : Promise.resolve(),
+
+              safeGet('/tasks', { cacheBust: true })
+                .then(res => {
+                  const tArr = ensureArray(extractPayload(res));
+                  if (tArr && tArr.length) setTasks(tArr);
+                })
+                .catch(err => console.warn('Background tasks fetch failed', err)),
+
+              safeGet('/holidays', { cacheBust: true })
+                .then(res => {
+                  const hArr = ensureArray(extractPayload(res));
+                  if (hArr && hArr.length) setHolidays(hArr);
+                })
+                .catch(err => console.warn('Background holidays fetch failed', err))
             ]).catch(err => {
               console.warn('Master data preloading encountered errors', err);
             });
@@ -203,8 +213,7 @@ const App: React.FC = () => {
         }
       } catch (err: any) {
         if (err?.response?.status === 401) {
-          // Token expired or invalid — clear token quietly
-          localStorage.removeItem('kbt_token');
+          // Token expired or invalid — clear session quietly
           setCurrentUser(null);
         } else {
           console.warn('Auth/me session restoration failed', err?.message || err);
@@ -596,9 +605,13 @@ const App: React.FC = () => {
               rows.forEach((it: any) => {
                 try {
                   const p = JSON.parse(it.item);
-                  insts.push({ ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId, department: p.department ?? tpl.department, taskName: p.taskName ?? tpl.taskName, templateId: String(tpl.id), status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'), completedDate: p.completedDate });
+                  const isDone = Boolean(it.done || p.status === 'COMPLETED');
+                  const cDate = p.completedDate || (isDone ? (it.createdAt ? it.createdAt.split('T')[0] : p.date) : undefined);
+                  insts.push({ ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId, department: p.department ?? tpl.department, taskName: p.taskName ?? tpl.taskName, templateId: String(tpl.id), status: isDone ? 'COMPLETED' : (p.status ?? 'PENDING'), completedDate: cDate });
                 } catch {
-                  insts.push({ id: it.id, templateId: String(tpl.id), date: it.item, status: it.done ? 'COMPLETED' : 'PENDING', dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName });
+                  const isDone = Boolean(it.done);
+                  const cDate = isDone ? (it.createdAt ? it.createdAt.split('T')[0] : it.item) : undefined;
+                  insts.push({ id: it.id, templateId: String(tpl.id), date: it.item, status: isDone ? 'COMPLETED' : 'PENDING', dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName, completedDate: cDate });
                 }
               });
             });
@@ -612,9 +625,13 @@ const App: React.FC = () => {
           rows.forEach((it: any) => {
             try {
               const p = JSON.parse(it.item);
-              insts.push({ ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId, department: p.department ?? tpl.department, taskName: p.taskName ?? tpl.taskName, templateId: String(tpl.id), status: it.done ? 'COMPLETED' : (p.status ?? 'PENDING'), completedDate: p.completedDate });
+              const isDone = Boolean(it.done || p.status === 'COMPLETED');
+              const cDate = p.completedDate || (isDone ? (it.createdAt ? it.createdAt.split('T')[0] : p.date) : undefined);
+              insts.push({ ...p, dbId: it.id, doerId: p.doerId ?? tpl.doerId, department: p.department ?? tpl.department, taskName: p.taskName ?? tpl.taskName, templateId: String(tpl.id), status: isDone ? 'COMPLETED' : (p.status ?? 'PENDING'), completedDate: cDate });
             } catch {
-              insts.push({ id: it.id, templateId: String(tpl.id), date: it.item, status: it.done ? 'COMPLETED' : 'PENDING', dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName });
+              const isDone = Boolean(it.done);
+              const cDate = isDone ? (it.createdAt ? it.createdAt.split('T')[0] : it.item) : undefined;
+              insts.push({ id: it.id, templateId: String(tpl.id), date: it.item, status: isDone ? 'COMPLETED' : 'PENDING', dbId: it.id, doerId: tpl.doerId, department: tpl.department, taskName: tpl.taskName, completedDate: cDate });
             }
           });
         });
@@ -662,9 +679,13 @@ const App: React.FC = () => {
             await Promise.all([
               safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
               safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
-            ]).then(([sat, eRes]) => {
+              safeGetSwr('/holidays', (fresh) => setHolidays(ensureArray(extractPayload(fresh)))),
+              safeGetSwr('/sunday-requests', (fresh) => setSundayRequests(ensureArray(extractPayload(fresh)))),
+            ]).then(([sat, eRes, hRes, srRes]) => {
               applyAttendance(ensureArray(extractPayload(sat)));
               setEmployees(ensureArray(extractPayload(eRes)));
+              if (hRes) setHolidays(ensureArray(extractPayload(hRes)));
+              if (srRes) setSundayRequests(ensureArray(extractPayload(srRes)));
             });
             break;
           }
@@ -708,9 +729,11 @@ const App: React.FC = () => {
             await Promise.all([
               safeGetSwr('/holidays', (fresh) => setHolidays(ensureArray(extractPayload(fresh)))),
               safeGetSwr('/reminders', (fresh) => setReminders(ensureArray(extractPayload(fresh)))),
-            ]).then(([h, r]) => {
+              safeGetSwr('/employees', (fresh) => setEmployees(ensureArray(extractPayload(fresh)))),
+            ]).then(([h, r, e]) => {
               setHolidays(ensureArray(extractPayload(h)));
               setReminders(ensureArray(extractPayload(r)));
+              if (e) setEmployees(ensureArray(extractPayload(e)));
             });
             break;
           }
@@ -822,10 +845,7 @@ const App: React.FC = () => {
 
       // Proceed with resolved user
       if (user) {
-        const token = payloadData.token;
-        if (token) {
-          localStorage.setItem('kbt_token', token);
-        }
+        // Session token is managed securely via httpOnly cookies.
         // Professional parallelized eager-load of all necessary master data to prevent any generic fallback templates
         // We use catch blocks on individual promises so a single endpoint failure won't halt the entire login flow
         await Promise.all([
@@ -887,8 +907,18 @@ const App: React.FC = () => {
       }
       setAuthError('Invalid credentials. Access Denied.');
     } catch (err) {
+      const apiErr = err as any;
+      if (apiErr?.response) {
+        // The server was reachable but returned a failure response (e.g. 401 Unauthorized)
+        const errMsg = apiErr.response.data?.message || 
+                       (apiErr.response.data && typeof apiErr.response.data === 'object' && apiErr.response.data.error) || 
+                       'Invalid credentials. Access Denied.';
+        setAuthError(errMsg);
+        return;
+      }
+
       // If server unreachable, fall back to local in-browser users
-      console.error('Auth server unreachable, falling back to local users', err && (err.stack || err.message || err));
+      console.error('Auth server unreachable, falling back to local users', err && ((err as any).stack || (err as any).message || err));
       await new Promise(r => setTimeout(r, 600));
 
       // Populate local master data for mock session so components are fully hydrated
@@ -926,9 +956,7 @@ const App: React.FC = () => {
     } catch (err) {
       console.warn('Logout call failed', err);
     }
-    // Remove persisted token
-    localStorage.removeItem('kbt_token');
-    // Remove client token storage (we do not persist token to localStorage)
+    // Session is destroyed on server (HttpOnly cookie cleared).
     setCurrentUser(null);
     setAuthError('');
     setIsSidebarOpen(false);
@@ -1076,6 +1104,8 @@ const App: React.FC = () => {
     const updateTargetKeys = new Set<string>([empId]);
     if (currentUser?.employeeId) updateTargetKeys.add(currentUser.employeeId);
     if (currentUser?.id) updateTargetKeys.add(String(currentUser.id));
+    const matchedEmp = employees.find(e => e.id === empId || String(e.id) === empId);
+    if (matchedEmp?.id) updateTargetKeys.add(matchedEmp.id);
 
     try {
       updateTargetKeys.forEach(k => localStorage.removeItem(`kbt_active_log_${k}`));
@@ -1088,7 +1118,7 @@ const App: React.FC = () => {
         const uLogs = next[k] || {};
         const logDateKey = currentLog.date || dateKey;
         const dLogs = uLogs[logDateKey] || [];
-        const updatedLogs = dLogs.map(l => (l.id === currentLog.id || l.clockIn === currentLog.clockIn) ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
+        const updatedLogs = dLogs.map(l => (l.id === currentLog.id || l.clockIn === currentLog.clockIn || !l.clockOut) ? { ...l, clockOut: now.toISOString(), durationHours: hoursWorked } : l);
         next[k] = { ...uLogs, [logDateKey]: updatedLogs };
       });
       return next;
@@ -1105,13 +1135,28 @@ const App: React.FC = () => {
 
     // --- Background server sync (non-blocking) ---
     try {
-      await api.put(`/timelogs/${encodeURIComponent(tId)}`, { endTime: now.toISOString() }, { withCredentials: true });
-      await api.put(`/attendance/${encodeURIComponent(aId)}`, { clockOut: now.toISOString(), value: computedVal }, { withCredentials: true });
+      await api.put(`/timelogs/${encodeURIComponent(tId)}`, {
+        id: tId,
+        userId: empId,
+        date: currentLog.date || dateKey,
+        startTime: currentLog.clockIn,
+        endTime: now.toISOString(),
+        durationHours: hoursWorked
+      }, { withCredentials: true });
+      await api.put(`/attendance/${encodeURIComponent(aId)}`, {
+        id: aId,
+        userId: empId,
+        date: dateKey,
+        clockIn: currentLog.clockIn,
+        clockOut: now.toISOString(),
+        value: computedVal
+      }, { withCredentials: true });
       invalidateCache('/timelogs');
+      invalidateCache('/attendance');
     } catch (err) {
       console.warn('[ClockOut] Background server sync failed (optimistic update already applied)', err);
     }
-  }, [currentUser, timeLogs, addNotification]);
+  }, [currentUser, timeLogs, employees, addNotification]);
 
   const handleUpdateProfile = useCallback(async (empId: string, data: Partial<Employee>) => {
     if (!empId || empId.trim() === '') {
@@ -1141,7 +1186,7 @@ const App: React.FC = () => {
       <div className="flex items-center justify-center h-screen w-screen bg-slate-50">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
-          <span className="text-xs font-bold text-slate-500 animate-pulse">Initializing...</span>
+          <span className="text-xs font-bold text-muted animate-pulse">Initializing...</span>
         </div>
       </div>
     );
@@ -1191,7 +1236,7 @@ const App: React.FC = () => {
             const expectedOtp = (window as any)._localOtp || '123456';
             if (otp !== expectedOtp) return false;
 
-            setUsers(prev => prev.map(u => u.id === user.id ? { ...u, password: newPass, plain_password: newPass } : u));
+            setUsers(prev => prev.map(u => u.id === user.id ? { ...u, password: newPass } : u));
             return true;
           }
         }}
@@ -1264,7 +1309,8 @@ const App: React.FC = () => {
       switch (currentView) {
         case ViewMode.EMPLOYEE_HOME:
           return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} onNavigate={setCurrentView} {...commonProps} />;
-        case ViewMode.TIME_LOGS: return <TimeLogViewer {...commonProps} currentUser={currentUser} />;
+        case ViewMode.TIME_LOGS:
+          return <EmployeeDashboard user={currentUser} onClockIn={handleClockIn} onClockOut={handleClockOut} onUpdateProfile={handleUpdateProfile} onNavigate={setCurrentView} {...commonProps} />;
         case ViewMode.EMPLOYEE_TASKS: return <TaskManager {...commonProps} />;
         case ViewMode.EMPLOYEE_ORDERS: return <MaterialOrders {...commonProps} />;
         case ViewMode.PMS_EMPLOYEE: return <PMSDashboard />;
@@ -1286,7 +1332,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="flex bg-slate-50 min-h-screen h-[100dvh] w-full font-sans text-slate-900 overflow-hidden relative print:h-auto print:overflow-visible print:block">
+    <div className="flex bg-slate-50 min-h-screen h-[100dvh] w-full font-sans text-primary overflow-hidden relative print:h-auto print:overflow-visible print:block">
       <div className="fixed inset-0 z-0 bg-slate-50 pointer-events-none print:hidden">
         <div className="absolute top-0 -left-4 w-96 h-96 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob"></div>
         <div className="absolute top-0 -right-4 w-96 h-96 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-blob animation-delay-2000"></div>
@@ -1311,15 +1357,15 @@ const App: React.FC = () => {
             onClick={() => setCurrentView((currentUser.role === 'ADMIN' || currentUser.role === 'PC') ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME)}
           >
             <img src={COMPANY_LOGO} alt="Logo" className="w-7 h-7 bg-white rounded-lg shadow-sm" />
-            <span className="font-extrabold text-xs uppercase tracking-tight">Kalra FMS</span>
+            <span className="font-extrabold text-xs uppercase tracking-tight text-primary">Kalra FMS</span>
           </button>
           <div className="flex-1"></div>
           <div className="flex items-center gap-2 md:gap-4">
-            <button className="relative p-2 text-slate-500 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors" onClick={() => setShowNotifications(!showNotifications)}>
-              <Bell size={22} />
+            <button className="btn btn-ghost btn-icon relative text-muted hover:text-link" onClick={() => setShowNotifications(!showNotifications)} title="Notifications">
+              <Bell size={20} />
               {unreadCount > 0 && <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 rounded-full text-[10px] flex items-center justify-center font-bold text-white border border-white animate-pulse">{unreadCount}</span>}
             </button>
-            <button onClick={() => setIsSidebarOpen(true)} className="p-2 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 md:hidden"><Menu size={22} /></button>
+            <button onClick={() => setIsSidebarOpen(true)} className="btn btn-ghost btn-icon text-muted hover:text-primary md:hidden" title="Open Menu"><Menu size={20} /></button>
           </div>
         </header>
 
@@ -1329,7 +1375,7 @@ const App: React.FC = () => {
               <div className="flex items-center justify-center h-full w-full bg-slate-50/50">
                 <div className="flex flex-col items-center gap-3">
                   <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
-                  <span className="text-xs font-bold text-slate-500 animate-pulse">Loading module...</span>
+                  <span className="text-xs font-bold text-muted animate-pulse">Loading module...</span>
                 </div>
               </div>
             }>
@@ -1368,7 +1414,8 @@ const App: React.FC = () => {
             </div>
             <button
               onClick={() => setToast(null)}
-              className="p-1 hover:bg-black/5 rounded-lg transition-colors shrink-0"
+              className="btn btn-ghost btn-icon-sm shrink-0"
+              title="Dismiss"
             >
               <X size={16} className="opacity-40" />
             </button>
@@ -1383,21 +1430,21 @@ const App: React.FC = () => {
               <div className="w-12 h-12 bg-red-100 text-red-600 rounded-2xl flex items-center justify-center mb-6">
                 <AlertTriangle size={24} />
               </div>
-              <h2 className="text-xl sm:text-2xl font-black text-slate-900 mb-4 leading-tight">
+              <h2 className="text-xl sm:text-2xl font-black text-primary mb-4 leading-tight">
                 📢 New Attendance Policy
-                <span className="block text-sm text-red-500 font-bold mt-1 uppercase tracking-wider">(Effective Immediately)</span>
+                <span className="block text-sm text-state-danger font-bold mt-1 uppercase tracking-wider">(Effective Immediately)</span>
               </h2>
-              <div className="space-y-4 text-sm sm:text-base text-slate-600 font-medium leading-relaxed">
+              <div className="space-y-4 text-sm sm:text-base text-secondary font-medium leading-relaxed">
                 <p>
-                  Employees are permitted to arrive 5 to 15 minutes late up to <strong className="text-slate-900">two times per month</strong> without any penalty.
+                  Employees are permitted to arrive 5 to 15 minutes late up to <strong className="text-primary">two times per month</strong> without any penalty.
                 </p>
                 <p>
-                  Beginning with the third occurrence in the same month, a fine of <strong className="text-red-600">₹200</strong> will be applied for each additional late arrival.
+                  Beginning with the third occurrence in the same month, a fine of <strong className="text-state-danger">₹200</strong> will be applied for each additional late arrival.
                 </p>
                 <p>
                   The total amount collected through these fines will be utilized for employee welfare and team engagement activities at the end of each month.
                 </p>
-                <p className="pt-2 text-slate-500 italic">
+                <p className="pt-2 text-muted italic">
                   We appreciate your cooperation in maintaining workplace discipline and punctuality.
                 </p>
               </div>
@@ -1405,7 +1452,7 @@ const App: React.FC = () => {
             <div className="p-4 sm:p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
               <button
                 onClick={handleClosePolicyPopup}
-                className="w-full sm:w-auto px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all active:scale-95 shadow-lg shadow-indigo-200"
+                className="btn btn-primary w-full sm:w-auto px-8 py-3 text-sm"
               >
                 I have read and understood
               </button>

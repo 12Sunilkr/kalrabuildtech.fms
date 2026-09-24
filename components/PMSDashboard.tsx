@@ -1,149 +1,208 @@
-import React, { useEffect, useState } from 'react';
-import { getProjectSummary, fetchJSON } from '../src/utils/pmsUtils';
+import React, { useEffect, useState, useMemo } from 'react';
+import { fetchJSON } from '../src/utils/pmsUtils';
 import ProjectForm from './ProjectForm';
-import WeeklyPlanner from './WeeklyPlanner';
-import DailyLogForm from './DailyLogForm';
 import PMSChartsView from './PMSChartsView';
 import { 
-  BarChart3, BarChart2, Calendar, CheckCircle, Zap, 
-  ClipboardList, Plus, RefreshCw, ChevronRight, Trash2, 
-  Search, HardHat, TrendingUp, Target, Activity, X
+  BarChart3, Calendar, CheckCircle2, Zap, 
+  Plus, RefreshCw, ChevronRight, Trash2, 
+  Search, HardHat, TrendingUp, Activity, X,
+  MapPin, User, FileSpreadsheet, ExternalLink, Edit3,
+  Clock, Building2, FolderKanban, Sparkles,
+  DollarSign, Check, Link as LinkIcon
 } from 'lucide-react';
 
-// Modernized Dashboard Statistic Card
-const StatCard = ({ title, value, icon: Icon, color, delay }: any) => (
-  <div 
-    style={{ animationDelay: delay }}
-    className="relative overflow-hidden bg-white p-7 rounded-[2rem] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.05)] border border-slate-100 group hover:border-slate-300 transition-all duration-500 animate-scale-in"
-  >
-    <div className={`absolute -right-4 -top-4 w-24 h-24 bg-${color}-500/5 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700`}></div>
-    <div className="flex items-start justify-between relative z-10">
-      <div>
-        <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em] mb-3">{title}</p>
-        <p className="text-4xl font-black text-slate-800 tracking-tighter">{value}</p>
+// Modern KPI Metric Card
+const StatCard = ({ title, value, subtitle, icon: Icon, color, delay }: any) => {
+  const colorMap: Record<string, { bg: string; text: string; iconBg: string; bar: string }> = {
+    blue: { bg: 'from-blue-500/10 to-indigo-500/5', text: 'text-blue-600', iconBg: 'bg-blue-50 text-blue-600', bar: 'bg-blue-600' },
+    emerald: { bg: 'from-emerald-500/10 to-teal-500/5', text: 'text-emerald-600', iconBg: 'bg-emerald-50 text-emerald-600', bar: 'bg-emerald-600' },
+    indigo: { bg: 'from-indigo-500/10 to-purple-500/5', text: 'text-indigo-600', iconBg: 'bg-indigo-50 text-indigo-600', bar: 'bg-indigo-600' },
+    amber: { bg: 'from-amber-500/10 to-orange-500/5', text: 'text-amber-600', iconBg: 'bg-amber-50 text-amber-600', bar: 'bg-amber-600' }
+  };
+
+  const scheme = colorMap[color] || colorMap.blue;
+
+  return (
+    <div 
+      style={{ animationDelay: delay }}
+      className="relative overflow-hidden bg-white p-6 sm:p-7 rounded-3xl shadow-sm hover:shadow-xl border border-slate-100 transition-all duration-300 group animate-in fade-in"
+    >
+      <div className={`absolute top-0 right-0 w-32 h-32 bg-gradient-to-br ${scheme.bg} rounded-full blur-2xl group-hover:scale-125 transition-transform duration-500 pointer-events-none`}></div>
+      <div className="flex items-start justify-between relative z-10">
+        <div>
+          <p className="text-slate-400 text-xs font-black uppercase tracking-wider mb-2">{title}</p>
+          <div className="flex items-baseline gap-2">
+            <p className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">{value}</p>
+            {subtitle && <span className="text-xs font-bold text-slate-400">{subtitle}</span>}
+          </div>
+        </div>
+        <div className={`w-12 h-12 rounded-2xl ${scheme.iconBg} flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform`}>
+          <Icon size={22} strokeWidth={2.5} />
+        </div>
       </div>
-      <div className={`w-14 h-14 rounded-2xl bg-slate-50 text-${color}-600 flex items-center justify-center group-hover:bg-${color}-600 group-hover:text-white transition-all duration-500`}>
-        <Icon size={24} strokeWidth={2.5} />
+      <div className="mt-5 h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+        <div className={`h-full ${scheme.bar} rounded-full w-3/4 group-hover:w-full transition-all duration-700`}></div>
       </div>
     </div>
-    <div className="mt-4 flex items-center gap-2 relative z-10">
-      <div className="h-1 flex-1 bg-slate-100 rounded-full overflow-hidden">
-          <div className={`h-full bg-${color}-500 rounded-full w-2/3 group-hover:w-full transition-all duration-1000 opacity-20 group-hover:opacity-100`}></div>
-      </div>
-    </div>
-  </div>
-);
+  );
+};
 
-function ProjectCard({ project, idx, onDelete, onClick }: any) {
-  const [progress, setProgress] = useState(0);
+function ProjectCard({ project, idx, employees, onDelete, onEdit, onOpenSheet }: any) {
+  const assignedEmp = employees?.find((e: any) => e.id === project.assigned_employee_id || String(e.id) === project.assigned_employee_id);
 
-  useEffect(() => {
-    getProjectSummary(project.id).then(s => setProgress(s.overallProgress || 0)).catch(() => { });
-  }, [project.id]);
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'Completed':
+        return { bg: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', label: 'Completed' };
+      case 'On Hold':
+        return { bg: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500', label: 'On Hold' };
+      case 'Planning':
+        return { bg: 'bg-purple-50 text-purple-700 border-purple-200', dot: 'bg-purple-500', label: 'Planning' };
+      default:
+        return { bg: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500', label: 'Active Site' };
+    }
+  };
+
+  const statusConfig = getStatusBadge(project.status || 'Active');
+  const hasSheet = Boolean(project.google_sheet_link && project.google_sheet_link.trim());
 
   return (
     <div
-      style={{ animationDelay: `${idx * 50}ms` }}
-      className="bg-white border border-slate-100 rounded-[2.5rem] p-8 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.03)] hover:shadow-2xl hover:shadow-slate-200 transition-all duration-500 group animate-scale-in relative overflow-hidden"
+      style={{ animationDelay: `${idx * 40}ms` }}
+      onClick={() => {
+        if (hasSheet) {
+          onOpenSheet(project.google_sheet_link);
+        } else {
+          onEdit(project);
+        }
+      }}
+      className="bg-white border border-slate-200/80 hover:border-emerald-400 rounded-3xl p-6 sm:p-7 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group relative flex flex-col justify-between cursor-pointer"
     >
-      <div className="absolute top-0 right-0 p-8 text-slate-50 opacity-0 group-hover:opacity-100 transition-opacity">
-          <HardHat size={120} />
-      </div>
+      <div>
+        {/* Top Header Row */}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold border ${statusConfig.bg}`}>
+              <span className={`w-2 h-2 rounded-full ${statusConfig.dot} animate-pulse`}></span>
+              {statusConfig.label}
+            </span>
+          </div>
 
-      <div className="flex justify-between items-start mb-8 relative z-10">
-        <div className="space-y-2">
-           <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border ${
-            project.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
-            project.status === 'On Hold' ? 'bg-amber-50 text-amber-600 border-amber-100' :
-            'bg-blue-50 text-blue-600 border-blue-100'
-          }`}>
-            {project.status || 'Active'}
-          </span>
-          <h3 className="font-black text-2xl text-slate-900 tracking-tight leading-tight">{project.project_name}</h3>
-          <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            <Calendar size={12} className="text-slate-300" />
-            <span>Started: {project.start_date || '—'}</span>
+          <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+            <button
+              onClick={() => onEdit(project)}
+              className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+              title="Edit Project & Link"
+            >
+              <Edit3 size={16} />
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm(`Permanently delete project "${project.project_name}"?`)) {
+                  fetchJSON(`/api/pms/projects/${project.id}`, { method: 'DELETE' }).then(() => onDelete());
+                }
+              }}
+              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
+              title="Delete Project"
+            >
+              <Trash2 size={16} />
+            </button>
           </div>
         </div>
-        
-        <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (window.confirm('Are you sure you want to delete this project? All daily logs and tasks will be permanently removed.')) {
-                fetchJSON(`/api/pms/projects/${project.id}`, { method: 'DELETE' }).then(() => onDelete());
-              }
-            }}
-            className="p-3 bg-slate-50 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-2xl transition-all"
-        >
-            <Trash2 size={18} />
-        </button>
+
+        {/* Project Name & Location */}
+        <h3 className="font-extrabold text-xl text-slate-900 tracking-tight leading-snug group-hover:text-emerald-700 transition-colors mb-2">
+          {project.project_name}
+        </h3>
+
+        {project.location ? (
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 mb-4">
+            <MapPin size={14} className="text-emerald-600 shrink-0" />
+            <span className="truncate">{project.location}</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400 mb-4">
+            <MapPin size={14} className="text-slate-300 shrink-0" />
+            <span>Site location not specified</span>
+          </div>
+        )}
+
+        {/* Lead Engineer & Started Date */}
+        <div className="p-3 bg-slate-50/80 rounded-2xl border border-slate-100 mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-600 to-teal-600 text-white font-bold flex items-center justify-center text-xs shrink-0 shadow-xs">
+              {assignedEmp?.name ? assignedEmp.name.charAt(0).toUpperCase() : <User size={14} />}
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs font-bold text-slate-800 truncate">
+                {assignedEmp?.name || (project.assigned_employee_id ? `Staff (${project.assigned_employee_id})` : 'Unassigned Lead')}
+              </div>
+              <div className="text-[10px] font-mono text-slate-400 font-semibold truncate">
+                {assignedEmp?.department || 'Operations'}
+              </div>
+            </div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Commenced</div>
+            <div className="text-xs font-bold text-slate-700 font-mono">{project.start_date || '—'}</div>
+          </div>
+        </div>
       </div>
 
-
-
-      <button
-        onClick={(e) => {
-          if (project.google_sheet_link) {
-            e.stopPropagation();
-            window.open(project.google_sheet_link, '_blank');
-          } else {
-            onClick(e);
-          }
-        }}
-        className="w-full mt-10 py-5 px-6 bg-slate-900 rounded-[1.5rem] flex items-center justify-between text-xs font-black text-white hover:bg-blue-600 transition-all duration-300 shadow-xl shadow-slate-900/10 hover:shadow-blue-500/20 active:scale-95 translate-y-0 hover:-translate-y-1"
-      >
-        <span className="tracking-[0.2em] uppercase">
-          {project.google_sheet_link ? 'OPEN SHEET' : 'OPEN PLANNER'}
-        </span>
-        <ChevronRight size={18} className="transform group-hover:translate-x-1 transition-transform" />
-      </button>
+      {/* Primary Action Button: Open Live Sheet */}
+      <div className="pt-3 border-t border-slate-100" onClick={e => e.stopPropagation()}>
+        {hasSheet ? (
+          <button
+            onClick={() => onOpenSheet(project.google_sheet_link)}
+            className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-extrabold flex items-center justify-center gap-2.5 transition-all shadow-md shadow-emerald-600/20 hover:shadow-emerald-600/30 active:scale-98 group/btn"
+          >
+            <FileSpreadsheet size={18} className="group-hover/btn:scale-110 transition-transform" />
+            <span>Open Live Sheet</span>
+            <ExternalLink size={14} className="opacity-70 group-hover/btn:opacity-100 transition-opacity" />
+          </button>
+        ) : (
+          <button
+            onClick={() => onEdit(project)}
+            className="w-full py-3.5 px-4 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 hover:border-blue-200 rounded-2xl text-xs font-bold flex items-center justify-center gap-2 transition-all"
+          >
+            <LinkIcon size={16} />
+            <span>+ Attach Google Sheet</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
 export default function PMSDashboard() {
   const [projects, setProjects] = useState<any[]>([]);
-  const [summary, setSummary] = useState({ overallProgress: 0 });
+  const [employees, setEmployees] = useState<any[]>([]);
   const [showProjectForm, setShowProjectForm] = useState(false);
-  const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
-  const [showPlanner, setShowPlanner] = useState(false);
-  const [showDailyLog, setShowDailyLog] = useState(false);
+  const [editingProject, setEditingProject] = useState<any | null>(null);
   const [showChartsView, setShowChartsView] = useState(false);
-  const [showSearchView, setShowSearchView] = useState(false);
-  const [globalSearch, setGlobalSearch] = useState('');
-  const [globalDate, setGlobalDate] = useState('');
-  const [searchResults, setSearchResults] = useState<{ daily: any[], weekly: any[] }>({ daily: [], weekly: [] });
-  const [isSearching, setIsSearching] = useState(false);
+  const [filterStatus, setFilterStatus] = useState<string>('ALL');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusToast, setStatusToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
     loadProjects();
+    loadEmployees();
   }, []);
 
   useEffect(() => {
-    if (showSearchView) {
-      performGlobalSearch();
+    if (statusToast) {
+      const timer = setTimeout(() => setStatusToast(null), 4000);
+      return () => clearTimeout(timer);
     }
-  }, [globalSearch, globalDate, showSearchView]);
+  }, [statusToast]);
 
-  async function performGlobalSearch() {
-    setIsSearching(true);
+  async function loadEmployees() {
     try {
-      const dailyUrl = `/api/pms/daily-work?search=${encodeURIComponent(globalSearch)}${globalDate ? `&work_date=${globalDate}` : ''}`;
-      const weeklyUrl = `/api/pms/weekly-tasks?search=${encodeURIComponent(globalSearch)}`;
-
-      const [daily, weekly] = await Promise.all([
-        fetchJSON(dailyUrl),
-        fetchJSON(weeklyUrl)
-      ]);
-
-      setSearchResults({
-        daily: Array.isArray(daily) ? daily : (daily?.data || []),
-        weekly: Array.isArray(weekly) ? weekly : (weekly?.data || [])
-      });
+      const res = await fetchJSON('/api/employees');
+      const list = Array.isArray(res) ? res : (res?.data || []);
+      setEmployees(list);
     } catch (e) {
-      console.warn('Global search failed', e);
-    } finally {
-      setIsSearching(false);
+      console.warn('Failed to load employees for PMS', e);
     }
   }
 
@@ -152,251 +211,225 @@ export default function PMSDashboard() {
       const data = await fetchJSON('/api/pms/projects');
       const rows = Array.isArray(data) ? data : (data && data.data) ? data.data : data;
       setProjects(rows || []);
-    } catch (e) { console.warn('Failed loading projects', e); setProjects([]); }
+    } catch (e) {
+      console.warn('Failed loading projects', e);
+      setProjects([]);
+    }
   }
 
-  useEffect(() => {
-    if (projects.length) {
-      Promise.all(projects.map(p => getProjectSummary(p.id))).then(summaries => {
-        const totalProgress = summaries.reduce((acc, s) => acc + (s.overallProgress || 0), 0);
-        const avgProgress = projects.length > 0 ? Math.round(totalProgress / projects.length) : 0;
-        setSummary({ overallProgress: avgProgress });
-      }).catch(e => console.warn('Summary calc failed', e));
-    } else {
-      setSummary({ overallProgress: 0 });
-    }
-  }, [projects]);
+  const handleOpenSheet = (url: string) => {
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
 
   const total = projects.length;
-  const active = projects.filter(p => p.status !== 'Completed').length;
+  const active = projects.filter(p => p.status === 'Active' || !p.status).length;
+  const onHold = projects.filter(p => p.status === 'On Hold').length;
   const completed = projects.filter(p => p.status === 'Completed').length;
+  const sheetLinkedCount = projects.filter(p => p.google_sheet_link && p.google_sheet_link.trim()).length;
+
+  const filteredProjects = useMemo(() => {
+    return projects.filter(p => {
+      const matchesStatus = filterStatus === 'ALL' || 
+        (filterStatus === 'ACTIVE' && (p.status === 'Active' || !p.status)) ||
+        (filterStatus === 'ON_HOLD' && p.status === 'On Hold') ||
+        (filterStatus === 'COMPLETED' && p.status === 'Completed');
+
+      const matchesSearch = !searchTerm || 
+        (p.project_name && p.project_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (p.location && p.location.toLowerCase().includes(searchTerm.toLowerCase()));
+
+      return matchesStatus && matchesSearch;
+    });
+  }, [projects, filterStatus, searchTerm]);
 
   if (showChartsView) {
     return <PMSChartsView onClose={() => setShowChartsView(false)} />;
   }
 
-  if (showPlanner && activeProjectId) {
-    return (
-      <div className="h-full bg-[#f8fafc] relative animate-fade-in-up">
-        <WeeklyPlanner
-          projectId={activeProjectId}
-          onChange={async () => {
-            setShowPlanner(false);
-            await loadProjects();
-          }}
-        />
-      </div>
-    );
-  }
-
   return (
-    <div className="h-full min-h-0 overflow-auto p-4 md:p-10 space-y-10 custom-scrollbar bg-[#f8fafc] relative">
-      
-      {/* Header Section */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-8 animate-fade-in-up">
-        <div className="flex items-center gap-6">
-            <div className="w-16 h-16 bg-white rounded-2xl shadow-xl flex items-center justify-center border border-slate-100 transform -rotate-3">
-                <TrendingUp size={32} className="text-blue-600" />
+    <div className="h-full min-h-0 overflow-auto p-4 sm:p-6 lg:p-8 space-y-8 custom-scrollbar bg-slate-50/60 relative">
+      {/* Toast Notification */}
+      {statusToast && (
+        <div className="fixed top-20 right-6 z-[150] animate-in slide-in-from-top-4 duration-300">
+          <div className={`p-4 rounded-2xl shadow-xl border backdrop-blur-md flex items-center gap-3 ${
+            statusToast.type === 'success' ? 'bg-emerald-50/95 border-emerald-200 text-emerald-900' : 'bg-rose-50/95 border-rose-200 text-rose-900'
+          }`}>
+            <CheckCircle2 size={20} className={statusToast.type === 'success' ? 'text-emerald-600' : 'text-rose-600'} />
+            <span className="text-sm font-bold">{statusToast.message}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Executive Header Section */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6 bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/80 shadow-xs">
+        <div className="flex items-center gap-5">
+          <div className="w-14 h-14 bg-gradient-to-tr from-emerald-600 to-teal-700 text-white rounded-2xl shadow-lg shadow-emerald-600/20 flex items-center justify-center shrink-0">
+            <FileSpreadsheet size={28} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">PMS Site Sheets</h1>
+              <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                Direct Live Sheets
+              </span>
             </div>
-            <div>
-                <h1 className="text-3xl font-black text-slate-900 tracking-tight">PMS Executive Dashboard</h1>
-                <div className="flex items-center gap-3 mt-1.5">
-                    <span className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-black uppercase tracking-wider rounded-full border border-emerald-100">
-                        <Activity size={12} /> Real-time Performance
-                    </span>
-                    <p className="text-slate-500 font-bold text-xs">Monitoring {total} Active Sites</p>
-                </div>
-            </div>
+            <p className="text-slate-500 text-xs sm:text-sm font-medium mt-1">
+              Live Google Sheets, construction trackers & site project management.
+            </p>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4">
-          <button
-            onClick={() => setShowSearchView(!showSearchView)}
-            className={`flex items-center gap-3 px-6 py-4 rounded-2xl transition-all font-black text-[10px] tracking-widest uppercase border ${showSearchView ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-lg shadow-indigo-500/5' : 'bg-white text-slate-600 border-slate-100 shadow-sm hover:border-slate-300'}`}
-          >
-            <Search size={18} />
-            Search Matrix
-          </button>
+        {/* Top Actions */}
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={() => setShowChartsView(true)}
-            className="flex items-center gap-3 bg-white text-slate-900 border border-slate-100 px-6 py-4 rounded-2xl shadow-sm hover:shadow-xl hover:border-slate-300 active:scale-95 transition-all font-black text-[10px] tracking-widest uppercase"
+            className="flex items-center gap-2 px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-2xl text-xs font-bold shadow-xs transition-all"
           >
-            <BarChart3 size={18} className="text-blue-600" />
-            Visual Analysis
+            <BarChart3 size={16} className="text-emerald-600" />
+            <span>Visual Analytics</span>
           </button>
+
           <button
-            onClick={() => { setShowProjectForm(!showProjectForm); setActiveProjectId(null); }}
-            className="flex items-center gap-3 bg-slate-900 text-white px-8 py-4 rounded-3xl shadow-2xl shadow-slate-900/20 hover:bg-blue-600 active:scale-95 transition-all font-black text-[10px] tracking-widest uppercase"
+            onClick={() => {
+              setEditingProject(null);
+              setShowProjectForm(true);
+            }}
+            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-2xl text-xs font-extrabold shadow-md shadow-emerald-500/20 active:scale-95 transition-all"
           >
-            <Plus size={18} />
-            Initiate Project
+            <Plus size={16} />
+            <span>Initiate Project</span>
           </button>
         </div>
       </div>
 
-      {/* Stats Grid */}
-      {!showSearchView && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 animate-fade-in-up">
-          <StatCard title="Total Sites" value={total} icon={ClipboardList} color="blue" delay="0ms" />
-          <StatCard title="Under Construction" value={active} icon={Zap} color="emerald" delay="100ms" />
-          <StatCard title="Handed Over" value={completed} icon={CheckCircle} color="indigo" delay="200ms" />
-        </div>
-      )}
+      {/* KPI Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+        <StatCard title="Total Sites" value={total} subtitle="Portfolio" icon={FolderKanban} color="blue" delay="0ms" />
+        <StatCard title="Active Sites" value={active} subtitle="Under Work" icon={Zap} color="emerald" delay="50ms" />
+        <StatCard title="Live Sheets Connected" value={sheetLinkedCount} subtitle="Direct Access" icon={FileSpreadsheet} color="indigo" delay="100ms" />
+        <StatCard title="Completed" value={completed} subtitle="Handed Over" icon={CheckCircle2} color="amber" delay="150ms" />
+      </div>
 
-      {/* Search Interface */}
-      {showSearchView && (
-        <div className="space-y-8 animate-in slide-in-from-top-4 duration-500">
-          <div className="bg-white p-8 rounded-[3rem] border border-slate-100 shadow-2xl shadow-slate-200/50 flex flex-col md:flex-row gap-6 items-center">
-            <div className="relative flex-1 w-full">
-              <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" size={24} />
-              <input
-                type="text"
-                placeholder="Query any task, description or project parameters..."
-                value={globalSearch}
-                onChange={e => setGlobalSearch(e.target.value)}
-                className="w-full pl-16 pr-6 py-6 bg-slate-50 border-none rounded-[2rem] font-black text-slate-800 focus:ring-4 focus:ring-blue-500/10 placeholder:text-slate-300 transition-all outline-none"
-              />
-            </div>
-            <div className="flex items-center gap-4 w-full md:w-auto">
-              <input
-                type="date"
-                value={globalDate}
-                onChange={e => setGlobalDate(e.target.value)}
-                className="flex-1 md:w-56 px-6 py-6 bg-slate-50 border-none rounded-[2rem] font-black text-slate-600 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none cursor-pointer"
-              />
+      {/* Main Portfolio Grid Section */}
+      <div className="space-y-6">
+        {/* Filter Bar & Live Search */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
+          {/* Status Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar pb-1 sm:pb-0">
+            {[
+              { id: 'ALL', label: 'All Sites', count: total },
+              { id: 'ACTIVE', label: 'Active', count: active },
+              { id: 'ON_HOLD', label: 'On Hold', count: onHold },
+              { id: 'COMPLETED', label: 'Completed', count: completed }
+            ].map(tab => (
               <button
-                onClick={() => { setGlobalSearch(''); setGlobalDate(''); }}
-                className="p-6 bg-white text-slate-300 hover:text-slate-900 border border-slate-100 rounded-[2rem] hover:bg-slate-50 transition-all shadow-sm"
+                key={tab.id}
+                onClick={() => setFilterStatus(tab.id)}
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all shrink-0 flex items-center gap-1.5 ${
+                  filterStatus === tab.id
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-600'
+                }`}
               >
-                <RefreshCw size={24} className={isSearching ? 'animate-spin' : ''} />
+                <span>{tab.label}</span>
+                <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono ${
+                  filterStatus === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {tab.count}
+                </span>
               </button>
-            </div>
+            ))}
           </div>
 
-          <div className="grid grid-cols-1 gap-12">
-            <div className="space-y-6">
-              <h3 className="text-xl font-black text-slate-800 flex items-center gap-3 tracking-tight">
-                <span className="w-1.5 h-6 bg-emerald-500 rounded-full"></span>
-                Daily Work Logs
-              </h3>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {searchResults.daily.length > 0 ? searchResults.daily.map((log: any) => (
-                  <div key={log.id} className="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all cursor-pointer group"
-                    onClick={() => { setActiveProjectId(log.project_id); setShowPlanner(true); }}
-                  >
-                    <div className="flex justify-between items-start mb-4">
-                      <span className="text-[9px] font-black text-blue-600 bg-blue-50 px-3 py-1 rounded-full uppercase tracking-widest">{log.project_name || 'Project'}</span>
-                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{log.work_date}</span>
-                    </div>
-                    <p className="text-sm font-bold text-slate-700 mb-6 leading-relaxed whitespace-pre-wrap">{log.work_done}</p>
-                    <div className="flex items-center justify-between pt-4 border-t border-slate-50">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Session {log.session_number}</span>
-                      </div>
-                    </div>
-                  </div>
-                )) : (globalSearch || globalDate) && !isSearching ? (
-                  <div className="p-10 border-2 border-dashed border-slate-100 rounded-[2.5rem] text-center">
-                      <p className="text-slate-400 font-bold italic">No log entries meet your search criteria.</p>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="space-y-6">
-               <h3 className="text-xl font-black text-slate-800 flex items-center gap-3 tracking-tight">
-                <span className="w-1.5 h-6 bg-blue-500 rounded-full"></span>
-                Strategic Tasks
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {searchResults.weekly.length > 0 ? searchResults.weekly.map((task: any) => (
-                  <div key={task.id} className="bg-slate-900 p-6 rounded-[2rem] shadow-xl hover:-translate-y-1 transition-all cursor-pointer group"
-                    onClick={() => { setActiveProjectId(task.project_id); setShowPlanner(true); }}
-                  >
-                    <div className="flex justify-between items-start mb-4">
-                      <span className="text-[9px] font-black text-white bg-white/10 px-3 py-1 rounded-full uppercase tracking-widest">{task.project_name || 'Site'}</span>
-                      <span className="text-[9px] font-black text-white/40 uppercase tracking-widest">{task.week_start_date}</span>
-                    </div>
-                    <h4 className="text-lg font-black text-white mb-2 tracking-tight">{task.task_name}</h4>
-                    <p className="text-xs text-white/50 mb-6 line-clamp-2 italic">{task.notes}</p>
-                    <div className="flex items-center justify-between pt-4 border-t border-white/5">
-                      <span className={`text-[8px] font-black px-2 py-1 rounded-sm uppercase tracking-tighter ${task.priority === 'High' ? 'bg-red-500 text-white' : 'bg-amber-500 text-slate-900'}`}>
-                        {task.priority || 'Medium'} Priority
-                      </span>
-                      <span className="text-xs font-black text-white/60">{task.target_quantity} Units Planned</span>
-                    </div>
-                  </div>
-                )) : (globalSearch || globalDate) && !isSearching ? (
-                    <div className="p-10 border-2 border-dashed border-slate-100 rounded-[2.5rem] text-center">
-                        <p className="text-slate-400 font-bold italic">Zero tasks found in the matrix.</p>
-                    </div>
-                ) : null}
-              </div>
-            </div>
-
-            {!globalSearch && !globalDate && !isSearching && (
-              <div className="py-20 text-center animate-scale-in">
-                <div className="w-24 h-24 bg-white shadow-xl rounded-[2rem] border border-slate-100 flex items-center justify-center mx-auto mb-6 text-slate-200">
-                  <Target size={48} />
-                </div>
-                <h4 className="text-slate-800 font-black text-xl mb-2 tracking-tight">Global Matrix Search</h4>
-                <p className="text-slate-400 font-bold text-sm max-w-sm mx-auto">Input a keyword or date to scan across all projects, logs, and site activities.</p>
-              </div>
-            )}
+          {/* In-view Search */}
+          <div className="relative sm:w-72">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+            <input
+              type="text"
+              placeholder="Search site name or location..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all placeholder:text-slate-400"
+            />
           </div>
         </div>
-      )}
 
-      {/* Projects Grid */}
-      {!showSearchView && (
-        <div className="space-y-8 animate-fade-in-up">
-          <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-3">
-                <HardHat className="text-slate-900" size={24} />
-                Strategic Project Portfolio
-            </h2>
-            <button
-              onClick={() => { loadProjects(); }}
-              className="px-4 py-2 bg-white text-slate-400 hover:text-blue-600 border border-slate-100 hover:border-blue-100 rounded-xl transition-all font-bold text-xs uppercase tracking-widest shadow-sm"
-            >
-              Sync Matrix
-            </button>
-          </div>
-
-          {showProjectForm && (
-            <div className="animate-scale-in fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-                <div className="bg-white rounded-[3rem] p-10 shadow-2xl w-full max-w-2xl relative overflow-hidden">
-                    <button 
-                        onClick={() => setShowProjectForm(false)}
-                        className="absolute top-8 right-8 p-3 hover:bg-slate-50 rounded-full transition-colors"
-                    >
-                        <X size={24} className="text-slate-400" />
-                    </button>
-                    <ProjectForm onDone={() => { setShowProjectForm(false); loadProjects(); }} />
-                </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
-            {projects.length ? projects.map((p: any, idx: number) => (
+        {/* Project Cards Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {filteredProjects.length > 0 ? (
+            filteredProjects.map((p: any, idx: number) => (
               <ProjectCard
                 key={p.id}
                 project={p}
                 idx={idx}
-                onDelete={() => loadProjects()}
-                onClick={() => { setActiveProjectId(p.id); setShowPlanner(true); setShowDailyLog(false); }}
+                employees={employees}
+                onOpenSheet={handleOpenSheet}
+                onDelete={() => {
+                  loadProjects();
+                  setStatusToast({ message: 'Project removed successfully', type: 'success' });
+                }}
+                onEdit={(proj: any) => {
+                  setEditingProject(proj);
+                  setShowProjectForm(true);
+                }}
               />
-            )) : (
-              <div className="col-span-full py-20 text-center bg-white border border-slate-100 rounded-[3rem] shadow-sm animate-scale-in">
-                <div className="w-24 h-24 bg-slate-50 rounded-[2rem] flex items-center justify-center mx-auto mb-6 text-slate-200">
-                  <ClipboardList size={48} />
-                </div>
-                <h4 className="text-slate-800 font-black text-xl mb-2 tracking-tight">Portfolio Empty</h4>
-                <p className="text-slate-400 font-bold text-sm">Initiate your first project to begin monitoring site development.</p>
+            ))
+          ) : (
+            <div className="col-span-full py-16 text-center bg-white border border-slate-200 rounded-3xl shadow-xs">
+              <div className="w-16 h-16 bg-emerald-50 rounded-2xl flex items-center justify-center mx-auto mb-4 text-emerald-600">
+                <FileSpreadsheet size={32} />
               </div>
-            )}
+              <h4 className="text-slate-900 font-extrabold text-lg mb-1">No Site Sheets Found</h4>
+              <p className="text-slate-500 text-xs max-w-sm mx-auto mb-6">
+                {searchTerm || filterStatus !== 'ALL'
+                  ? 'No projects match your active search or filter parameters.'
+                  : 'Start monitoring site operations by adding your first project and Google Sheet link.'}
+              </p>
+              <button
+                onClick={() => {
+                  setEditingProject(null);
+                  setShowProjectForm(true);
+                }}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs font-bold inline-flex items-center gap-2 shadow-sm transition-all"
+              >
+                <Plus size={16} /> Initiate Project
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Project Modal Form (Create / Edit) */}
+      {showProjectForm && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-2xl w-full max-w-2xl relative border border-slate-100 max-h-[90vh] overflow-hidden flex flex-col">
+            <button
+              onClick={() => {
+                setShowProjectForm(false);
+                setEditingProject(null);
+              }}
+              className="absolute top-6 right-6 p-2.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors z-10"
+            >
+              <X size={20} />
+            </button>
+            <ProjectForm
+              initialProject={editingProject}
+              onCancel={() => {
+                setShowProjectForm(false);
+                setEditingProject(null);
+              }}
+              onDone={() => {
+                setShowProjectForm(false);
+                setEditingProject(null);
+                loadProjects();
+                setStatusToast({
+                  message: editingProject ? 'Project specifications updated successfully' : 'Project initiated successfully',
+                  type: 'success'
+                });
+              }}
+            />
           </div>
         </div>
       )}

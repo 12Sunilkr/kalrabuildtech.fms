@@ -294,13 +294,13 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
         <div className="p-4 md:p-8 space-y-8 bg-slate-50/50 h-full overflow-y-auto custom-scrollbar print:p-0 print:bg-white print:overflow-visible">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 print:hidden animate-fade-in-up">
                 <div>
-                    <h1 className="text-4xl font-black text-slate-800 tracking-tight flex items-center gap-4">
+                    <h1 className="text-4xl font-black text-primary tracking-tight flex items-center gap-4">
                         <div className="w-12 h-12 bg-emerald-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-600/20 shrink-0">
                             <DollarSign size={28} />
                         </div>
                         Finance & Payments
                     </h1>
-                    <p className="text-slate-500 mt-2 font-medium">
+                    <p className="text-secondary mt-2 font-medium">
                         Track client project receivables and vendor payment obligations.
                     </p>
                 </div>
@@ -365,21 +365,21 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                     <div className="flex gap-2">
                         <button
                             onClick={handlePrint}
-                            className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm transition-all"
+                            className="btn btn-secondary btn-icon"
                             title="Print Report"
                         >
                             <Printer size={18} />
                         </button>
                         <button
                             onClick={handleExport}
-                            className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-sm transition-all"
+                            className="btn btn-secondary btn-icon"
                             title="Download Excel/CSV"
                         >
                             <Download size={18} />
                         </button>
                         <button
                             onClick={() => setShowCreateModal(true)}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 active:scale-95 transition-all"
+                            className="btn btn-primary"
                         >
                             <Plus size={18} /> Add Record
                         </button>
@@ -392,7 +392,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                 <div className="overflow-x-auto">
                     {activeTab === 'CLIENT' ? (
                         <table className="w-full text-left text-sm">
-                            <thead className="bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase text-slate-500 print:bg-white print:text-black print:border-black">
+                            <thead className="bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase text-muted print:bg-white print:text-black print:border-black">
                                 <tr>
                                     <th className="p-4">Client Name</th>
                                     <th className="p-4">Project</th>
@@ -408,18 +408,18 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                 {filteredClientData.map(rec => {
                                     return (
                                         <tr key={rec.id} className="hover:bg-slate-50 transition-colors print:hover:bg-transparent">
-                                            <td className="p-4 font-bold text-slate-800">{rec.clientName}</td>
-                                            <td className="p-4 text-slate-600">{rec.projectId}</td>
-                                            <td className="p-4 text-right font-mono text-slate-600">{formatCurrency(rec.totalDealValue)}</td>
-                                            <td className="p-4 text-right font-mono text-green-600 font-bold">{formatCurrency(rec.receivedAmount)}</td>
-                                            <td className="p-4 text-right font-mono text-red-600 font-bold">{formatCurrency(rec.balance)}</td>
+                                            <td className="p-4 font-bold text-primary">{rec.clientName}</td>
+                                            <td className="p-4 text-secondary">{rec.projectId}</td>
+                                            <td className="p-4 text-right font-mono text-secondary">{formatCurrency(rec.totalDealValue)}</td>
+                                            <td className="p-4 text-right font-mono text-state-success font-bold">{formatCurrency(rec.receivedAmount)}</td>
+                                            <td className="p-4 text-right font-mono text-state-danger font-bold">{formatCurrency(rec.balance)}</td>
                                             <td className="p-4">
                                                 {rec.registrationDate ? (
-                                                    <div className="flex items-center gap-1 font-bold text-xs text-slate-600">
+                                                    <div className="flex items-center gap-1 font-bold text-xs text-secondary">
                                                         <Calendar size={12} /> {rec.registrationDate}
                                                     </div>
                                                 ) : (
-                                                    <span className="text-xs text-slate-400 italic">Not set</span>
+                                                    <span className="text-xs text-muted italic">Not set</span>
                                                 )}
                                             </td>
                                             <td className="p-4">
@@ -431,14 +431,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                                 <div className="flex justify-end gap-3">
                                                     <button
                                                         onClick={() => setShowHistoryModal(rec.id)}
-                                                        className="text-indigo-600 font-bold text-xs hover:underline flex items-center gap-1"
+                                                        className="text-link font-bold text-xs flex items-center gap-1"
                                                         title="View Transaction History"
                                                     >
                                                         <History size={14} /> History
                                                     </button>
                                                     <button
                                                         onClick={() => openPaymentModal(rec.id)}
-                                                        className="text-emerald-600 font-bold text-xs hover:underline flex items-center gap-1"
+                                                        className="text-state-success font-bold text-xs hover:underline flex items-center gap-1"
                                                     >
                                                         <Plus size={14} /> Add Pay
                                                     </button>
@@ -446,7 +446,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                                         <button
                                                             type="button"
                                                             onClick={() => setShowDeleteConfirm(rec.id)}
-                                                            className="text-red-600 font-bold text-xs hover:underline flex items-center gap-1 pointer-events-auto z-40 cursor-pointer px-2 py-0.5 rounded"
+                                                            className="text-state-danger font-bold text-xs hover:underline flex items-center gap-1 pointer-events-auto z-40 cursor-pointer px-2 py-0.5 rounded"
                                                             title="Delete Client and History"
                                                             aria-label={`Delete client ${rec.clientName || rec.id}`}
                                                         >
@@ -456,7 +456,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                                         <button
                                                             type="button"
                                                             disabled
-                                                            className="text-red-300 font-bold text-xs flex items-center gap-1 cursor-not-allowed"
+                                                            className="text-muted font-bold text-xs flex items-center gap-1 cursor-not-allowed opacity-50"
                                                             title="Admin only"
                                                         >
                                                             <Trash2 size={14} /> Delete
@@ -471,7 +471,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                         </table>
                     ) : (
                         <table className="w-full text-left text-sm">
-                            <thead className="bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase text-slate-500 print:bg-white print:text-black print:border-black">
+                            <thead className="bg-slate-50 border-b border-slate-200 text-xs font-bold uppercase text-muted print:bg-white print:text-black print:border-black">
                                 <tr>
                                     <th className="p-4">Vendor</th>
                                     <th className="p-4">Category</th>
@@ -488,17 +488,17 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                     const overdue = isOverdue(rec.dueDate) && rec.balance > 0;
                                     return (
                                         <tr key={rec.id} className="hover:bg-slate-50 transition-colors print:hover:bg-transparent">
-                                            <td className="p-4 font-bold text-slate-800">{rec.vendorName}</td>
-                                            <td className="p-4 text-slate-600">{rec.category}</td>
-                                            <td className="p-4 text-xs text-slate-500">
+                                            <td className="p-4 font-bold text-primary">{rec.vendorName}</td>
+                                            <td className="p-4 text-secondary">{rec.category}</td>
+                                            <td className="p-4 text-xs text-muted">
                                                 <div>{rec.invoiceNo}</div>
                                                 <div>{rec.invoiceDate}</div>
                                             </td>
-                                            <td className="p-4 text-right font-mono text-slate-600">{formatCurrency(rec.totalAmount)}</td>
-                                            <td className="p-4 text-right font-mono text-green-600 font-bold">{formatCurrency(rec.paidAmount)}</td>
-                                            <td className="p-4 text-right font-mono text-red-600 font-bold">{formatCurrency(rec.balance)}</td>
+                                            <td className="p-4 text-right font-mono text-secondary">{formatCurrency(rec.totalAmount)}</td>
+                                            <td className="p-4 text-right font-mono text-state-success font-bold">{formatCurrency(rec.paidAmount)}</td>
+                                            <td className="p-4 text-right font-mono text-state-danger font-bold">{formatCurrency(rec.balance)}</td>
                                             <td className="p-4">
-                                                <div className={`flex items-center gap-1 font-bold ${overdue ? 'text-red-600' : 'text-slate-700'}`}>
+                                                <div className={`flex items-center gap-1 font-bold ${overdue ? 'text-state-danger' : 'text-secondary'}`}>
                                                     {rec.dueDate}
                                                     {overdue && <AlertCircle size={14} />}
                                                 </div>
@@ -507,14 +507,14 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                                 <div className="flex justify-end gap-3">
                                                     <button
                                                         onClick={() => setShowHistoryModal(rec.id)}
-                                                        className="text-indigo-600 font-bold text-xs hover:underline flex items-center gap-1"
+                                                        className="text-link font-bold text-xs flex items-center gap-1"
                                                         title="View History"
                                                     >
                                                         <History size={14} /> History
                                                     </button>
                                                     <button
                                                         onClick={() => openPaymentModal(rec.id)}
-                                                        className="text-emerald-600 font-bold text-xs hover:underline flex items-center gap-1"
+                                                        className="text-state-success font-bold text-xs hover:underline flex items-center gap-1"
                                                     >
                                                         <Plus size={14} /> Record Pay
                                                     </button>
@@ -537,7 +537,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                             <h3 className="text-xl font-extrabold text-emerald-900">
                                 {activeTab === 'CLIENT' ? 'Add Client Project' : 'Add Vendor Invoice'}
                             </h3>
-                            <button onClick={() => setShowCreateModal(false)} className="p-2 hover:bg-emerald-100 rounded-full text-emerald-800"><X size={20} /></button>
+                            <button onClick={() => setShowCreateModal(false)} className="btn btn-ghost btn-icon-sm text-emerald-800" title="Close"><X size={18} /></button>
                         </div>
                         <div className="p-6 space-y-4 overflow-y-auto custom-scrollbar">
                             {activeTab === 'CLIENT' ? (
@@ -649,8 +649,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                             )}
                         </div>
                         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-                            <button onClick={() => setShowCreateModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-                            <button onClick={handleCreateRecord} className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold shadow-lg shadow-emerald-600/20">Save Record</button>
+                            <button onClick={() => setShowCreateModal(false)} className="btn btn-secondary">Cancel</button>
+                            <button onClick={handleCreateRecord} className="btn btn-primary">Save Record</button>
                         </div>
                     </div>
                 </div>
@@ -662,7 +662,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col">
                         <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center shrink-0">
                             <h3 className="text-xl font-extrabold text-slate-800">Record Payment</h3>
-                            <button onClick={() => setShowPaymentModal(false)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+                            <button onClick={() => setShowPaymentModal(false)} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Close"><X size={18} /></button>
                         </div>
                         <div className="p-6 space-y-4">
                             <div>
@@ -711,8 +711,8 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                             </div>
                         </div>
                         <div className="p-6 bg-slate-50/50 flex justify-end gap-3 border-t border-slate-100 shrink-0">
-                            <button onClick={() => setShowPaymentModal(false)} className="px-5 py-2.5 text-slate-600 font-bold hover:bg-slate-100 rounded-xl">Cancel</button>
-                            <button onClick={handleAddPayment} className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold shadow-lg shadow-emerald-600/20">Confirm</button>
+                            <button onClick={() => setShowPaymentModal(false)} className="btn btn-secondary">Cancel</button>
+                            <button onClick={handleAddPayment} className="btn btn-primary">Confirm</button>
                         </div>
                     </div>
                 </div>
@@ -741,12 +741,12 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                         <div className="flex gap-2">
                                             <button
                                                 onClick={() => handleDownloadHistory(record)}
-                                                className="p-2 hover:bg-slate-200 rounded-full text-blue-600"
+                                                className="btn btn-ghost btn-icon-sm text-indigo-600"
                                                 title="Download History CSV"
                                             >
-                                                <Download size={20} />
+                                                <Download size={18} />
                                             </button>
-                                            <button onClick={() => setShowHistoryModal(null)} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X size={20} /></button>
+                                            <button onClick={() => setShowHistoryModal(null)} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Close"><X size={18} /></button>
                                         </div>
                                     </div>
                                     <div className="p-6 overflow-y-auto custom-scrollbar">
@@ -805,7 +805,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                         )}
                                     </div>
                                     <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end shrink-0">
-                                        <button onClick={() => setShowHistoryModal(null)} className="px-6 py-2.5 bg-slate-800 text-white rounded-xl font-bold shadow-lg shadow-slate-800/20">Close</button>
+                                        <button onClick={() => setShowHistoryModal(null)} className="btn btn-secondary">Close</button>
                                     </div>
                                 </>
                             );
@@ -817,7 +817,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                 <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title">
                                     <div className="p-6 border-b border-slate-100 flex justify-between items-center">
                                         <h3 id="confirm-delete-title" className="text-lg font-extrabold text-slate-800">Confirm Deletion</h3>
-                                        <button onClick={() => setShowDeleteConfirm(null)} className="p-2 hover:bg-slate-100 rounded-full text-slate-500"><X size={20} /></button>
+                                        <button onClick={() => setShowDeleteConfirm(null)} className="btn btn-ghost btn-icon-sm text-slate-400 hover:text-slate-600" title="Close"><X size={18} /></button>
                                     </div>
                                     <div className="p-6">
                                         <p className="text-sm text-slate-600 mb-4">Are you sure you want to <b>delete this client</b> and <b>all associated history (payments)</b>? This action cannot be undone.</p>
@@ -825,7 +825,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                             try { const parts = (showDeleteConfirm || '').split('::'); return parts[0] ? `${parts[0]} (${parts[1] || 'project'})` : showDeleteConfirm; } catch { return showDeleteConfirm; }
                                         })()}</b></div>
                                         <div className="flex gap-2 justify-end mt-4">
-                                            <button onClick={() => setShowDeleteConfirm(null)} className="px-4 py-2 rounded-xl bg-white border border-slate-200 font-bold">Cancel</button>
+                                            <button onClick={() => setShowDeleteConfirm(null)} className="btn btn-secondary">Cancel</button>
                                             <button disabled={deleting} onClick={async () => {
                                                 if (!showDeleteConfirm) return;
 
@@ -867,7 +867,7 @@ export const FinanceDashboard: React.FC<FinanceDashboardProps> = ({
                                                     setDeleting(false);
                                                     setShowDeleteConfirm(null);
                                                 }
-                                            }} className="px-4 py-2 rounded-xl bg-red-600 text-white font-bold">{deleting ? 'Deleting...' : 'Delete'}</button>
+                                            }} className="btn btn-danger">{deleting ? 'Deleting...' : 'Delete'}</button>
                                         </div>
                                     </div>
                                 </div>
