@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { BookOpen, User, ShieldCheck, LayoutDashboard, Clock, ClipboardList, Package, BarChart, FileText, Users, HelpCircle, MessageCircle, ListChecks, Play } from 'lucide-react';
+import { BookOpen, User, ShieldCheck, LayoutDashboard, Clock, ClipboardList, Package, BarChart, FileText, Users, HelpCircle, MessageCircle, ListChecks, Play, Mail } from 'lucide-react';
 import { Role } from '../types';
 
 interface ReadMeProps {
@@ -208,7 +208,7 @@ export const ReadMe: React.FC<ReadMeProps> = ({ role }) => {
                             "Create new recurring checklists. 5-Year schedules are auto-generated.",
                             "Available Frequencies: Daily, Weekly, Monthly, Quarterly, Half-Yearly, Yearly.",
                             "Pattern Scheduling: Support for 'First Monday', 'Last Monday', and 'Mid-Month' (15th).",
-                            "Smart Sunday Logic: 'Daily' tasks skip Sundays entirely. All other frequencies (Weekly/Monthly/etc) that fall on a Sunday are automatically shifted to the next day (Monday)."
+                            "Smart Sunday Logic: 'Daily' tasks skip Sundays entirely. 'Alternate' tasks occur every alternate day without skipping Sundays. Other frequencies (Weekly/Monthly/etc) that fall on a Sunday are automatically shifted to the next day (Monday)."
                         ]}
                     />
 
@@ -242,6 +242,18 @@ export const ReadMe: React.FC<ReadMeProps> = ({ role }) => {
                             "Scores are auto-calculated based on Task Completion and On-Time delivery.",
                             "Click 'View Detailed KPI' to see the Report Card.",
                             "Use the 'Print' button to generate a PDF report for physical filing."
+                        ]}
+                    />
+
+                    <GuideSection 
+                        title="Automated Task & Compliance Email Reminders" 
+                        icon={<Mail size={20}/>}
+                        steps={[
+                            "Daily reminders run automatically at 11:00 AM and 2:00 PM.",
+                            "Advance 1-Day Reminder: Automatically warns assignees 1 day before the task due date (Due Tomorrow).",
+                            "Due Date & Overdue Highlights: Tasks due today are highlighted in Amber, while Overdue tasks are prominently flagged with Red alert badges and days overdue.",
+                            "Consolidated Single Email: Staff receive exactly 1 unified professional digest containing all their delegated tasks and routine checklists — no repetitive or multiple emails.",
+                            "Live Dynamic Emails: Reminders always resolve the latest email address saved in Team Master."
                         ]}
                     />
                 </div>

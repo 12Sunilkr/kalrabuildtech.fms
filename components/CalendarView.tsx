@@ -83,7 +83,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                         const ownerId = newReminderUserId || currentUser.employeeId || String(currentUser.id);
                         const body = { userId: ownerId, date: formatDateKey(selectedDate), title: newReminderTitle };
                         await safePost('/reminders', body);
-                        const r = await safeGet('/reminders', { cacheBust: true });
+                        const r = await safeGet('/reminders');
                         const p = extractPayload(r);
                         setReminders(ensureArray(p));
                         setNewReminderTitle('');
@@ -114,7 +114,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
         (async () => {
             try {
                 await safeDelete(`/reminders/${id}`);
-                const r = await safeGet('/reminders', { cacheBust: true });
+                const r = await safeGet('/reminders');
                 const p = extractPayload(r);
                 setReminders(ensureArray(p));
             } catch (e) {

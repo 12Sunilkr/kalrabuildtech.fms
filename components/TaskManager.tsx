@@ -23,7 +23,6 @@ interface TaskManagerProps {
 
 const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, archivedEmployees = [], addNotification }) => {
   const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS' | 'TERMINATE' | 'REJECT'>('ALL');
-  const [, startTabTransition] = React.useTransition();
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null); // Task ID
   const [showObjectionModal, setShowObjectionModal] = useState<string | null>(null); // Task ID
@@ -990,9 +989,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
               <button
                 key={id}
                 onClick={() => {
-                  startTabTransition(() => {
-                    setActiveTab(id as any);
-                  });
+                  setActiveTab(id as any);
                 }}
                 className={`px-3 md:px-4 py-1.5 md:py-2.5 rounded-lg md:rounded-xl text-xs md:text-sm font-bold transition-all whitespace-nowrap flex items-center gap-1.5 md:gap-2 ${isActive
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100'
@@ -1028,10 +1025,8 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                 value={selectedMemberId}
                 onChange={e => {
                   const val = e.target.value;
-                  startTabTransition(() => {
-                    setSelectedMemberId(val);
-                    setActiveTab('ALL');
-                  });
+                  setSelectedMemberId(val);
+                  setActiveTab('ALL');
                 }}
                 className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm font-semibold text-primary appearance-none"
               >

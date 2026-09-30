@@ -32,7 +32,7 @@ export const HolidayManager: React.FC<HolidayManagerProps> = ({ holidays, setHol
       invalidateCache('/holidays');
 
       // Refresh latest from server
-      const listRes = await safeGet('/holidays', { cacheBust: true });
+      const listRes = await safeGet('/holidays');
       const data = extractPayload(listRes);
       setHolidays(ensureArray(data));
       setNewDate(''); 
@@ -52,7 +52,7 @@ export const HolidayManager: React.FC<HolidayManagerProps> = ({ holidays, setHol
       await api.delete(`/holidays/${encodeURIComponent(idToRemove)}`);
       invalidateCache('/holidays');
 
-      const listRes = await safeGet('/holidays', { cacheBust: true });
+      const listRes = await safeGet('/holidays');
       const data = extractPayload(listRes);
       setHolidays(ensureArray(data));
     } catch (e: any) {

@@ -78,7 +78,7 @@ export const QuerySystem: React.FC<QuerySystemProps> = ({ queries, setQueries, c
     if (!currentUser || !(currentUser.employeeId || currentUser.id)) return;
     setLoading(true);
     try {
-      const res = await safeGet('/queries', { cacheBust: true });
+      const res = await safeGet('/queries');
       setQueries(ensureArray(extractPayload(res)));
     } catch (err) {
       console.warn('Failed to load queries', err && (err.stack || err.message || err));

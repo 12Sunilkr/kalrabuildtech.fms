@@ -11,6 +11,7 @@ import {
 
 import { ImageCropModal } from './ImageCropModal';
 import { convertFileToBase64 } from '../utils/fileHelper';
+import api from '../src/utils/api';
 
 interface EmployeeDashboardProps {
   user: User;
@@ -202,7 +203,7 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
   const [sundayReason, setSundayReason] = useState('');
   const existingSundayReq = sundayRequests.find(r => r.employeeId === empId && r.date === dateKey);
 
-  const handleSundayRequest = () => {
+  const handleSundayRequest = async () => {
     if (!sundayReason) return;
     const newReq: SundayRequest = {
       id: `SR-${Date.now()}`,
@@ -215,6 +216,11 @@ const EmployeeDashboardComponent: React.FC<EmployeeDashboardProps> = ({
     setShowSundayReqModal(false);
     setSundayReason('');
     addNotification('Sunday Request', 'Your request for Sunday work has been submitted for approval.', 'SYSTEM', 'ADMIN');
+    try {
+      await api.post('/sunday-requests', newReq, { withCredentials: true });
+    } catch (err) {
+      console.warn('Failed to save sunday request on server', err);
+    }
   };
 
   // Calculate Age and Tenure

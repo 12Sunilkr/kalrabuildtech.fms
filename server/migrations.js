@@ -180,6 +180,23 @@ export async function runMigrations({ db, dbFile }) {
     createdAt TEXT
   )`, [`CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)`]);
 
+  // Sunday Requests table
+  ensureTable('sunday_requests', `CREATE TABLE sunday_requests (
+    id TEXT PRIMARY KEY,
+    employeeId TEXT,
+    date TEXT,
+    reason TEXT,
+    status TEXT DEFAULT 'PENDING',
+    adminComment TEXT,
+    user_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT
+  )`, [
+    `CREATE INDEX IF NOT EXISTS idx_sunday_requests_emp ON sunday_requests(employeeId)`,
+    `CREATE INDEX IF NOT EXISTS idx_sunday_requests_date ON sunday_requests(date)`,
+    `CREATE INDEX IF NOT EXISTS idx_sunday_requests_status ON sunday_requests(status)`
+  ]);
+
   // PMS (Project Management System) Tables
   ensureTable('pms_projects', `CREATE TABLE pms_projects (
     id TEXT PRIMARY KEY,
@@ -299,7 +316,7 @@ export async function runMigrations({ db, dbFile }) {
   ]);
 
   // Ensure standard columns exist on tables where appropriate
-  const tablesToPatch = ['tasks', 'calendar', 'finance', 'notifications', 'projects', 'checklists', 'notepad', 'leaves', 'holidays', 'employee_documents', 'employees_profile'];
+  const tablesToPatch = ['tasks', 'calendar', 'finance', 'notifications', 'projects', 'checklists', 'notepad', 'leaves', 'holidays', 'employee_documents', 'employees_profile', 'sunday_requests'];
   for (const t of tablesToPatch) {
     ensureColumns(t, {
       user_id: 'TEXT',

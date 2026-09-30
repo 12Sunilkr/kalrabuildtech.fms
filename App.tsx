@@ -122,7 +122,7 @@ const App: React.FC = () => {
           setCurrentUser(meUser || null);
 
           if (meUser) {
-            // Preload core master data (users and employees) in background without blocking initial rendering
+            // Preload core global master data in background without blocking initial rendering
             Promise.all([
               safeGet('/users')
                 .then(res => {
@@ -141,40 +141,19 @@ const App: React.FC = () => {
                 })
                 .catch(err => console.warn('Background employees fetch failed', err)),
 
-              safeGet(`/attendance?userId=${encodeURIComponent(meUser.employeeId || meUser.id)}`, { cacheBust: true })
-                .then(res => applyAttendance(ensureArray(extractPayload(res))))
-                .catch(err => console.warn('Background attendance fetch failed', err)),
-
-              (meUser.role === 'ADMIN' || meUser.role === 'PC')
-                ? safeGet(`/timelogs`, { cacheBust: true })
-                    .then(res => applyTimelogs(ensureArray(extractPayload(res))))
-                    .catch(err => console.warn('Background timelogs fetch failed', err))
-                : safeGet(`/timelogs?userId=${encodeURIComponent(meUser.employeeId || meUser.id)}`, { cacheBust: true })
-                    .then(res => applyTimelogs(ensureArray(extractPayload(res))))
-                    .catch(err => console.warn('Background timelogs fetch failed', err)),
-
-              (meUser.role === 'ADMIN' || meUser.role === 'PC')
-                ? safeGet('/employees?archived=1')
-                    .then(res => {
-                      const archivedArr = ensureArray(extractPayload(res)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
-                      setArchivedEmployees(archivedArr);
-                    })
-                    .catch(err => console.warn('Background archived employees fetch failed', err))
-                : Promise.resolve(),
-
-              safeGet('/tasks', { cacheBust: true })
-                .then(res => {
-                  const tArr = ensureArray(extractPayload(res));
-                  if (tArr && tArr.length) setTasks(tArr);
-                })
-                .catch(err => console.warn('Background tasks fetch failed', err)),
-
-              safeGet('/holidays', { cacheBust: true })
+              safeGet('/holidays')
                 .then(res => {
                   const hArr = ensureArray(extractPayload(res));
                   if (hArr && hArr.length) setHolidays(hArr);
                 })
-                .catch(err => console.warn('Background holidays fetch failed', err))
+                .catch(err => console.warn('Background holidays fetch failed', err)),
+
+              safeGet('/sunday-requests')
+                .then(res => {
+                  const sArr = ensureArray(extractPayload(res));
+                  if (sArr && sArr.length) setSundayRequests(sArr);
+                })
+                .catch(err => console.warn('Background sunday requests fetch failed', err))
             ]).catch(err => {
               console.warn('Master data preloading encountered errors', err);
             });
@@ -229,12 +208,9 @@ const App: React.FC = () => {
   // 2. VIEW STATE (Decoupled from hash if not logged in)
   const [currentView, setCurrentView] = useState<ViewMode>(ViewMode.DASHBOARD);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [, startTransition] = React.useTransition();
 
   const onNavigate = useCallback((view: ViewMode) => {
-    startTransition(() => {
-      setCurrentView(view);
-    });
+    setCurrentView(view);
   }, []);
 
   const closeSidebar = useCallback(() => {
@@ -544,7 +520,7 @@ const App: React.FC = () => {
       if (document.visibilityState === 'hidden') return;
       const uid = currentUser.employeeId || String(currentUser.id);
       try {
-        const res = await safeGet(`/timelogs?userId=${encodeURIComponent(uid)}`, { cacheBust: true });
+        const res = await safeGet(`/timelogs?userId=${encodeURIComponent(uid)}`);
         if (!destroyed) applyTimelogs(ensureArray(extractPayload(res)));
       } catch { /* ignore */ }
     };
@@ -690,9 +666,13 @@ const App: React.FC = () => {
             break;
           }
           case ViewMode.TIME_LOGS: {
+            const isEmp = currentUser.role === 'EMPLOYEE';
+            const uid = currentUser.employeeId || String(currentUser.id);
+            const attUrl = isEmp && uid ? `/attendance?userId=${encodeURIComponent(uid)}` : '/attendance';
+            const tlUrl = isEmp && uid ? `/timelogs?userId=${encodeURIComponent(uid)}` : '/timelogs';
             await Promise.all([
-              safeGetSwr('/attendance', (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
-              safeGetSwr('/timelogs', (fresh) => applyTimelogs(ensureArray(extractPayload(fresh)))),
+              safeGetSwr(attUrl, (fresh) => applyAttendance(ensureArray(extractPayload(fresh)))),
+              safeGetSwr(tlUrl, (fresh) => applyTimelogs(ensureArray(extractPayload(fresh)))),
             ]).then(([sat, stl]) => {
               applyAttendance(ensureArray(extractPayload(sat)));
               applyTimelogs(ensureArray(extractPayload(stl)));
@@ -781,6 +761,15 @@ const App: React.FC = () => {
             if (aRes) setArchivedEmployees(ensureArray(extractPayload(aRes)));
             break;
           }
+          case ViewMode.ARCHIVED_STAFF: {
+            const aRes = await safeGetSwr('/employees?archived=1', (fresh) => {
+              const archivedArr = ensureArray(extractPayload(fresh)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+              setArchivedEmployees(archivedArr);
+            });
+            const archivedArr = ensureArray(extractPayload(aRes)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
+            setArchivedEmployees(archivedArr);
+            break;
+          }
           case ViewMode.FINANCE: {
             const f = await safeGetSwr('/finance', (fresh) => setClientFinancials(ensureArray(extractPayload(fresh))));
             setClientFinancials(ensureArray(extractPayload(f)));
@@ -849,7 +838,7 @@ const App: React.FC = () => {
         // Professional parallelized eager-load of all necessary master data to prevent any generic fallback templates
         // We use catch blocks on individual promises so a single endpoint failure won't halt the entire login flow
         await Promise.all([
-          safeGet('/users', { cacheBust: true })
+          safeGet('/users')
             .then(uRes => {
               const uArr = ensureArray(extractPayload(uRes));
               setUsers(uArr.length ? uArr : INITIAL_USERS);
@@ -859,7 +848,7 @@ const App: React.FC = () => {
               setUsers(INITIAL_USERS);
             }),
             
-          safeGet('/employees', { cacheBust: true })
+          safeGet('/employees')
             .then(empRes => {
               const empsArr = ensureArray(extractPayload(empRes)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
               setEmployees(empsArr.length ? empsArr : INITIAL_EMPLOYEES);
@@ -869,24 +858,24 @@ const App: React.FC = () => {
               setEmployees(INITIAL_EMPLOYEES);
             }),
             
-          safeGet('/tasks', { cacheBust: true })
+          safeGet('/tasks')
             .then(tRes => setTasks(ensureArray(extractPayload(tRes))))
             .catch(err => console.warn('Failed to eager-fetch tasks on login', err)),
             
-          safeGet('/reminders', { cacheBust: true })
+          safeGet('/reminders')
             .then(rRes => setReminders(ensureArray(extractPayload(rRes))))
             .catch(err => console.warn('Failed to eager-fetch reminders on login', err)),
 
-          safeGet('/attendance', { cacheBust: true })
+          safeGet('/attendance')
             .then(res => applyAttendance(ensureArray(extractPayload(res))))
             .catch(err => console.warn('Failed to eager-fetch attendance on login', err)),
 
-          safeGet('/timelogs', { cacheBust: true })
+          safeGet('/timelogs')
             .then(res => applyTimelogs(ensureArray(extractPayload(res))))
             .catch(err => console.warn('Failed to eager-fetch timelogs on login', err)),
 
           user.role === 'ADMIN' 
-            ? safeGet('/employees?archived=1', { cacheBust: true })
+            ? safeGet('/employees?archived=1')
                 .then(ra => {
                   const archivedArr = ensureArray(extractPayload(ra)).map((e: any) => ({ ...e, hideAttendance: !!e.hideAttendance }));
                   setArchivedEmployees(archivedArr);
@@ -1063,7 +1052,7 @@ const App: React.FC = () => {
         await api.post('/attendance', { id: aId, userId: empId, date: dateKey, clockIn: now.toISOString(), value: null }, { withCredentials: true });
       }
       // Re-fetch fresh timelogs from server to sync the canonical timelog ID (handles "existing session reused" case)
-      const freshRes = await safeGet(`/timelogs?userId=${encodeURIComponent(empId)}`, { cacheBust: true });
+      const freshRes = await safeGet(`/timelogs?userId=${encodeURIComponent(empId)}`);
       const freshLogs = ensureArray(extractPayload(freshRes));
       if (freshLogs.length > 0) applyTimelogs(freshLogs);
       // Update localStorage with authoritative active log from server

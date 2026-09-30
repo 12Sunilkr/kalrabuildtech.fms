@@ -41,7 +41,6 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
   archivedEmployees = []
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [, startCalTransition] = React.useTransition();
   const [showRequestsModal, setShowRequestsModal] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -116,12 +115,10 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
 
   // Reset selections on month change
   const handleMonthChange = (delta: number) => {
-    startCalTransition(() => {
-      setCurrentDate(new Date(year, month + delta, 1));
-      setSelectedCells(new Set());
-      setFocusedCell(null);
-      setSelectionAnchor(null);
-    });
+    setCurrentDate(new Date(year, month + delta, 1));
+    setSelectedCells(new Set());
+    setFocusedCell(null);
+    setSelectionAnchor(null);
   };
 
   // Fast Batch Optimistic Attendance Update
@@ -645,8 +642,13 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
     setContextMenu(null);
   };
 
-  const handleRequestAction = (id: string, status: 'APPROVED' | 'REJECTED') => {
+  const handleRequestAction = async (id: string, status: 'APPROVED' | 'REJECTED') => {
     setSundayRequests(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+    try {
+      await api.put(`/sunday-requests/${encodeURIComponent(id)}`, { status }, { withCredentials: true });
+    } catch (err) {
+      console.warn('Failed to update sunday request on server', err);
+    }
   };
 
   const toggleHideStatus = async (empId: string, currentStatus: boolean) => {
@@ -773,9 +775,7 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
           {currentUser?.role === 'ADMIN' && (
             <button
               onClick={() => {
-                startCalTransition(() => {
-                  setShowHidden(!showHidden);
-                });
+                setShowHidden(!showHidden);
               }}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border transition-all font-bold text-xs ${showHidden ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/30' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
               title={showHidden ? "Hide team members marked as hidden" : "Show team members marked as hidden"}

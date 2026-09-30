@@ -70,7 +70,7 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
                 const isEmployee = currentUser?.role === 'EMPLOYEE';
                 const userEmpId = currentUser?.employeeId || (currentUser?.id ? String(currentUser.id) : '');
                 const url = isEmployee && userEmpId ? `/timelogs?userId=${encodeURIComponent(userEmpId)}` : '/timelogs';
-                const res = await safeGet(url, { cacheBust: true });
+                const res = await safeGet(url);
                 const arr = ensureArray(extractPayload(res));
                 if (!isMounted || arr.length === 0) return;
 
@@ -774,8 +774,8 @@ const TimeLogViewerComponent: React.FC<TimeLogViewerProps> = ({
             const url = isEmployee && userEmpId ? `/timelogs?userId=${encodeURIComponent(userEmpId)}` : '/timelogs';
             
             const [tlRes, aRes] = await Promise.all([
-                safeGet(url, { cacheBust: true }),
-                safeGet('/attendance', { cacheBust: true })
+                safeGet(url),
+                safeGet('/attendance')
             ]);
 
             const tlArr = ensureArray(extractPayload(tlRes));

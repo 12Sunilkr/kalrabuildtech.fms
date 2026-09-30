@@ -112,6 +112,9 @@ app.use((req, res, next) => {
       if (url.includes('/api/holidays')) {
         cacheInvalidate('holidays');
       }
+      if (url.includes('/api/sunday-requests')) {
+        cacheInvalidate('sunday-requests');
+      }
       if (url.includes('/api/system-master')) {
         cacheInvalidate('system-master');
       }
@@ -728,6 +731,26 @@ try {
         db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_userId ON reminders(userId)`);
       }
 
+      // Sunday Requests
+      const tblSunReq = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sunday_requests'");
+      const hasSunReq = tblSunReq.step(); tblSunReq.free();
+      if (!hasSunReq) {
+        db.run(`CREATE TABLE sunday_requests (
+          id TEXT PRIMARY KEY,
+          employeeId TEXT,
+          date TEXT,
+          reason TEXT,
+          status TEXT DEFAULT 'PENDING',
+          adminComment TEXT,
+          user_id TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT
+        )`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_sunday_requests_emp ON sunday_requests(employeeId)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_sunday_requests_date ON sunday_requests(date)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_sunday_requests_status ON sunday_requests(status)`);
+      }
+
       // Run idempotent migrations that ensure standard columns/indexes for modules
       try {
         await runMigrations({ db, dbFile });
@@ -746,19 +769,23 @@ try {
       tryCreateIndex('idx_tasks_assignedTo', `CREATE INDEX IF NOT EXISTS idx_tasks_assignedTo ON tasks(assignedTo)`);
       tryCreateIndex('idx_tasks_assigned_to', `CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to)`);
       tryCreateIndex('idx_tasks_assignedBy', `CREATE INDEX IF NOT EXISTS idx_tasks_assignedBy ON tasks(assignedBy)`);
+      tryCreateIndex('idx_tasks_assigned_by', `CREATE INDEX IF NOT EXISTS idx_tasks_assigned_by ON tasks(assigned_by)`);
       tryCreateIndex('idx_tasks_status', `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
       tryCreateIndex('idx_tasks_createdAt', `CREATE INDEX IF NOT EXISTS idx_tasks_createdAt ON tasks(createdAt)`);
       tryCreateIndex('idx_tasks_created_at', `CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC)`);
       tryCreateIndex('idx_attendance_userId', `CREATE INDEX IF NOT EXISTS idx_attendance_userId ON attendance(userId)`);
       tryCreateIndex('idx_attendance_date', `CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date)`);
+      tryCreateIndex('idx_attendance_user_date', `CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(userId, date DESC)`);
       tryCreateIndex('idx_timelogs_userId', `CREATE INDEX IF NOT EXISTS idx_timelogs_userId ON timelogs(userId)`);
       tryCreateIndex('idx_timelogs_startTime', `CREATE INDEX IF NOT EXISTS idx_timelogs_startTime ON timelogs(startTime)`);
+      tryCreateIndex('idx_timelogs_user_start', `CREATE INDEX IF NOT EXISTS idx_timelogs_user_start ON timelogs(userId, startTime DESC)`);
       tryCreateIndex('idx_calendar_createdBy', `CREATE INDEX IF NOT EXISTS idx_calendar_createdBy ON calendar(createdBy)`);
       tryCreateIndex('idx_calendar_startTime', `CREATE INDEX IF NOT EXISTS idx_calendar_startTime ON calendar(startTime)`);
       tryCreateIndex('idx_projects_status', `CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)`);
       tryCreateIndex('idx_employees_status', `CREATE INDEX IF NOT EXISTS idx_employees_status ON employees(status)`);
       tryCreateIndex('idx_employees_department', `CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department)`);
       tryCreateIndex('idx_checklists_ref_created', `CREATE INDEX IF NOT EXISTS idx_checklists_ref_created ON checklists(refId, createdAt)`);
+      tryCreateIndex('idx_chat_team_created', `CREATE INDEX IF NOT EXISTS idx_chat_team_created ON chat(teamId, createdAt DESC)`);
 
       // Generic key/value table for client-side storage migration
       const tblKV = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='kv'");
@@ -1933,6 +1960,20 @@ app.put('/api/users/:id', requireAuth, (req, res) => {
     const update = db.prepare('UPDATE users SET name = coalesce(?, name), email = coalesce(?, email), password = coalesce(?, password), role = coalesce(?, role), employeeId = coalesce(?, employeeId), is_archived = ?, archived_at = ? WHERE id = ?');
     update.run([name || null, sanitizedEmail, hashed || null, role || null, employeeId || null, finalIsArchived, finalArchivedAt, id]);
     update.free && update.free();
+
+    // Sync updated email and name to linked employees table
+    if (sanitizedEmail && (employeeId || existing.employeeId)) {
+      const empId = employeeId || existing.employeeId;
+      try {
+        const updEmpEmail = db.prepare('UPDATE employees SET email = ?, name = coalesce(?, name) WHERE id = ?');
+        updEmpEmail.run([sanitizedEmail, name || null, empId]);
+        updEmpEmail.free();
+      } catch (e) {
+        console.warn('Could not sync email to employees table', e);
+      }
+    }
+    cacheInvalidate('employees');
+    cacheInvalidate('users');
     persistDB();
     return success(res, null, 'Updated');
   } catch (err) {
@@ -2179,7 +2220,9 @@ app.post('/api/admin/archive-demo-users', requireAuth, (req, res) => {
 
 // Employees CRUD API
 // Helper: ensure employees table exists (create if missing)
+let isEmployeesTableEnsured = false;
 function ensureEmployeesTable() {
+  if (isEmployeesTableEnsured) return;
   try {
     const chk = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='employees'");
     const has = chk.step();
@@ -2205,6 +2248,7 @@ function ensureEmployeesTable() {
       persistDB();
       console.log('Employees table created');
     }
+    isEmployeesTableEnsured = true;
   } catch (err) {
     console.error('ensureEmployeesTable failed', { err: err && (err.stack || err.message || err) });
     // rethrow so caller can handle
@@ -2247,9 +2291,15 @@ app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res)
           ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0'
           : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0");
       const stmt = db.prepare(q);
+      const cols = stmt.getColumnNames();
+      const colsLen = cols.length;
       const out = [];
       while (stmt.step()) {
-        const row = stmt.getAsObject();
+        const rowArr = stmt.get();
+        const row = {};
+        for (let i = 0; i < colsLen; i++) {
+          row[cols[i]] = rowArr[i];
+        }
         if (fullDocs && row.documents) {
           try {
             const docs = JSON.parse(row.documents);
@@ -2418,6 +2468,19 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), is_archived = ?, archived_at = ? WHERE id = ?');
     update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, finalIsArchived, finalArchivedAt, id]);
     update.free && update.free();
+
+    // Sync updated email and name to linked users table so auth & reminders always use updated email
+    if (email) {
+      try {
+        const updUserEmail = db.prepare('UPDATE users SET email = ?, name = coalesce(?, name) WHERE employeeId = ?');
+        updUserEmail.run([String(email).trim().toLowerCase(), name || null, id]);
+        updUserEmail.free();
+      } catch (e) {
+        console.warn('Could not sync email to users table', e);
+      }
+    }
+    cacheInvalidate('employees');
+    cacheInvalidate('users');
     persistDB();
     return success(res, null, 'Updated');
   } catch (err) {
@@ -2896,8 +2959,25 @@ app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, re
     const params = [];
 
     if (userId) {
-      clauses.push('(userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL) OR userId = (SELECT id FROM users WHERE employeeId = ?))');
-      params.push(String(userId), String(userId), String(userId));
+      let targetUserIds = [String(userId)];
+      try {
+        const uStmt = db.prepare('SELECT id, employeeId FROM users WHERE id = ? OR employeeId = ?');
+        uStmt.bind([userId, userId]);
+        if (uStmt.step()) {
+          const u = uStmt.getAsObject();
+          if (u.id) targetUserIds.push(String(u.id));
+          if (u.employeeId) targetUserIds.push(String(u.employeeId));
+        }
+        uStmt.free();
+      } catch (e) {}
+      targetUserIds = Array.from(new Set(targetUserIds));
+      if (targetUserIds.length === 1) {
+        clauses.push('userId = ?');
+        params.push(targetUserIds[0]);
+      } else {
+        clauses.push(`userId IN (${targetUserIds.map(() => '?').join(',')})`);
+        params.push(...targetUserIds);
+      }
     }
     if (date) { clauses.push('date = ?'); params.push(date); }
     if (month) { clauses.push('date LIKE ?'); params.push(`${month}%`); }
@@ -2911,8 +2991,17 @@ app.get('/api/attendance', requireAuth, withCache('attendance', 15000), (req, re
 
     const stmt = db.prepare(q);
     if (params.length) stmt.bind(params);
+    const cols = stmt.getColumnNames();
+    const colsLen = cols.length;
     const out = [];
-    while (stmt.step()) out.push(stmt.getAsObject());
+    while (stmt.step()) {
+      const rowArr = stmt.get();
+      const r = {};
+      for (let i = 0; i < colsLen; i++) {
+        r[cols[i]] = rowArr[i];
+      }
+      out.push(r);
+    }
     stmt.free();
     return success(res, out);
   } catch (err) {
@@ -2989,8 +3078,25 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
     const params = [];
 
     if (userId) {
-      clauses.push('(userId = ? OR userId = (SELECT employeeId FROM users WHERE id = ? AND employeeId IS NOT NULL) OR userId = (SELECT id FROM users WHERE employeeId = ?))');
-      params.push(String(userId), String(userId), String(userId));
+      let targetUserIds = [String(userId)];
+      try {
+        const uStmt = db.prepare('SELECT id, employeeId FROM users WHERE id = ? OR employeeId = ?');
+        uStmt.bind([userId, userId]);
+        if (uStmt.step()) {
+          const u = uStmt.getAsObject();
+          if (u.id) targetUserIds.push(String(u.id));
+          if (u.employeeId) targetUserIds.push(String(u.employeeId));
+        }
+        uStmt.free();
+      } catch (e) {}
+      targetUserIds = Array.from(new Set(targetUserIds));
+      if (targetUserIds.length === 1) {
+        clauses.push('userId = ?');
+        params.push(targetUserIds[0]);
+      } else {
+        clauses.push(`userId IN (${targetUserIds.map(() => '?').join(',')})`);
+        params.push(...targetUserIds);
+      }
     }
     if (month) { clauses.push('startTime LIKE ?'); params.push(`${month}%`); }
     if (startDate) { clauses.push('startTime >= ?'); params.push(startDate); }
@@ -3003,53 +3109,79 @@ app.get('/api/timelogs', requireAuth, withCache('timelogs', 15000), (req, res) =
 
     const stmt = db.prepare(q);
     if (params.length) stmt.bind(params);
+    const cols = stmt.getColumnNames();
+    const colsLen = cols.length;
     const rawLogs = [];
     while (stmt.step()) {
-      rawLogs.push(stmt.getAsObject());
+      const rowArr = stmt.get();
+      const r = {};
+      for (let i = 0; i < colsLen; i++) {
+        r[cols[i]] = rowArr[i];
+      }
+      rawLogs.push(r);
     }
     stmt.free();
 
     const out = [];
     const userDateMap = new Map();
 
-    for (const record of rawLogs) {
-      if (record.startTime && record.endTime) {
-        const start = new Date(record.startTime);
-        const end = new Date(record.endTime);
-        const diffMs = end - start;
-        record.durationHours = Math.max(0, diffMs / (1000 * 60 * 60));
+    for (let i = 0; i < rawLogs.length; i++) {
+      const record = rawLogs[i];
+      let startMs = 0;
+      let endMs = 0;
+      if (record.startTime) {
+        startMs = Date.parse(record.startTime) || 0;
+      }
+      if (record.endTime) {
+        endMs = Date.parse(record.endTime) || 0;
+      }
+      if (startMs && endMs) {
+        const diffMs = endMs - startMs;
+        record.durationHours = Math.max(0, diffMs / 3600000);
       }
 
-      const dateKey = record.startTime ? record.startTime.split('T')[0] : (record.createdAt ? record.createdAt.split('T')[0] : 'nodate');
+      const dateKey = record.startTime ? record.startTime.slice(0, 10) : (record.createdAt ? record.createdAt.slice(0, 10) : 'nodate');
       const uKey = `${record.userId}_${dateKey}`;
 
       if (!userDateMap.has(uKey)) {
+        record._sMs = startMs;
         userDateMap.set(uKey, [record]);
         out.push(record);
       } else {
         const existingList = userDateMap.get(uKey);
-        const recordTime = record.startTime ? new Date(record.startTime).getTime() : 0;
-        const isDup = existingList.some(ex => {
-          if (ex.id === record.id) return true;
-          const exTime = ex.startTime ? new Date(ex.startTime).getTime() : 0;
-          if (recordTime && exTime && Math.abs(recordTime - exTime) < 120000) {
-            return true;
+        let isDup = false;
+        let dupItem = null;
+
+        for (let j = 0; j < existingList.length; j++) {
+          const ex = existingList[j];
+          if (ex.id === record.id) {
+            isDup = true;
+            dupItem = ex;
+            break;
           }
-          return false;
-        });
+          if (startMs && ex._sMs && Math.abs(startMs - ex._sMs) < 120000) {
+            isDup = true;
+            dupItem = ex;
+            break;
+          }
+        }
+
         if (!isDup) {
+          record._sMs = startMs;
           existingList.push(record);
           out.push(record);
-        } else {
-          // If the duplicate entry has an endTime but the already-collected one didn't, upgrade it
-          const existingItem = existingList.find(ex => (ex.id === record.id) || (recordTime && ex.startTime && Math.abs(recordTime - new Date(ex.startTime).getTime()) < 120000));
-          if (existingItem && !existingItem.endTime && record.endTime) {
-            existingItem.endTime = record.endTime;
-            existingItem.durationHours = record.durationHours;
-          }
+        } else if (dupItem && !dupItem.endTime && record.endTime) {
+          dupItem.endTime = record.endTime;
+          dupItem.durationHours = record.durationHours;
         }
       }
     }
+
+    // Clean up temporary property
+    for (let i = 0; i < out.length; i++) {
+      delete out[i]._sMs;
+    }
+
     return success(res, out);
   } catch (err) {
     console.error('Timelogs GET error', { path: req.path, err: err && (err.stack || err.message || err) });
@@ -3361,7 +3493,19 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 60000), (req, res) => {
              coalesce(t.createdDate, t.createdAt, t.created_at, '') AS createdDate,
              ua.name AS assignedByName, ua.employeeId AS assignedByEmployeeId,
              ub.name AS assignedToName, ub.employeeId AS assignedToEmployeeId,
-             t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess, t.completionAttachment, t.statusNote, t.attachment, t.externalLink
+             t.extensionHistory, t.extensionRequest, t.completionDate, t.completionProcess,
+             CASE
+               WHEN t.completionAttachment IS NOT NULL AND LENGTH(t.completionAttachment) > 0 THEN
+                 CASE WHEN t.completionAttachment LIKE 'data:%' THEN ('/api/tasks/' || t.id || '/completion-attachment') ELSE t.completionAttachment END
+               ELSE NULL
+             END AS completionAttachment,
+             t.statusNote,
+             CASE
+               WHEN t.attachment IS NOT NULL AND LENGTH(t.attachment) > 0 THEN
+                 CASE WHEN t.attachment LIKE 'data:%' THEN ('/api/tasks/' || t.id || '/attachment') ELSE t.attachment END
+               ELSE NULL
+             END AS attachment,
+             t.externalLink
       FROM tasks t
       LEFT JOIN users ua ON ua.id = t.assigned_by
       LEFT JOIN users ub ON ub.id = t.assigned_to
@@ -3426,25 +3570,19 @@ app.get('/api/tasks', requireAuth, withCache('tasks', 60000), (req, res) => {
       r.externalLink = r.externalLink || null;
       r.statusNote = r.statusNote || null;
 
-      // Convert heavy base64 strings into lightweight on-demand streaming URLs (cuts payload from 148MB to 500KB)
-      if (r.attachment) {
-        if (typeof r.attachment === 'string' && r.attachment.startsWith('data:')) {
-          r.attachment = `/api/tasks/${r.id}/attachment`;
-        }
+      const rawExtHist = r.extensionHistory;
+      if (rawExtHist && rawExtHist !== '[]') {
+        try { r.extensionHistory = JSON.parse(rawExtHist); } catch (e) { r.extensionHistory = []; }
       } else {
-        r.attachment = null;
+        r.extensionHistory = [];
       }
 
-      if (r.completionAttachment) {
-        if (typeof r.completionAttachment === 'string' && r.completionAttachment.startsWith('data:')) {
-          r.completionAttachment = `/api/tasks/${r.id}/completion-attachment`;
-        }
+      const rawExtReq = r.extensionRequest;
+      if (rawExtReq && rawExtReq !== '{}') {
+        try { r.extensionRequest = JSON.parse(rawExtReq); } catch (e) { r.extensionRequest = undefined; }
       } else {
-        r.completionAttachment = null;
+        r.extensionRequest = undefined;
       }
-
-      r.extensionHistory = (() => { try { return JSON.parse(r.extensionHistory || '[]'); } catch (e) { return []; } })();
-      r.extensionRequest = (() => { try { return r.extensionRequest ? JSON.parse(r.extensionRequest) : undefined; } catch (e) { return undefined; } })();
 
       out.push(r);
     }
@@ -3727,6 +3865,15 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
         }
       } catch (e) { /* ignore parse errors and proceed */ }
 
+      let finalAttachment = updates.attachment !== undefined ? updates.attachment : null;
+      if (typeof finalAttachment === 'string' && finalAttachment.startsWith('/api/tasks/')) {
+        finalAttachment = null; // Tell coalesce(?, attachment) in SQL to keep the existing database attachment
+      }
+      let finalCompletionAttachment = updates.completionAttachment !== undefined ? updates.completionAttachment : null;
+      if (typeof finalCompletionAttachment === 'string' && finalCompletionAttachment.startsWith('/api/tasks/')) {
+        finalCompletionAttachment = null; // Tell coalesce(?, completionAttachment) to keep existing DB proof
+      }
+
       updateStmt.run([
         updates.title !== undefined ? updates.title : null,
         updates.description !== undefined ? updates.description : null,
@@ -3743,10 +3890,10 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
         extHistStr,
         updates.completionDate !== undefined ? updates.completionDate : (updates.completion_date !== undefined ? updates.completion_date : null),
         updates.completionProcess !== undefined ? updates.completionProcess : null,
-        updates.completionAttachment !== undefined ? updates.completionAttachment : null,
+        finalCompletionAttachment,
         updates.createdAt !== undefined ? updates.createdAt : null,
         updates.created_at !== undefined ? updates.created_at : null,
-        updates.attachment !== undefined ? updates.attachment : null,
+        finalAttachment,
         updates.externalLink !== undefined ? updates.externalLink : null,
         id
       ]);
@@ -5824,8 +5971,6 @@ app.get('/api/reminders', requireAuth, withCache('reminders', 30000), (req, res)
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     const isAdmin = req.user.role === 'ADMIN';
-    // Ensure optional column `createdBy` exists on older DBs; ignore error if already present
-    try { db.run("ALTER TABLE reminders ADD COLUMN createdBy TEXT"); } catch (e) { /* ignore -- column likely exists or table missing */ }
 
     let stmt;
     const out = [];
@@ -5835,8 +5980,14 @@ app.get('/api/reminders', requireAuth, withCache('reminders', 30000), (req, res)
       // Fallback for older DBs missing `createdBy` column
       stmt = db.prepare('SELECT id, userId, date, title, createdAt FROM reminders ORDER BY date DESC');
     }
+    const cols = stmt.getColumnNames();
+    const colsLen = cols.length;
     while (stmt.step()) {
-      const r = stmt.getAsObject();
+      const rowArr = stmt.get();
+      const r = {};
+      for (let i = 0; i < colsLen; i++) {
+        r[cols[i]] = rowArr[i];
+      }
       if (isAdmin || r.userId === req.user.employeeId || r.userId === String(req.user.id)) out.push(r);
     }
     stmt.free();
@@ -5993,6 +6144,175 @@ app.delete('/api/holidays/:id', requireAuth, (req, res) => {
     cacheInvalidate('holidays');
     return success(res, null, 'Deleted');
   } catch (err) { console.error('Holidays DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
+});
+
+// Sunday Requests endpoints
+app.post('/api/sunday-requests', requireAuth, (req, res) => {
+  try {
+    const { id, employeeId, date, reason, status, adminComment } = req.body || {};
+    const empId = employeeId || (req.user ? (req.user.employeeId || String(req.user.id || '')) : null);
+    if (!empId || !date) return failure(res, 'Missing employeeId or date', 400);
+
+    const reqId = id || `SR-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const reqStatus = status || 'PENDING';
+    const createdAt = new Date().toISOString();
+
+    db.run('BEGIN TRANSACTION');
+    try {
+      const insert = db.prepare(`
+        INSERT INTO sunday_requests (id, employeeId, date, reason, status, adminComment, user_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insert.run([
+        reqId,
+        empId,
+        date,
+        reason || '',
+        reqStatus,
+        adminComment || '',
+        String(req.user.id || ''),
+        createdAt,
+        createdAt
+      ]);
+      insert.free();
+      db.run('COMMIT');
+      persistDB();
+      cacheInvalidate('sunday-requests');
+      return success(res, {
+        id: reqId,
+        employeeId: empId,
+        date,
+        reason: reason || '',
+        status: reqStatus,
+        adminComment: adminComment || '',
+        createdAt
+      }, 'Created', 201);
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      throw e;
+    }
+  } catch (err) {
+    console.error('Sunday requests POST error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.get('/api/sunday-requests', requireAuth, withCache('sunday-requests', 15000), (req, res) => {
+  try {
+    const cacheKey = `sunday-requests:${req.query.employeeId || 'all'}:${req.query.status || 'all'}:${req.query.date || 'all'}`;
+    const hit = cacheGet(cacheKey);
+    if (hit) return success(res, hit);
+
+    let query = 'SELECT id, employeeId, date, reason, status, adminComment, created_at as createdAt, updated_at as updatedAt FROM sunday_requests';
+    const params = [];
+    const conditions = [];
+
+    if (req.query.employeeId) {
+      conditions.push('employeeId = ?');
+      params.push(String(req.query.employeeId));
+    }
+    if (req.query.status) {
+      conditions.push('status = ?');
+      params.push(String(req.query.status));
+    }
+    if (req.query.date) {
+      conditions.push('date = ?');
+      params.push(String(req.query.date));
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+    query += ' ORDER BY created_at DESC';
+
+    const stmt = db.prepare(query);
+    if (params.length > 0) stmt.bind(params);
+    const out = [];
+    while (stmt.step()) out.push(stmt.getAsObject());
+    stmt.free();
+
+    const data = out || [];
+    cacheSet(cacheKey, data, 60000);
+    return success(res, data);
+  } catch (err) {
+    console.error('Sunday requests GET error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.put('/api/sunday-requests/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    const { status, adminComment, reason, date } = req.body || {};
+    if (!id) return failure(res, 'Missing id', 400);
+
+    const updatedAt = new Date().toISOString();
+    const updates = [];
+    const params = [];
+
+    if (status !== undefined) {
+      updates.push('status = ?');
+      params.push(status);
+    }
+    if (adminComment !== undefined) {
+      updates.push('adminComment = ?');
+      params.push(adminComment);
+    }
+    if (reason !== undefined) {
+      updates.push('reason = ?');
+      params.push(reason);
+    }
+    if (date !== undefined) {
+      updates.push('date = ?');
+      params.push(date);
+    }
+
+    updates.push('updated_at = ?');
+    params.push(updatedAt);
+
+    params.push(id);
+
+    db.run('BEGIN TRANSACTION');
+    try {
+      const stmt = db.prepare(`UPDATE sunday_requests SET ${updates.join(', ')} WHERE id = ?`);
+      stmt.run(params);
+      stmt.free();
+      db.run('COMMIT');
+      persistDB();
+      cacheInvalidate('sunday-requests');
+      return success(res, { id, status, adminComment, updatedAt }, 'Updated');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      throw e;
+    }
+  } catch (err) {
+    console.error('Sunday requests PUT error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
+});
+
+app.delete('/api/sunday-requests/:id', requireAuth, (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) return failure(res, 'Missing id', 400);
+
+    db.run('BEGIN TRANSACTION');
+    try {
+      const stmt = db.prepare('DELETE FROM sunday_requests WHERE id = ?');
+      stmt.run([id]);
+      stmt.free();
+      db.run('COMMIT');
+      persistDB();
+      cacheInvalidate('sunday-requests');
+      return success(res, { id }, 'Deleted');
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch (er) { }
+      throw e;
+    }
+  } catch (err) {
+    console.error('Sunday requests DELETE error', err && (err.stack || err.message || err));
+    return failure(res, 'Internal server error', 500);
+  }
 });
 
 // Time logs endpoints
@@ -8190,8 +8510,45 @@ app.put('/api/system-master/users/:id', requireAuth, (req, res) => {
   }
 });
 
+// Task Reminders Admin Preview & Trigger Endpoints
+app.get('/api/admin/task-reminders-preview', requireAuth, (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'PC')) {
+      return failure(res, 'Forbidden', 403);
+    }
+    const { todayStr, tomorrowStr, emailsToSend } = collectTaskRemindersData();
+    const list = Object.values(emailsToSend).map(r => ({
+      email: r.email,
+      name: r.name,
+      employeeId: r.employeeId,
+      overdueCount: r.overdue.length,
+      dueTodayCount: r.dueToday.length,
+      dueTomorrowCount: r.dueTomorrow.length,
+      totalCount: r.overdue.length + r.dueToday.length + r.dueTomorrow.length,
+      overdue: r.overdue,
+      dueToday: r.dueToday,
+      dueTomorrow: r.dueTomorrow,
+    }));
+    return success(res, { todayStr, tomorrowStr, recipients: list }, 'Task reminders preview');
+  } catch (err) {
+    console.error('Task reminders preview error:', err);
+    return failure(res, 'Internal server error', 500);
+  }
+});
 
-
+app.post('/api/admin/trigger-task-reminders', requireAuth, async (req, res) => {
+  try {
+    if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'PC')) {
+      return failure(res, 'Forbidden', 403);
+    }
+    const slotLabel = req.body?.slotLabel || 'Manual Test Trigger';
+    const result = await sendDailyTaskReminders(slotLabel);
+    return success(res, result, 'Task reminders dispatched successfully.');
+  } catch (err) {
+    console.error('Trigger task reminders error:', err);
+    return failure(res, err.message || 'Failed to dispatch reminders', 500);
+  }
+});
 
 // Catch-all for any unmatched API routes — return JSON 404 instead of falling through to static host/index.html
 app.use('/api', (req, res) => {
@@ -8205,7 +8562,7 @@ app.use((err, req, res, next) => {
   try { failure(res, 'Internal server error', 500); } catch (e) { /* ignore */ }
 });
 
-/* ───────── CHECKLIST EMAIL REMINDERS CRON ───────── */
+/* ───────── TASK & CHECKLIST EMAIL REMINDERS CRON ───────── */
 // Default transporter setup (update credentials via env vars)
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -8218,161 +8575,289 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-function generateEmailHtml(title, leadText, detailsHtml, ctaLink, ctaText) {
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function getActiveEmployeesMap() {
+  ensureEmployeesTable();
+  const empStmt = db.prepare("SELECT id, name, email, department, designation FROM employees WHERE coalesce(is_archived, 0) = 0");
+  const employees = {};
+  while (empStmt.step()) {
+    const row = empStmt.getAsObject();
+    if (row.id) {
+      const idKey = String(row.id).trim();
+      employees[idKey] = {
+        id: idKey,
+        name: row.name || 'Team Member',
+        email: (row.email || '').trim().toLowerCase(),
+        department: row.department || '',
+        designation: row.designation || ''
+      };
+    }
+  }
+  empStmt.free();
+
+  const userStmt = db.prepare("SELECT id, employeeId, email, name, role FROM users WHERE coalesce(is_archived, 0) = 0");
+  const users = {};
+  while (userStmt.step()) {
+    const row = userStmt.getAsObject();
+    const userId = String(row.id).trim();
+    const empId = row.employeeId ? String(row.employeeId).trim() : '';
+
+    if (empId && employees[empId]) {
+      if (!employees[empId].email && row.email) {
+        employees[empId].email = String(row.email).trim().toLowerCase();
+      }
+      users[userId] = employees[empId];
+      users[empId] = employees[empId];
+    } else {
+      const userObj = {
+        id: empId || userId,
+        name: row.name || 'Team Member',
+        email: (row.email || '').trim().toLowerCase(),
+        department: '',
+        designation: ''
+      };
+      if (empId) {
+        employees[empId] = userObj;
+        users[empId] = userObj;
+      }
+      users[userId] = userObj;
+    }
+  }
+  userStmt.free();
+
+  return { employees, users };
+}
+
+function generateTaskReminderEmailHtml({ recipientName, recipientEmail, slotLabel, overdueTasks, dueTodayTasks, dueTomorrowTasks, portalUrl }) {
+  const totalCount = overdueTasks.length + dueTodayTasks.length + dueTomorrowTasks.length;
+  const todayFormatted = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' });
+
+  // Overdue section
+  let overdueSectionHtml = '';
+  if (overdueTasks.length > 0) {
+    overdueSectionHtml = `
+      <div style="margin-bottom: 22px; background: #ffffff; border: 1px solid #fee2e2; border-left: 5px solid #dc2626; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 6px rgba(220, 38, 38, 0.07);">
+        <div style="background: #fef2f2; padding: 12px 18px; border-bottom: 1px solid #fee2e2;">
+          <div style="font-size: 13px; font-weight: 800; color: #991b1b; text-transform: uppercase; letter-spacing: 0.05em;">
+            🚨 Overdue Tasks (${overdueTasks.length}) — Urgent Attention Required
+          </div>
+        </div>
+        <div style="padding: 12px 18px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tbody>
+              ${overdueTasks.map((t, idx) => `
+                <tr style="border-bottom: ${idx === overdueTasks.length - 1 ? 'none' : '1px solid #f1f5f9'};">
+                  <td style="padding: 10px 0; vertical-align: top;">
+                    <div style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 4px;">${escapeHtml(t.title)}</div>
+                    <div style="font-size: 12px; color: #64748b;">
+                      <span style="display: inline-block; padding: 2px 7px; font-size: 10px; font-weight: 700; background: #f1f5f9; color: #475569; border-radius: 4px; text-transform: uppercase; margin-right: 6px;">${t.type}</span>
+                      ${t.meta ? `<span style="color: #64748b;">• ${escapeHtml(t.meta)}</span>` : ''}
+                    </div>
+                  </td>
+                  <td style="padding: 10px 0 10px 12px; text-align: right; vertical-align: top; white-space: nowrap;">
+                    <span style="display: inline-block; padding: 4px 9px; font-size: 11px; font-weight: 800; background: #fee2e2; color: #991b1b; border-radius: 6px; border: 1px solid #fecaca;">
+                      ⚠️ Overdue: ${t.dueDate} (${t.daysOverdue}d ago)
+                    </span>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // Due Today section
+  let dueTodaySectionHtml = '';
+  if (dueTodayTasks.length > 0) {
+    dueTodaySectionHtml = `
+      <div style="margin-bottom: 22px; background: #ffffff; border: 1px solid #fef3c7; border-left: 5px solid #d97706; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 6px rgba(217, 119, 6, 0.07);">
+        <div style="background: #fffbeb; padding: 12px 18px; border-bottom: 1px solid #fef3c7;">
+          <div style="font-size: 13px; font-weight: 800; color: #92400e; text-transform: uppercase; letter-spacing: 0.05em;">
+            ⏰ Due Today (${dueTodayTasks.length}) — Action Required
+          </div>
+        </div>
+        <div style="padding: 12px 18px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tbody>
+              ${dueTodayTasks.map((t, idx) => `
+                <tr style="border-bottom: ${idx === dueTodayTasks.length - 1 ? 'none' : '1px solid #f1f5f9'};">
+                  <td style="padding: 10px 0; vertical-align: top;">
+                    <div style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 4px;">${escapeHtml(t.title)}</div>
+                    <div style="font-size: 12px; color: #64748b;">
+                      <span style="display: inline-block; padding: 2px 7px; font-size: 10px; font-weight: 700; background: #f1f5f9; color: #475569; border-radius: 4px; text-transform: uppercase; margin-right: 6px;">${t.type}</span>
+                      ${t.meta ? `<span style="color: #64748b;">• ${escapeHtml(t.meta)}</span>` : ''}
+                    </div>
+                  </td>
+                  <td style="padding: 10px 0 10px 12px; text-align: right; vertical-align: top; white-space: nowrap;">
+                    <span style="display: inline-block; padding: 4px 9px; font-size: 11px; font-weight: 800; background: #fef3c7; color: #92400e; border-radius: 6px; border: 1px solid #fde68a;">
+                      Due Today: ${t.dueDate}
+                    </span>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // Due Tomorrow section (1-day reminder)
+  let dueTomorrowSectionHtml = '';
+  if (dueTomorrowTasks.length > 0) {
+    dueTomorrowSectionHtml = `
+      <div style="margin-bottom: 22px; background: #ffffff; border: 1px solid #dbeafe; border-left: 5px solid #2563eb; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 6px rgba(37, 99, 235, 0.07);">
+        <div style="background: #eff6ff; padding: 12px 18px; border-bottom: 1px solid #dbeafe;">
+          <div style="font-size: 13px; font-weight: 800; color: #1e40af; text-transform: uppercase; letter-spacing: 0.05em;">
+            📅 Due Tomorrow (${dueTomorrowTasks.length}) — 1-Day Advance Reminder
+          </div>
+        </div>
+        <div style="padding: 12px 18px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tbody>
+              ${dueTomorrowTasks.map((t, idx) => `
+                <tr style="border-bottom: ${idx === dueTomorrowTasks.length - 1 ? 'none' : '1px solid #f1f5f9'};">
+                  <td style="padding: 10px 0; vertical-align: top;">
+                    <div style="font-size: 14px; font-weight: 700; color: #0f172a; margin-bottom: 4px;">${escapeHtml(t.title)}</div>
+                    <div style="font-size: 12px; color: #64748b;">
+                      <span style="display: inline-block; padding: 2px 7px; font-size: 10px; font-weight: 700; background: #f1f5f9; color: #475569; border-radius: 4px; text-transform: uppercase; margin-right: 6px;">${t.type}</span>
+                      ${t.meta ? `<span style="color: #64748b;">• ${escapeHtml(t.meta)}</span>` : ''}
+                    </div>
+                  </td>
+                  <td style="padding: 10px 0 10px 12px; text-align: right; vertical-align: top; white-space: nowrap;">
+                    <span style="display: inline-block; padding: 4px 9px; font-size: 11px; font-weight: 800; background: #dbeafe; color: #1e40af; border-radius: 6px; border: 1px solid #bfdbfe;">
+                      Tomorrow: ${t.dueDate}
+                    </span>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title}</title>
+  <title>Task Reminder - Kalra Buildtech</title>
   <style>
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       background-color: #f8fafc;
       color: #334155;
       margin: 0;
       padding: 0;
       -webkit-font-smoothing: antialiased;
     }
-    .container {
-      max-width: 600px;
-      margin: 40px auto;
-      background: #ffffff;
-      border-radius: 16px;
-      overflow: hidden;
-      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -2px rgba(0,0,0,0.05);
-      border: 1px solid #e2e8f0;
+    .email-wrapper {
+      width: 100%;
+      background-color: #f8fafc;
+      padding: 32px 12px;
     }
-    .header {
+    .email-container {
+      max-width: 640px;
+      margin: 0 auto;
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+    }
+    .email-header {
       background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
       color: #ffffff;
-      padding: 32px 24px;
+      padding: 28px 24px;
       text-align: center;
     }
-    .header h1 {
-      margin: 0;
-      font-size: 22px;
-      font-weight: 800;
-      letter-spacing: -0.025em;
+    .email-content {
+      padding: 28px 24px;
     }
-    .header p {
-      margin: 8px 0 0 0;
-      font-size: 14px;
-      color: #cbd5e1;
-    }
-    .content {
-      padding: 32px 24px;
-    }
-    .lead-text {
-      font-size: 15px;
-      line-height: 1.6;
-      color: #1e293b;
-      margin-bottom: 24px;
-      font-weight: 500;
-    }
-    .card {
-      background-color: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 24px;
-    }
-    .details-table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    .details-table td {
-      padding: 8px 0;
-      font-size: 14px;
-      vertical-align: top;
-      border-bottom: 1px dashed #e2e8f0;
-    }
-    .details-table tr:last-child td {
-      border-bottom: none;
-    }
-    .details-table td.label {
-      font-weight: 700;
-      color: #64748b;
-      width: 140px;
-      text-transform: uppercase;
-      font-size: 10px;
-      letter-spacing: 0.05em;
-    }
-    .details-table td.value {
-      color: #0f172a;
-      font-weight: 600;
-    }
-    .cta-container {
-      text-align: center;
-      margin-top: 32px;
-      margin-bottom: 8px;
-    }
-    .btn {
+    .pill {
       display: inline-block;
-      background-color: #4f46e5;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 9999px;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .pill-red { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+    .pill-amber { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+    .pill-blue { background: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
+    .btn-primary {
+      display: inline-block;
+      background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
       color: #ffffff !important;
       font-weight: 700;
       text-decoration: none;
-      padding: 12px 32px;
+      padding: 13px 32px;
       border-radius: 8px;
       font-size: 14px;
-      box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2), 0 2px 4px -2px rgba(79, 70, 229, 0.2);
+      letter-spacing: 0.02em;
+      box-shadow: 0 4px 10px rgba(79, 70, 229, 0.25);
     }
-    .footer {
-      background-color: #f1f5f9;
-      padding: 24px;
+    .email-footer {
+      background-color: #f8fafc;
+      padding: 20px 24px;
       text-align: center;
       font-size: 12px;
       color: #64748b;
       border-top: 1px solid #e2e8f0;
     }
-    .footer p {
-      margin: 4px 0;
-    }
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      font-size: 11px;
-      font-weight: 700;
-      border-radius: 4px;
-      text-transform: uppercase;
-    }
-    .badge-alert {
-      background-color: #fef2f2;
-      color: #991b1b;
-      border: 1px solid #fee2e2;
-    }
-    .badge-warning {
-      background-color: #fffbeb;
-      color: #92400e;
-      border: 1px solid #fef3c7;
-    }
-    .badge-info {
-      background-color: #e0f2fe;
-      color: #0369a1;
-      border: 1px solid #bae6fd;
-    }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>${title}</h1>
-      <p>Kalra Buildtech FMS Automation</p>
-    </div>
-    <div class="content">
-      <div class="lead-text">${leadText}</div>
-      <div class="card">${detailsHtml}</div>
-      ${ctaLink ? `
-      <div class="cta-container">
-        <a href="${ctaLink}" class="btn" target="_blank">${ctaText || 'Open Portal'}</a>
+  <div class="email-wrapper">
+    <div class="email-container">
+      <div class="email-header">
+        <h1 style="margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.025em; color: #ffffff;">Kalra Buildtech FMS</h1>
+        <p style="margin: 6px 0 0 0; font-size: 13px; color: #cbd5e1; font-weight: 500;">
+          Task & Compliance Digest • ${escapeHtml(slotLabel)}
+        </p>
+        <p style="margin: 4px 0 0 0; font-size: 11px; color: #94a3b8;">${todayFormatted}</p>
       </div>
-      ` : ''}
-    </div>
-    <div class="footer">
-      <p>This is an automated notification from Kalra Buildtech FMS portal.</p>
-      <p>© ${new Date().getFullYear()} Kalra Buildtech. All rights reserved.</p>
+
+      <div class="email-content">
+        <div style="font-size: 15px; color: #1e293b; margin-bottom: 16px; line-height: 1.5;">
+          Hello <strong>${escapeHtml(recipientName)}</strong>,<br/>
+          Here is your current task & checklist briefing. You have <strong>${totalCount}</strong> action item${totalCount > 1 ? 's' : ''} requiring your attention:
+        </div>
+
+        <div style="margin-bottom: 22px;">
+          ${overdueTasks.length > 0 ? `<span class="pill pill-red">🚨 ${overdueTasks.length} Overdue</span>` : ''}
+          ${dueTodayTasks.length > 0 ? `<span class="pill pill-amber">⏰ ${dueTodayTasks.length} Due Today</span>` : ''}
+          ${dueTomorrowTasks.length > 0 ? `<span class="pill pill-blue">📅 ${dueTomorrowTasks.length} Due Tomorrow</span>` : ''}
+        </div>
+
+        ${overdueSectionHtml}
+        ${dueTodaySectionHtml}
+        ${dueTomorrowSectionHtml}
+
+        <div style="text-align: center; margin: 32px 0 12px 0;">
+          <a href="${portalUrl}" class="btn-primary" target="_blank">Open FMS Portal & Complete Tasks →</a>
+        </div>
+      </div>
+
+      <div class="email-footer">
+        <p style="margin: 0 0 4px 0;">This automated reminder was sent to <strong>${escapeHtml(recipientEmail)}</strong></p>
+        <p style="margin: 0; color: #94a3b8; font-size: 11px;">© ${new Date().getFullYear()} Kalra Buildtech. All rights reserved.</p>
+      </div>
     </div>
   </div>
 </body>
@@ -8380,123 +8865,297 @@ function generateEmailHtml(title, leadText, detailsHtml, ctaLink, ctaText) {
   `;
 }
 
-function getCutoffDays(freq) {
-  if (freq === 'WEEKLY') return 2;
-  if (['MONTHLY', 'QUARTERLY', 'HALF-YEARLY', 'YEARLY', 'PARTICULAR-DATE', 'EVENT-BASED', 'FORTNIGHTLY', 'ONE-TIME'].includes(freq)) return 4;
-  return 0; // DAILY or ALTERNATE
+function generateTaskReminderText({ recipientName, recipientEmail, slotLabel, overdueTasks, dueTodayTasks, dueTomorrowTasks, portalUrl }) {
+  let text = `Hello ${recipientName},\n\nThis is your task reminder (${slotLabel}).\n\n`;
+  if (overdueTasks.length > 0) {
+    text += `=== OVERDUE TASKS (${overdueTasks.length}) ===\n`;
+    overdueTasks.forEach(t => {
+      text += `* [OVERDUE: ${t.dueDate} (${t.daysOverdue} days ago)] ${t.title} (${t.type})\n`;
+    });
+    text += `\n`;
+  }
+  if (dueTodayTasks.length > 0) {
+    text += `=== DUE TODAY (${dueTodayTasks.length}) ===\n`;
+    dueTodayTasks.forEach(t => {
+      text += `* [DUE TODAY: ${t.dueDate}] ${t.title} (${t.type})\n`;
+    });
+    text += `\n`;
+  }
+  if (dueTomorrowTasks.length > 0) {
+    text += `=== DUE TOMORROW (1-DAY REMINDER) (${dueTomorrowTasks.length}) ===\n`;
+    dueTomorrowTasks.forEach(t => {
+      text += `* [DUE TOMORROW: ${t.dueDate}] ${t.title} (${t.type})\n`;
+    });
+    text += `\n`;
+  }
+  text += `Please log in to complete your pending tasks:\n${portalUrl}\n\nRegards,\nKalra Buildtech FMS Admin`;
+  return text;
 }
 
-// Run every morning at 09:00 AM
-cron.schedule('0 9 * * *', () => {
-  console.log('Running daily checklist reminder cron at 9:00 AM');
+function collectTaskRemindersData() {
+  ensureEmployeesTable();
+  ensureTasksTableSchema(db);
+
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const tomYyyy = tomorrow.getFullYear();
+  const tomMm = String(tomorrow.getMonth() + 1).padStart(2, '0');
+  const tomDd = String(tomorrow.getDate()).padStart(2, '0');
+  const tomorrowStr = `${tomYyyy}-${tomMm}-${tomDd}`;
+
+  const todayDateOnly = new Date(yyyy, now.getMonth(), now.getDate());
+
+  const { employees, users } = getActiveEmployeesMap();
+
+  const resolveAssignee = (assignedId) => {
+    if (!assignedId) return null;
+    const key = String(assignedId).trim();
+    if (!key) return null;
+    if (employees[key] && employees[key].email) return employees[key];
+    if (users[key] && users[key].email) return users[key];
+
+    const norm = key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    for (const k in employees) {
+      if (k.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === norm && employees[k].email) {
+        return employees[k];
+      }
+    }
+    for (const k in users) {
+      if (k.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === norm && users[k].email) {
+        return users[k];
+      }
+    }
+    return null;
+  };
+
+  const emailsToSend = {};
+
+  const ensureRecipientBucket = (recipient) => {
+    const email = recipient.email.toLowerCase().trim();
+    if (!emailsToSend[email]) {
+      emailsToSend[email] = {
+        name: recipient.name || 'Team Member',
+        email: recipient.email.trim(),
+        employeeId: recipient.id || '',
+        overdue: [],
+        dueToday: [],
+        dueTomorrow: []
+      };
+    }
+    return emailsToSend[email];
+  };
+
+  // 1. Delegated Tasks
+  const taskStmt = db.prepare(`
+    SELECT t.id, t.title, t.description, t.priority,
+           coalesce(t.dueDate, t.due_date, '') AS dueDate,
+           coalesce(t.assignedTo, '') AS assignedTo,
+           t.assigned_to,
+           t.status,
+           coalesce(t.assignedBy, '') AS assignedBy
+    FROM tasks t
+    WHERE LOWER(coalesce(t.status, '')) NOT IN ('completed', 'done', 'cancelled', 'rejected', 'archived')
+  `);
+
+  while (taskStmt.step()) {
+    const task = taskStmt.getAsObject();
+    const rawDueDate = String(task.dueDate || '').trim();
+    if (!rawDueDate) continue;
+
+    const datePart = rawDueDate.split('T')[0].split(' ')[0];
+    const parts = datePart.split('-');
+    if (parts.length !== 3) continue;
+
+    const tDate = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    if (isNaN(tDate.getTime())) continue;
+
+    const diffTime = tDate.getTime() - todayDateOnly.getTime();
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+    const assignee = resolveAssignee(task.assignedTo) || resolveAssignee(task.assigned_to);
+    if (!assignee || !assignee.email) continue;
+
+    const bucket = ensureRecipientBucket(assignee);
+    const taskItem = {
+      id: task.id,
+      title: task.title || 'Untitled Task',
+      type: 'Delegated Task',
+      dueDate: datePart,
+      daysOverdue: diffDays < 0 ? Math.abs(diffDays) : 0,
+      meta: task.priority ? `Priority: ${task.priority}` : ''
+    };
+
+    if (diffDays < 0) {
+      bucket.overdue.push(taskItem);
+    } else if (diffDays === 0) {
+      bucket.dueToday.push(taskItem);
+    } else if (diffDays === 1) {
+      bucket.dueTomorrow.push(taskItem);
+    }
+  }
+  taskStmt.free();
+
+  // 2. Checklist Routine Tasks
+  const chkStmt = db.prepare("SELECT c.id as dbId, c.item, c.refId as templateId FROM checklists c WHERE c.done = 0 AND c.refType = 'TEMPLATE_INSTANCE'");
+  const tplStmt = db.prepare("SELECT id, data FROM checklist_templates");
+  const templates = {};
+  while (tplStmt.step()) {
+    const row = tplStmt.getAsObject();
+    try { templates[row.id] = JSON.parse(row.data); } catch(e){}
+  }
+  tplStmt.free();
+
+  while (chkStmt.step()) {
+    const row = chkStmt.getAsObject();
+    let item;
+    try { item = JSON.parse(row.item); } catch(e) { continue; }
+
+    if (item && (item.status === 'MISSED' || item.status === 'STOPPED' || item.status === 'COMPLETED' || item.status === 'EXCUSED')) {
+      continue;
+    }
+
+    const template = templates[row.templateId];
+    if (!template || template.active === false) continue;
+
+    const doerId = String(item.doerId || template.doerId || '').trim();
+    const assignee = resolveAssignee(doerId);
+    if (!assignee || !assignee.email) continue;
+
+    const rawDate = String(item.date || '').trim();
+    if (!rawDate) continue;
+
+    const datePart = rawDate.split('T')[0].split(' ')[0];
+    const parts = datePart.split('-');
+    if (parts.length !== 3) continue;
+
+    const tDate = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    if (isNaN(tDate.getTime())) continue;
+
+    const diffTime = tDate.getTime() - todayDateOnly.getTime();
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+    const bucket = ensureRecipientBucket(assignee);
+    const chkItem = {
+      id: item.id || row.dbId,
+      title: item.taskName || template.taskName || 'Routine Checklist Task',
+      type: 'Checklist Routine',
+      dueDate: datePart,
+      daysOverdue: diffDays < 0 ? Math.abs(diffDays) : 0,
+      meta: template.department ? `Dept: ${template.department}` : ''
+    };
+
+    if (diffDays < 0) {
+      bucket.overdue.push(chkItem);
+    } else if (diffDays === 0) {
+      bucket.dueToday.push(chkItem);
+    } else if (diffDays === 1) {
+      bucket.dueTomorrow.push(chkItem);
+    }
+  }
+  chkStmt.free();
+
+  return { todayStr, tomorrowStr, emailsToSend };
+}
+
+async function sendDailyTaskReminders(slotLabel = 'Task Reminder') {
+  console.log(`[Task Reminder] Starting reminder digest for: "${slotLabel}"`);
   try {
-    const today = new Date();
-    today.setHours(0,0,0,0);
-
-    // Get all pending checklist instances
-    const stmt = db.prepare("SELECT c.id as dbId, c.item, c.refId as templateId FROM checklists c WHERE c.done = 0 AND c.refType = 'TEMPLATE_INSTANCE'");
-    
-    // Get templates for matching
-    const tplStmt = db.prepare("SELECT id, data FROM checklist_templates");
-    const templates = {};
-    while (tplStmt.step()) {
-       const row = tplStmt.getAsObject();
-       try { templates[row.id] = JSON.parse(row.data); } catch(e){}
-    }
-    tplStmt.free();
-
-    // Get users map for email lookups (exclude archived/deleted users)
-    const userStmt = db.prepare("SELECT id, employeeId, email, name FROM users WHERE coalesce(is_archived, 0) = 0");
-    const users = {};
-    while(userStmt.step()) {
-      const row = userStmt.getAsObject();
-      if(row.employeeId && String(row.employeeId).trim() !== '') users[String(row.employeeId)] = row;
-      users[String(row.id)] = row;
-    }
-    userStmt.free();
-
-    // Employee map for fallback email lookups (exclude archived/deleted employees)
-    const empStmt = db.prepare("SELECT id, email, name FROM employees WHERE coalesce(is_archived, 0) = 0");
-    while(empStmt.step()) {
-      const row = empStmt.getAsObject();
-      if(row.id && !users[String(row.id)]) users[String(row.id)] = row;
-    }
-    empStmt.free();
-
-    const emailsToSend = {}; // Map mapped by email to array of task names
-
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      let item;
-      try { item = JSON.parse(row.item); } catch(e) { continue; }
-
-      // Skip if task is missed, stopped, or completed
-      if (item && (item.status === 'MISSED' || item.status === 'STOPPED' || item.status === 'COMPLETED')) {
-        continue;
-      }
-
-      const template = templates[row.templateId];
-      if (!template) continue;
-
-      // Skip if template is inactive
-      if (template.active === false) {
-        continue;
-      }
-
-      const doerId = String(item.doerId || template.doerId);
-      const user = users[doerId];
-      if (!user || !user.email) continue;
-
-      const freq = template.config ? template.config.frequency : '';
-      const cutoffDays = getCutoffDays(freq);
-
-      const targetDateStr = item.date;
-      const [yyyy, mm, dd] = targetDateStr.split('-');
-      const targetDate = new Date(yyyy, mm - 1, dd);
-      targetDate.setHours(0,0,0,0);
-      
-      const diffTime = targetDate.getTime() - today.getTime();
-      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-
-      // Condition: Target date should be coming up soon (within cutoff days) or overdue (diffDays <= 0)
-      if (diffDays <= cutoffDays) {
-         if (!emailsToSend[user.email]) emailsToSend[user.email] = { name: user.name, tasks: [] };
-         const isOverdue = diffDays < 0;
-         const isToday = diffDays === 0;
-         const remainingText = isOverdue ? 'Overdue by ' + Math.abs(diffDays) + ' days' : (isToday ? 'DUE TODAY' : 'Due in ' + diffDays + ' days');
-         emailsToSend[user.email].tasks.push(`- ${item.taskName || template.taskName || 'Routine Task'} (${remainingText}: ${targetDateStr})`);
-      }
-    }
-    stmt.free();
+    const { todayStr, tomorrowStr, emailsToSend } = collectTaskRemindersData();
+    const portalUrl = process.env.PORTAL_URL || 'http://localhost:5173';
+    let dispatchedCount = 0;
+    const summaryList = [];
 
     for (const email in emailsToSend) {
-       const userTasks = emailsToSend[email];
-       const taskListText = userTasks.tasks.join('\n');
-       
-       const title = 'Daily Checklist Reminder';
-       const leadText = `Hello ${userTasks.name},<br/><br/>This is a reminder that you have the following tasks pending in your checklist:`;
-       const detailsHtml = `
-         <ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; color: #0f172a; font-weight: 600;">
-           ${userTasks.tasks.map(t => `<li style="margin-bottom: 8px;">${t.replace(/^- /, '')}</li>`).join('')}
-         </ul>
-       `;
-       const html = generateEmailHtml(title, leadText, detailsHtml, 'http://localhost:5173/#CHECKLIST', 'Open FMS Checklist');
+      const recipientData = emailsToSend[email];
+      const totalTasks = recipientData.overdue.length + recipientData.dueToday.length + recipientData.dueTomorrow.length;
+      if (totalTasks === 0) continue;
 
-       const mailOptions = {
-         from: '"FMS Checklists" <' + (process.env.SMTP_USER || 'noreply@fms.local') + '>',
-         to: email,
-         subject: 'Checklist Reminder: You have pending tasks',
-         text: `Hello ${userTasks.name},\n\nThis is a reminder that you have the following tasks pending in your checklist:\n\n${taskListText}\n\nPlease log in to the FMS portal to complete them.\n\nRegards,\nFMS Admin`,
-         html
-       };
-       transporter.sendMail(mailOptions).catch(err => console.warn('Cron email error to', email, err.message));
-       console.log('Cron dispatched email to', email, 'with', userTasks.tasks.length, 'tasks');
+      const subjectParts = [];
+      if (recipientData.overdue.length > 0) subjectParts.push(`🚨 ${recipientData.overdue.length} Overdue`);
+      if (recipientData.dueToday.length > 0) subjectParts.push(`⏰ ${recipientData.dueToday.length} Due Today`);
+      if (recipientData.dueTomorrow.length > 0) subjectParts.push(`📅 ${recipientData.dueTomorrow.length} Due Tomorrow`);
+
+      const subject = `Task Reminder: ${subjectParts.join(' | ')} - Action Required`;
+
+      const html = generateTaskReminderEmailHtml({
+        recipientName: recipientData.name,
+        recipientEmail: recipientData.email,
+        slotLabel,
+        overdueTasks: recipientData.overdue,
+        dueTodayTasks: recipientData.dueToday,
+        dueTomorrowTasks: recipientData.dueTomorrow,
+        portalUrl
+      });
+
+      const text = generateTaskReminderText({
+        recipientName: recipientData.name,
+        recipientEmail: recipientData.email,
+        slotLabel,
+        overdueTasks: recipientData.overdue,
+        dueTodayTasks: recipientData.dueToday,
+        dueTomorrowTasks: recipientData.dueTomorrow,
+        portalUrl
+      });
+
+      const mailOptions = {
+        from: '"Kalra Buildtech FMS" <' + (process.env.SMTP_USER || 'noreply@fms.local') + '>',
+        to: recipientData.email,
+        subject,
+        text,
+        html
+      };
+
+      try {
+        await transporter.sendMail(mailOptions);
+        console.log(`[Task Reminder] Dispatched consolidated reminder email to ${recipientData.email} (${totalTasks} items)`);
+        summaryList.push({
+          email: recipientData.email,
+          name: recipientData.name,
+          overdue: recipientData.overdue.length,
+          dueToday: recipientData.dueToday.length,
+          dueTomorrow: recipientData.dueTomorrow.length,
+          status: 'SENT'
+        });
+      } catch (err) {
+        console.warn(`[Task Reminder] Failed to send email to ${recipientData.email}:`, err.message);
+        summaryList.push({
+          email: recipientData.email,
+          name: recipientData.name,
+          overdue: recipientData.overdue.length,
+          dueToday: recipientData.dueToday.length,
+          dueTomorrow: recipientData.dueTomorrow.length,
+          status: 'ERROR',
+          error: err.message
+        });
+      }
+
+      dispatchedCount++;
     }
 
+    console.log(`[Task Reminder] Completed run for "${slotLabel}". Total recipients processed: ${dispatchedCount}`);
+    return { success: true, slotLabel, dispatchedCount, recipients: summaryList };
   } catch (err) {
-    console.error('Checklist cron job failed', err);
-    try { if (stmt) stmt.free(); } catch(e){}
+    console.error('[Task Reminder] Cron job execution failed:', err);
+    return { success: false, error: err.message };
   }
+}
+
+// ── CRON SCHEDULES ─────────────────────────────────────────────────────────────
+// 1. Task & Checklist Morning Reminder (runs daily at 11:00 AM)
+cron.schedule('0 11 * * *', () => {
+  console.log('Running daily task & checklist reminder cron at 11:00 AM');
+  sendDailyTaskReminders('11:00 AM Morning Reminder');
+});
+
+// 2. Task & Checklist Afternoon Reminder (runs daily at 2:00 PM / 14:00)
+cron.schedule('0 14 * * *', () => {
+  console.log('Running daily task & checklist reminder cron at 2:00 PM');
+  sendDailyTaskReminders('2:00 PM Afternoon Follow-up');
 });
 
 // CRM Daily Report Cron (runs at 8:00 PM)

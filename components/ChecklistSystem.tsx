@@ -370,7 +370,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             if (config.frequency === 'DAILY') {
                 if (isSunday(d) || hDates.includes(format(d, 'yyyy-MM-dd'))) return;
             }
-            const { date: wd, shifted } = config.frequency === 'DAILY' ? { date: d, shifted: false } : getNextWorkingDay(d);
+            const { date: wd, shifted } = (config.frequency === 'DAILY' || config.frequency === 'ALTERNATE') ? { date: d, shifted: false } : getNextWorkingDay(d);
             items.push({ id: `CI-${template.id}-${idx}`, templateId: template.id, doerId: template.doerId, taskName: template.taskName, department: template.department, date: format(wd, 'yyyy-MM-dd'), status: 'PENDING', shiftedDueToHoliday: shifted });
         };
 

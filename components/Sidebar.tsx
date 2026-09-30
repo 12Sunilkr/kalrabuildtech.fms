@@ -158,6 +158,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
             <X size={22} />
           </button>
           <button 
+            type="button"
             onClick={() => {
               onNavigate(role === 'ADMIN' || role === 'PC' ? ViewMode.DASHBOARD : ViewMode.EMPLOYEE_HOME);
               onClose();
@@ -192,6 +193,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({ currentView, onNavigate, rol
                 const isActive = currentView === item.id;
                 return (
                   <button
+                    type="button"
                     key={item.id}
                     onClick={() => { onNavigate(item.id); onClose(); }}
                     aria-current={isActive ? 'page' : undefined}
