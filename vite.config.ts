@@ -123,6 +123,10 @@ export default defineConfig(({ mode }) => {
       {
         name: 'embed-express-api',
         async configureServer(server) {
+          // If dev-server.js is already running as host with API mounted, skip duplicate import
+          if (process.env.DEV_SERVER_HOST === '1') {
+            return;
+          }
           // Safe embedding flow: expose a fallback 503 response for /api until the app is ready
           let expressApp = null;
           try {

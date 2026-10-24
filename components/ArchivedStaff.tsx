@@ -1,20 +1,29 @@
 
 import React, { useState } from 'react';
-import { Employee } from '../types';
-import { Archive, RotateCcw, FileText, X } from 'lucide-react';
+import { Employee, User } from '../types';
+import { Archive, RotateCcw, FileText, X, Trash2 } from 'lucide-react';
+import { invalidateCache } from '../src/utils/api';
 
 interface ArchivedStaffProps {
   archivedEmployees: Employee[];
   setArchivedEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
   setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
   employees: Employee[];
+  users?: User[];
+  setUsers?: React.Dispatch<React.SetStateAction<User[]>>;
+  tasks?: any[];
+  setTasks?: React.Dispatch<React.SetStateAction<any[]>>;
 }
 
 export const ArchivedStaff: React.FC<ArchivedStaffProps> = ({ 
     archivedEmployees, 
     setArchivedEmployees,
     setEmployees,
-    employees 
+    employees,
+    users,
+    setUsers,
+    tasks,
+    setTasks
 }) => {
   const [showDocsModal, setShowDocsModal] = useState(false);
   const [currentEmp, setCurrentEmp] = useState<Employee | null>(null);
@@ -47,7 +56,30 @@ export const ArchivedStaff: React.FC<ArchivedStaffProps> = ({
                 } catch (e) { console.warn('Failed to restore linked user', e); }
               }
             } catch (e) { console.warn('Failed to fetch users for restore', e); }
+
+            invalidateCache('/employees');
+            invalidateCache('/users');
         }
+    }
+  };
+
+  const handleDeleteArchived = async (emp: Employee) => {
+    if (window.confirm(`Permanently delete ${emp.name} (${emp.id})? This will delete the user, their tasks, and checklist tasks from the entire application.`)) {
+      try {
+        await fetch(`/api/employees/${emp.id}/permanent`, { method: 'DELETE', credentials: 'include' });
+        setArchivedEmployees(prev => prev.filter(e => e.id !== emp.id));
+        setEmployees(prev => prev.filter(e => e.id !== emp.id));
+        if (setUsers) setUsers(prev => prev.filter(u => u.employeeId !== emp.id));
+        if (setTasks) setTasks(prev => prev.filter(t => t.assignedTo !== emp.id && (t as any).assignedToEmployeeId !== emp.id));
+        invalidateCache('/employees');
+        invalidateCache('/users');
+        invalidateCache('/tasks');
+        invalidateCache('/checklists');
+        invalidateCache('/checklist-templates');
+      } catch (e) {
+        console.error('Delete failed', e);
+        alert('Failed to delete employee permanently.');
+      }
     }
   };
 
@@ -70,7 +102,7 @@ export const ArchivedStaff: React.FC<ArchivedStaffProps> = ({
           </div>
           Archived Team
         </h2>
-        <p className="text-slate-500 mt-2 font-medium md:ml-14">Past team members and inactive records. View documents or restore profiles.</p>
+        <p className="text-slate-500 mt-2 font-medium md:ml-14">Past team members and inactive records. View documents, restore profiles, or permanently delete.</p>
       </div>
 
       <div className="bg-white rounded-3xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)] border border-slate-100 overflow-hidden mb-8">
@@ -108,8 +140,16 @@ export const ArchivedStaff: React.FC<ArchivedStaffProps> = ({
                         <button 
                             onClick={() => handleRestore(emp.id)}
                             className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-lg hover:bg-green-50 hover:text-green-600 hover:border-green-200 flex items-center gap-1 transition-all shadow-sm"
+                            title="Restore Member"
                         >
                             <RotateCcw size={14} /> Restore
+                        </button>
+                        <button 
+                            onClick={() => handleDeleteArchived(emp)}
+                            className="px-3 py-1.5 bg-white border border-slate-200 text-red-500 text-xs font-bold rounded-lg hover:bg-red-50 hover:text-red-700 hover:border-red-200 flex items-center gap-1 transition-all shadow-sm"
+                            title="Delete Permanently from Whole App"
+                        >
+                            <Trash2 size={14} /> Delete
                         </button>
                     </div>
                   </td>

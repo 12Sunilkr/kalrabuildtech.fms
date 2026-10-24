@@ -1,0 +1,55 @@
+{
+  "name": "attendance-fms",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server/dev-server.js",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server/prod-server.js",
+    "server": "node server/prod-server.js",
+    "start:server": "node server/prod-server.js",
+    "deploy:pm2": "vite build && pm2 restart all",
+    "test:unit": "node --test --experimental-strip-types \"test/unit/**/*.test.ts\" \"test/unit/**/*.test.js\"",
+    "test:integration": "node scripts/integration_test.mjs && node test/integration/checklistTransfer.test.mjs",
+    "test": "npm run test:unit && npm run test:integration",
+    "clean:ports": "powershell -NoProfile -Command \"try { Get-NetTCPConnection -LocalPort 3000,24678 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } } catch {}; exit 0\""
+  },
+  "engines": {
+    "node": ">=24.11.0",
+    "npm": ">=10.0.0"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@tailwindcss/vite": "^4.1.18",
+    "acorn": "^8.15.0",
+    "axios": "^1.6.0",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "lucide-react": "^0.468.0",
+    "mongodb": "^7.0.0",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^10.0.13",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^3.5.1",
+    "sql.js": "^1.8.0",
+    "tailwindcss": "^4.1.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/nodemailer": "^7.0.11",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

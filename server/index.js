@@ -420,22 +420,14 @@ try {
         console.log('Ensure Employees: created employees table');
       }
 
-      // Ensure E-PC101 employee record exists in employees table
+      // Ensure E-PC101 is NOT in employees table (it is a system user account, not an employee in Team Master)
       try {
-        const chkEmp = db.prepare('SELECT id FROM employees WHERE id = ?');
-        chkEmp.bind(['E-PC101']);
-        if (!chkEmp.step()) {
-          chkEmp.free();
-          const insEmp = db.prepare('INSERT INTO employees (id, name, department, designation, joiningDate, createdAt) VALUES (?,?,?,?,?,?)');
-          insEmp.run(['E-PC101', 'Process Coordinator (PC)', 'Operations', 'Process Coordinator', '2026-01-01', new Date().toISOString()]);
-          insEmp.free && insEmp.free();
-          persistDB();
-          console.log('Ensure Employees: created default PC employee E-PC101');
-        } else {
-          chkEmp.free();
-        }
+        const delEmp = db.prepare("DELETE FROM employees WHERE upper(id) = 'E-PC101'");
+        delEmp.run();
+        delEmp.free && delEmp.free();
+        persistDB();
       } catch (empErr) {
-        console.warn('Ensure Employees: PC employee check/creation failed', empErr);
+        /* ignore */
       }
     } catch (err) {
       console.warn('Employees table check failed', err);
@@ -798,6 +790,98 @@ try {
         )`);
       }
 
+      // Migration: Clean up dead/hiatus checklist instances
+      // For any checklist item referencing a template where done = 0:
+      // - If assignee is an archived employee: mark as STOPPED (dead)
+      // - If template is inactive (active === false): mark as STOPPED (dead)
+      // - If task date is before the template's resumption startDate: mark as STOPPED (dead)
+      // - If task doer does not match new template doer and date is past: mark as STOPPED (dead)
+      try {
+        const todayIso = new Date().toISOString().split('T')[0];
+
+        // 1. Fetch archived employee IDs
+        const archStmt = db.prepare("SELECT id, name FROM employees WHERE coalesce(is_archived, 0) = 1");
+        const archivedEmpIds = new Set();
+        while (archStmt.step()) {
+          const r = archStmt.getAsObject();
+          archivedEmpIds.add(String(r.id));
+        }
+        archStmt.free();
+
+        // 2. Fetch templates
+        const tplStmt = db.prepare("SELECT id, data FROM checklist_templates");
+        const tplMap = new Map();
+        while (tplStmt.step()) {
+          const r = tplStmt.getAsObject();
+          try {
+            tplMap.set(String(r.id), JSON.parse(r.data));
+          } catch (e) {}
+        }
+        tplStmt.free();
+
+        // 3. Align template start dates for transferred routines
+        const tplUpdates = [];
+        for (const [tId, tplData] of tplMap.entries()) {
+          if (tplData && tplData.active !== false && tId === 'KCT-84' && tplData.startDate < todayIso) {
+            tplData.startDate = todayIso;
+            tplUpdates.push({ id: tId, data: JSON.stringify(tplData) });
+          }
+        }
+        if (tplUpdates.length > 0) {
+          const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
+          for (const tu of tplUpdates) {
+            updTpl.run([tu.data, tu.id]);
+          }
+          updTpl.free();
+          console.log(`[Migration] Aligned ${tplUpdates.length} checklist templates startDate.`);
+        }
+
+        const chkStmt = db.prepare("SELECT id, refId, item, done FROM checklists WHERE refType = 'TEMPLATE_INSTANCE'");
+        const hiatusUpdates = [];
+        while (chkStmt.step()) {
+          const r = chkStmt.getAsObject();
+          if (r.done) continue;
+          try {
+            const parsed = JSON.parse(r.item);
+            if (parsed.status === 'PENDING') {
+              const tpl = tplMap.get(String(r.refId));
+              const itemDate = String(parsed.date || '').trim();
+              const itemDoer = String(parsed.doerId || '').trim();
+
+              const isArchivedDoer = Boolean(itemDoer && archivedEmpIds.has(itemDoer));
+              const isInactive = Boolean(tpl && tpl.active === false);
+              const tplStartDate = String((tpl && tpl.startDate) || '').trim();
+              const isBeforeStart = Boolean(tplStartDate && itemDate && itemDate < tplStartDate);
+              const isOldTransferredDoer = Boolean(tpl && tpl.doerId && itemDoer && String(tpl.doerId) !== itemDoer && itemDate <= todayIso);
+
+              if (isArchivedDoer || isInactive || isBeforeStart || isOldTransferredDoer) {
+                parsed.status = 'STOPPED';
+                parsed.stoppedReason = parsed.stoppedReason || (
+                  isArchivedDoer ? 'Employee Archived' :
+                  isInactive ? 'Routine stopped/paused' :
+                  isBeforeStart ? 'Routine stopped/hiatus before resumption' :
+                  'Routine transferred to new assignee'
+                );
+                hiatusUpdates.push({ id: r.id, item: JSON.stringify(parsed) });
+              }
+            }
+          } catch (e) {}
+        }
+        chkStmt.free();
+
+        if (hiatusUpdates.length > 0) {
+          const updHiatus = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
+          for (const u of hiatusUpdates) {
+            updHiatus.run([u.item, u.id]);
+          }
+          updHiatus.free();
+          persistDB();
+          console.log(`[Migration] Cleaned up ${hiatusUpdates.length} dead hiatus/stopped checklist items to STOPPED status.`);
+        }
+      } catch (err) {
+        console.warn('Hiatus checklist cleanup migration error:', err && (err.message || err));
+      }
+
       persistDB();
       console.log('Additional feature tables ensured');
     } catch (e) {
@@ -852,12 +936,14 @@ try {
       // Case 2: External database uploaded directly to server/database.sqlite via FileZilla / FTP
       if (fs.existsSync(dbFile) && isDbValidFile(dbFile)) {
         const stats = fs.statSync(dbFile);
-        const isExternalWrite = (Date.now() - lastInternalWriteMs > 6000) && (Math.abs(stats.mtimeMs - lastKnownDbMtime) > 1000);
+        const isExternalWrite = (Date.now() - lastInternalWriteMs > 10000) && (Math.abs(stats.mtimeMs - lastKnownDbMtime) > 2000);
         if (isExternalWrite) {
           const ready = await isFileFullyWritten(dbFile, 2000);
           if (ready) {
             console.log('[Disk Sync] External database modification detected on server/database.sqlite (FileZilla upload). Hot reloading into memory...');
+            updateLastInternalWrite();
             await reloadDatabaseFromDisk(dbFile);
+            updateLastInternalWrite();
           }
         }
       }
@@ -939,6 +1025,7 @@ async function reloadDatabaseFromDisk(targetFilePath = dbFile) {
       console.warn('[Database Sync] Cache invalidation warning after DB reload:', e);
     }
     
+    updateLastInternalWrite();
     console.log('[Database Sync] Database successfully verified, updated, and reloaded into memory.');
     global.dbChanged = true;
     return true;
@@ -2243,10 +2330,31 @@ function ensureEmployeesTable() {
         address TEXT,
         documents TEXT,
         hideAttendance INTEGER DEFAULT 0,
-        compOffBalance REAL
+        compOffBalance REAL,
+        employmentType TEXT DEFAULT 'Full Time'
       )`);
       persistDB();
       console.log('Employees table created');
+    } else {
+      try {
+        const tblInfo = db.prepare("PRAGMA table_info('employees')");
+        const cols = new Set();
+        while (tblInfo.step()) { cols.add(String(tblInfo.getAsObject().name)); }
+        tblInfo.free();
+        if (!cols.has('employmentType')) {
+          db.run("ALTER TABLE employees ADD COLUMN employmentType TEXT DEFAULT 'Full Time'");
+          db.run("UPDATE employees SET employmentType = 'Full Time' WHERE employmentType IS NULL");
+          persistDB();
+          console.log('Migration: added employees.employmentType column in ensureEmployeesTable');
+        }
+        if (!cols.has('hideAttendance')) {
+          db.run("ALTER TABLE employees ADD COLUMN hideAttendance INTEGER DEFAULT 0");
+          persistDB();
+          console.log('Migration: added employees.hideAttendance column in ensureEmployeesTable');
+        }
+      } catch (colErr) {
+        console.warn('ensureEmployeesTable column check error', colErr);
+      }
     }
     isEmployeesTableEnsured = true;
   } catch (err) {
@@ -2256,7 +2364,7 @@ function ensureEmployeesTable() {
   }
 }
 
-// Ensure employees table has hideAttendance column on older DBs
+// Ensure employees table has hideAttendance and employmentType columns on older DBs
 try {
   const tblInfo = db.prepare("PRAGMA table_info('employees')");
   const cols = new Set();
@@ -2268,6 +2376,14 @@ try {
       persistDB();
       console.log('Migration: added employees.hideAttendance column');
     } catch (e) { console.warn('Failed to add employees.hideAttendance column', e && (e.message || e)); }
+  }
+  if (!cols.has('employmentType')) {
+    try {
+      db.run("ALTER TABLE employees ADD COLUMN employmentType TEXT DEFAULT 'Full Time'");
+      db.run("UPDATE employees SET employmentType = 'Full Time' WHERE employmentType IS NULL");
+      persistDB();
+      console.log('Migration: added employees.employmentType column');
+    } catch (e) { console.warn('Failed to add employees.employmentType column', e && (e.message || e)); }
   }
 } catch (e) { /* ignore */ }
 
@@ -2285,11 +2401,11 @@ app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res)
       const fullDocs = req.query.full === '1' || req.query.full === 'true';
       const q = archived
         ? (fullDocs
-          ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, archived_at FROM employees WHERE coalesce(is_archived, 0) = 1'
-          : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, archived_at, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 1")
+          ? "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, archived_at, coalesce(employmentType, 'Full Time') AS employmentType FROM employees WHERE coalesce(is_archived, 0) = 1 AND upper(id) != 'E-PC101'"
+          : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, archived_at, coalesce(employmentType, 'Full Time') AS employmentType, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 1 AND upper(id) != 'E-PC101'")
         : (fullDocs
-          ? 'SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE coalesce(is_archived, 0) = 0'
-          : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0");
+          ? "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, coalesce(employmentType, 'Full Time') AS employmentType FROM employees WHERE coalesce(is_archived, 0) = 0 AND upper(id) != 'E-PC101'"
+          : "SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, hideAttendance, compOffBalance, coalesce(employmentType, 'Full Time') AS employmentType, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0 AND upper(id) != 'E-PC101'");
       const stmt = db.prepare(q);
       const cols = stmt.getColumnNames();
       const colsLen = cols.length;
@@ -2310,18 +2426,55 @@ app.get('/api/employees', requireAuth, withCache('employees', 15000), (req, res)
         out.push(row);
       }
       stmt.free();
+
+      // Attach linked user role to employee objects
+      try {
+        const userRoles = new Map();
+        const uStmt = db.prepare('SELECT id, employeeId, email, role FROM users WHERE coalesce(is_archived, 0) = 0');
+        while (uStmt.step()) {
+          const u = uStmt.getAsObject();
+          if (u.employeeId) userRoles.set(String(u.employeeId), u.role);
+          if (u.email) userRoles.set(String(u.email).toLowerCase(), u.role);
+          if (u.id) userRoles.set(String(u.id), u.role);
+        }
+        uStmt.free();
+        for (const row of out) {
+          if (!row.role) {
+            row.role = userRoles.get(String(row.id)) || (row.email ? userRoles.get(String(row.email).toLowerCase()) : null) || (String(row.id).toUpperCase() === 'E-PC101' ? 'PC' : 'EMPLOYEE');
+          }
+        }
+      } catch (roleErr) { /* ignore */ }
+
       console.log('GET /api/employees -> returning', out.length, 'rows for admin');
       return success(res, out || []);
     } else if (req.user) {
       // Allow non-admin authenticated users to fetch the list of active employees
       // so features like team chat can display colleagues and calendar can display birthdays.
-      const q = "SELECT id, name, department, designation, email, birthDate, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0 AND status = 'Active'";
+      const q = "SELECT id, name, department, designation, email, birthDate, coalesce(employmentType, 'Full Time') AS employmentType, json_extract(documents, '$.avatar') AS avatar FROM employees WHERE coalesce(is_archived, 0) = 0 AND status = 'Active' AND upper(id) != 'E-PC101'";
       const stmt = db.prepare(q);
       const out = [];
       while (stmt.step()) {
         out.push(stmt.getAsObject());
       }
       stmt.free();
+
+      try {
+        const userRoles = new Map();
+        const uStmt = db.prepare('SELECT id, employeeId, email, role FROM users WHERE coalesce(is_archived, 0) = 0');
+        while (uStmt.step()) {
+          const u = uStmt.getAsObject();
+          if (u.employeeId) userRoles.set(String(u.employeeId), u.role);
+          if (u.email) userRoles.set(String(u.email).toLowerCase(), u.role);
+          if (u.id) userRoles.set(String(u.id), u.role);
+        }
+        uStmt.free();
+        for (const row of out) {
+          if (!row.role) {
+            row.role = userRoles.get(String(row.id)) || (row.email ? userRoles.get(String(row.email).toLowerCase()) : null) || (String(row.id).toUpperCase() === 'E-PC101' ? 'PC' : 'EMPLOYEE');
+          }
+        }
+      } catch (roleErr) { /* ignore */ }
+
       console.log('GET /api/employees -> returning', out.length, 'rows for non-admin user', req.user && (req.user.employeeId || req.user.id));
       return success(res, out || []);
     } else {
@@ -2341,7 +2494,7 @@ app.get('/api/employees/:id', requireAuth, (req, res) => {
     const id = req.params.id;
     if (!isAdmin && (!req.user || req.user.employeeId !== id)) return failure(res, 'Forbidden', 403);
 
-    const stmt = db.prepare('SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance FROM employees WHERE id = ?');
+    const stmt = db.prepare("SELECT id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, coalesce(employmentType, 'Full Time') AS employmentType FROM employees WHERE id = ?");
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
     const row = stmt.getAsObject();
@@ -2365,7 +2518,7 @@ app.post('/api/employees', requireAuth, (req, res) => {
     if (!req.user) return failure(res, 'Unauthorized', 401);
     if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden', 403);
     ensureEmployeesTable();
-    const { id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance } = req.body || {};
+    const { id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, employmentType } = req.body || {};
     if (!id || !name) return failure(res, 'Missing fields', 400);
     const check = db.prepare('SELECT id FROM employees WHERE id = ?');
     check.bind([id]);
@@ -2373,8 +2526,8 @@ app.post('/api/employees', requireAuth, (req, res) => {
     check.free();
 
     const docs = documents ? JSON.stringify(documents) : null;
-    const insert = db.prepare('INSERT INTO employees (id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    insert.run([id, name, department || null, joiningDate || null, createdAt || new Date().toISOString(), status || 'Active', designation || null, email || null, phone || null, birthDate || null, address || null, docs, hideAttendance ? 1 : 0, compOffBalance || 0]);
+    const insert = db.prepare('INSERT INTO employees (id, name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, employmentType) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    insert.run([id, name, department || null, joiningDate || null, createdAt || new Date().toISOString(), status || 'Active', designation || null, email || null, phone || null, birthDate || null, address || null, docs, hideAttendance ? 1 : 0, compOffBalance || 0, employmentType || 'Full Time']);
     insert.free && insert.free();
     persistDB();
     return success(res, null, 'Created', 201);
@@ -2391,7 +2544,7 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
     if (req.user.role !== 'ADMIN' && req.user.employeeId !== id) return failure(res, 'Forbidden', 403);
 
     ensureEmployeesTable();
-    const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, is_archived, avatar } = req.body || {};
+    const { name, department, joiningDate, createdAt, status, designation, email, phone, birthDate, address, documents, hideAttendance, compOffBalance, is_archived, avatar, employmentType } = req.body || {};
     const stmt = db.prepare('SELECT id, documents, is_archived, archived_at FROM employees WHERE id = ?');
     stmt.bind([id]);
     if (!stmt.step()) { stmt.free(); return failure(res, 'Not found', 404); }
@@ -2421,52 +2574,120 @@ app.put('/api/employees/:id', requireAuth, (req, res) => {
       finalArchivedAt = is_archived ? (existing.archived_at || new Date().toISOString()) : null;
     }
 
-    // Handle optional task & checklist reassignment on archive/edit if reassignToId is provided
+    // Helper to handle archive side-effects (Put tasks ON HOLD with archived member note, stop routine checklists from that day)
+    const handleEmployeeArchiving = (empId, empName, targetReassignId) => {
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (targetReassignId) {
+        try {
+          const updT = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ?");
+          updT.run([targetReassignId, empId]);
+          updT.free();
+        } catch (e) { console.warn('Could not reassign tasks on employee archive', e); }
+
+        try {
+          const tplsStmt = db.prepare("SELECT id, data FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+          tplsStmt.bind([empId]);
+          const items = [];
+          while (tplsStmt.step()) { items.push(tplsStmt.getAsObject()); }
+          tplsStmt.free();
+          for (const item of items) {
+            try {
+              const data = JSON.parse(item.data);
+              data.doerId = targetReassignId;
+              const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
+              updTpl.run([JSON.stringify(data), item.id]);
+              updTpl.free();
+            } catch (e2) {}
+          }
+        } catch (e) { console.warn('Could not reassign checklist templates on employee archive', e); }
+
+        try {
+          const instStmt = db.prepare("SELECT id, item FROM checklists WHERE json_extract(item, '$.doerId') = ?");
+          instStmt.bind([empId]);
+          const items = [];
+          while (instStmt.step()) { items.push(instStmt.getAsObject()); }
+          instStmt.free();
+          for (const item of items) {
+            try {
+              const data = JSON.parse(item.item);
+              data.doerId = targetReassignId;
+              const updInst = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
+              updInst.run([JSON.stringify(data), item.id]);
+              updInst.free();
+            } catch (e2) {}
+          }
+        } catch (e) { console.warn('Could not reassign checklist instances on employee archive', e); }
+      } else {
+        // 1. Move all incomplete tasks to ON HOLD section and mention the archived member name & ID
+        try {
+          const holdNote = `Archived Member: ${empName || empId} (${empId})`;
+          const updHold = db.prepare("UPDATE tasks SET status = 'HOLD', statusNote = ? WHERE (assignedTo = ? OR assignedTo = ?) AND status NOT IN ('COMPLETED', 'TERMINATED')");
+          updHold.run([holdNote, empId, empId]);
+          updHold.free();
+          console.log(`[Archive Employee] Put active tasks on HOLD for archived employee ${empId}`);
+        } catch (e) { console.warn('Could not put tasks on HOLD for archived employee', e); }
+
+        // 2. Stop routine checklist templates for this employee so future routine tasks are paused
+        try {
+          const tplsStmt = db.prepare("SELECT id, data FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+          tplsStmt.bind([empId]);
+          const tplItems = [];
+          while (tplsStmt.step()) { tplItems.push(tplsStmt.getAsObject()); }
+          tplsStmt.free();
+
+          for (const item of tplItems) {
+            try {
+              const data = JSON.parse(item.data);
+              data.active = false;
+              data.stoppedDueToArchive = true;
+              data.archivedAt = new Date().toISOString();
+              data.archivedMemberName = empName || empId;
+              const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
+              updTpl.run([JSON.stringify(data), item.id]);
+              updTpl.free();
+            } catch (e2) {}
+          }
+          console.log(`[Archive Employee] Stopped ${tplItems.length} routine checklist templates for ${empId}`);
+        } catch (e) { console.warn('Could not stop checklist templates on employee archive', e); }
+
+        // 3. Stop pending checklist instances from today onwards so they do not show to users
+        try {
+          const instStmt = db.prepare("SELECT id, item FROM checklists WHERE (json_extract(item, '$.doerId') = ? OR refId IN (SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?)) AND done = 0");
+          instStmt.bind([empId, empId]);
+          const instItems = [];
+          while (instStmt.step()) { instItems.push(instStmt.getAsObject()); }
+          instStmt.free();
+
+          for (const item of instItems) {
+            try {
+              const data = JSON.parse(item.item);
+              if (data.date >= todayStr) {
+                data.status = 'STOPPED';
+                data.stoppedReason = `Employee Archived: ${empName || empId}`;
+                const updInst = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
+                updInst.run([JSON.stringify(data), item.id]);
+                updInst.free();
+              }
+            } catch (e2) {}
+          }
+          console.log(`[Archive Employee] Stopped ${instItems.length} checklist instances from ${todayStr} for ${empId}`);
+        } catch (e) { console.warn('Could not stop checklist instances on employee archive', e); }
+      }
+
+      cacheInvalidate('tasks');
+      cacheInvalidate('checklists');
+    };
+
+    // If setting is_archived, trigger side-effects
     const reassignToId = req.body && req.body.reassignToId;
-    if (reassignToId) {
-      try {
-        const updT = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ?");
-        updT.run([reassignToId, id]);
-        updT.free();
-      } catch (e) { console.warn('Could not reassign tasks on employee update', e); }
-
-      try {
-        const tplsStmt = db.prepare("SELECT id, data FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
-        tplsStmt.bind([id]);
-        const items = [];
-        while (tplsStmt.step()) { items.push(tplsStmt.getAsObject()); }
-        tplsStmt.free();
-        for (const item of items) {
-          try {
-            const data = JSON.parse(item.data);
-            data.doerId = reassignToId;
-            const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
-            updTpl.run([JSON.stringify(data), item.id]);
-            updTpl.free();
-          } catch (e2) {}
-        }
-      } catch (e) { console.warn('Could not reassign checklist templates on employee update', e); }
-
-      try {
-        const instStmt = db.prepare("SELECT id, item FROM checklists WHERE json_extract(item, '$.doerId') = ?");
-        instStmt.bind([id]);
-        const items = [];
-        while (instStmt.step()) { items.push(instStmt.getAsObject()); }
-        instStmt.free();
-        for (const item of items) {
-          try {
-            const data = JSON.parse(item.item);
-            data.doerId = reassignToId;
-            const updInst = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
-            updInst.run([JSON.stringify(data), item.id]);
-            updInst.free();
-          } catch (e2) {}
-        }
-      } catch (e) { console.warn('Could not reassign checklist instances on employee update', e); }
+    if (finalIsArchived === 1 && (existing.is_archived !== 1 || reassignToId)) {
+      handleEmployeeArchiving(id, name || existing.name, reassignToId);
+    } else if (reassignToId) {
+      handleEmployeeArchiving(id, name || existing.name, reassignToId);
     }
 
-    const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), is_archived = ?, archived_at = ? WHERE id = ?');
-    update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, finalIsArchived, finalArchivedAt, id]);
+    const update = db.prepare('UPDATE employees SET name = coalesce(?, name), department = coalesce(?, department), joiningDate = coalesce(?, joiningDate), createdAt = coalesce(?, createdAt), status = coalesce(?, status), designation = coalesce(?, designation), email = coalesce(?, email), phone = coalesce(?, phone), birthDate = coalesce(?, birthDate), address = coalesce(?, address), documents = coalesce(?, documents), hideAttendance = coalesce(?, hideAttendance), compOffBalance = coalesce(?, compOffBalance), employmentType = coalesce(?, employmentType), is_archived = ?, archived_at = ? WHERE id = ?');
+    update.run([name || null, department || null, joiningDate || null, createdAt || null, status || null, designation || null, email || null, phone || null, birthDate || null, address || null, docs || null, hideAttendance == null ? null : (hideAttendance ? 1 : 0), compOffBalance || null, employmentType || null, finalIsArchived, finalArchivedAt, id]);
     update.free && update.free();
 
     // Sync updated email and name to linked users table so auth & reminders always use updated email
@@ -2497,11 +2718,73 @@ app.delete('/api/employees/:id', requireAuth, (req, res) => {
     ensureEmployeesTable();
     const id = req.params.id;
 
+    const stmt = db.prepare('SELECT id, name FROM employees WHERE id = ?');
+    stmt.bind([id]);
+    let empName = '';
+    if (stmt.step()) {
+      empName = stmt.getAsObject().name || '';
+    }
+    stmt.free();
+
     // Soft-delete: mark employee archived
     const archivedAt = new Date().toISOString();
-    const upd = db.prepare('UPDATE employees SET is_archived = ?, archived_at = ? WHERE id = ?');
-    upd.run([1, archivedAt, id]);
+    const upd = db.prepare("UPDATE employees SET is_archived = 1, archived_at = ?, status = 'Inactive' WHERE id = ?");
+    upd.run([archivedAt, id]);
     upd.free();
+
+    // Put tasks on hold and stop routine checklists
+    const todayStr = new Date().toISOString().split('T')[0];
+    try {
+      const holdNote = `Archived Member: ${empName || id} (${id})`;
+      const updHold = db.prepare("UPDATE tasks SET status = 'HOLD', statusNote = ? WHERE (assignedTo = ? OR assignedTo = ?) AND status NOT IN ('COMPLETED', 'TERMINATED')");
+      updHold.run([holdNote, id, id]);
+      updHold.free();
+    } catch (e) {}
+
+    try {
+      const tplsStmt = db.prepare("SELECT id, data FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+      tplsStmt.bind([id]);
+      const tplItems = [];
+      while (tplsStmt.step()) { tplItems.push(tplsStmt.getAsObject()); }
+      tplsStmt.free();
+      for (const item of tplItems) {
+        try {
+          const data = JSON.parse(item.data);
+          data.active = false;
+          data.stoppedDueToArchive = true;
+          data.archivedAt = archivedAt;
+          data.archivedMemberName = empName || id;
+          const updTpl = db.prepare("UPDATE checklist_templates SET data = ? WHERE id = ?");
+          updTpl.run([JSON.stringify(data), item.id]);
+          updTpl.free();
+        } catch (e2) {}
+      }
+    } catch (e) {}
+
+    try {
+      const instStmt = db.prepare("SELECT id, item FROM checklists WHERE (json_extract(item, '$.doerId') = ? OR refId IN (SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?)) AND done = 0");
+      instStmt.bind([id, id]);
+      const instItems = [];
+      while (instStmt.step()) { instItems.push(instStmt.getAsObject()); }
+      instStmt.free();
+      for (const item of instItems) {
+        try {
+          const data = JSON.parse(item.item);
+          if (data.date >= todayStr) {
+            data.status = 'STOPPED';
+            data.stoppedReason = `Employee Archived: ${empName || id}`;
+            const updInst = db.prepare("UPDATE checklists SET item = ? WHERE id = ?");
+            updInst.run([JSON.stringify(data), item.id]);
+            updInst.free();
+          }
+        } catch (e2) {}
+      }
+    } catch (e) {}
+
+    cacheInvalidate('employees');
+    cacheInvalidate('users');
+    cacheInvalidate('tasks');
+    cacheInvalidate('checklists');
     persistDB();
     return success(res, null, 'Archived');
   } catch (err) {
@@ -2512,7 +2795,7 @@ app.delete('/api/employees/:id', requireAuth, (req, res) => {
 
 // --- Permanent Delete Employee ---
 // DELETE /api/employees/:id/permanent  (Admin only)
-// Body: { replacementEmployeeId?: string }  — if provided, tasks are reassigned to this employee; if not, tasks & checklists are deleted
+// Body: { replacementEmployeeId?: string }  — if provided, tasks are reassigned; if not, tasks & checklists & user are deleted from whole app
 app.delete('/api/employees/:id/permanent', requireAuth, (req, res) => {
   try {
     if (!req.user) return failure(res, 'Unauthorized', 401);
@@ -2522,21 +2805,35 @@ app.delete('/api/employees/:id/permanent', requireAuth, (req, res) => {
     const id = req.params.id;
     const { replacementEmployeeId } = req.body || {};
 
-    // 1. Reassign or delete tasks assigned to this employee
+    // Get linked user information before deleting
+    let linkedUserId = null;
+    let linkedUserEmail = null;
+    try {
+      const uStmt = db.prepare("SELECT id, email FROM users WHERE employeeId = ?");
+      uStmt.bind([id]);
+      if (uStmt.step()) {
+        const uObj = uStmt.getAsObject();
+        linkedUserId = uObj.id;
+        linkedUserEmail = uObj.email;
+      }
+      uStmt.free();
+    } catch (e) {}
+
+    // 1. Reassign or Hard-delete tasks assigned to this employee
     try {
       if (replacementEmployeeId) {
-        const upd = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ?");
-        upd.run([replacementEmployeeId, id]);
+        const upd = db.prepare("UPDATE tasks SET assignedTo = ? WHERE assignedTo = ? OR assignedTo = ?");
+        upd.run([replacementEmployeeId, id, linkedUserId || id]);
         upd.free();
       } else {
-        // Hard-delete tasks assigned to deleted employee so no leftover data remains
-        const delT = db.prepare("DELETE FROM tasks WHERE assignedTo = ?");
-        delT.run([id]);
+        // Hard-delete all tasks assigned to or created by deleted employee from the whole app
+        const delT = db.prepare("DELETE FROM tasks WHERE assignedTo = ? OR assignedTo = ? OR assignedBy = ? OR assignedBy = ?");
+        delT.run([id, linkedUserId || id, id, linkedUserId || id]);
         delT.free();
       }
     } catch (e) { console.warn('Could not process tasks for deleted employee', e && (e.message || e)); }
 
-    // 2. Reassign or delete checklist templates & instances for this employee
+    // 2. Reassign or Hard-delete checklist templates & instances for this employee
     try {
       if (replacementEmployeeId) {
         // Reassign checklist templates
@@ -2570,43 +2867,45 @@ app.delete('/api/employees/:id/permanent', requireAuth, (req, res) => {
           } catch (e2) {}
         }
       } else {
-        // Hard-delete checklist templates & instances
-        const tplsStmt = db.prepare("SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
-        tplsStmt.bind([id]);
-        const tplIds = [];
-        while (tplsStmt.step()) { tplIds.push(tplsStmt.getAsObject().id); }
-        tplsStmt.free();
+        // Hard-delete all checklist items for this employee or for their templates
+        const delInst = db.prepare("DELETE FROM checklists WHERE json_extract(item, '$.doerId') = ? OR refId IN (SELECT id FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?)");
+        delInst.run([id, id]);
+        delInst.free();
 
-        for (const tplId of tplIds) {
-          try {
-            const delInst = db.prepare("DELETE FROM checklists WHERE refId = ?");
-            delInst.run([tplId]);
-            delInst.free();
-            const delTpl = db.prepare("DELETE FROM checklist_templates WHERE id = ?");
-            delTpl.run([tplId]);
-            delTpl.free();
-          } catch (e2) {}
-        }
-        const delChks = db.prepare("DELETE FROM checklists WHERE json_extract(item, '$.doerId') = ?");
-        delChks.run([id]);
-        delChks.free();
+        // Hard-delete all checklist templates for this employee
+        const delTpl = db.prepare("DELETE FROM checklist_templates WHERE json_extract(data, '$.doerId') = ?");
+        delTpl.run([id]);
+        delTpl.free();
       }
     } catch (e) { console.warn('Could not process checklist templates for deleted employee', e && (e.message || e)); }
 
-    // 3. Delete linked user account
+    // 3. Delete linked user account from users table
     try {
-      const delUser = db.prepare("DELETE FROM users WHERE employeeId = ?");
-      delUser.run([id]);
+      const delUser = db.prepare("DELETE FROM users WHERE employeeId = ? OR id = ? OR (email IS NOT NULL AND lower(email) = lower(?))");
+      delUser.run([id, linkedUserId || id, linkedUserEmail || '']);
       delUser.free();
     } catch (e) { console.warn('Could not delete linked user', e && (e.message || e)); }
 
-    // 4. Hard-delete the employee record
+    // 4. Delete ancillary records (leaves, timelogs, attendance, notifications, notepad)
+    try { db.run("DELETE FROM leaves WHERE appliedBy = ?", [id]); } catch (e) {}
+    try { db.run("DELETE FROM timelogs WHERE employeeId = ?", [id]); } catch (e) {}
+    try { db.run("DELETE FROM notifications WHERE userId = ? OR json_extract(meta, '$.employeeId') = ?", [id, id]); } catch (e) {}
+    try { db.run("DELETE FROM notepad WHERE userId = ?", [id]); } catch (e) {}
+    try { db.run("DELETE FROM attendance WHERE employeeId = ?", [id]); } catch (e) {}
+
+    // 5. Hard-delete the employee record from employees table
     const del = db.prepare("DELETE FROM employees WHERE id = ?");
     del.run([id]);
     del.free();
 
+    cacheInvalidate('employees');
+    cacheInvalidate('users');
+    cacheInvalidate('tasks');
+    cacheInvalidate('checklists');
+    cacheInvalidate('leaves');
+    cacheInvalidate('timelogs');
     persistDB();
-    return success(res, null, 'Employee permanently deleted');
+    return success(res, null, 'Employee permanently deleted from whole app');
   } catch (err) {
     console.error('Employees permanent DELETE error', { path: req.path, err: err && (err.stack || err.message || err) });
     return failure(res, 'Internal server error', 500);
@@ -3286,6 +3585,44 @@ try {
   ensureTasksTableSchema(db, true);
 } catch (e) { console.warn('Tasks runtime migration failed', e && (e.message || e)); }
 
+// Helper: Check if assignee has ADMIN or PC role
+function isAssigneeAdminOrPc(database, assignee) {
+  if (!assignee) return false;
+  const str = String(assignee).trim();
+  if (!str) return false;
+  if (str.toUpperCase() === 'E-PC101' || str.toUpperCase().startsWith('U-ADMIN') || str.toUpperCase().startsWith('U-PC')) {
+    return true;
+  }
+  try {
+    const u = database.prepare("SELECT role FROM users WHERE (employeeId = ? OR CAST(id AS TEXT) = ? OR lower(email) = lower(?)) AND coalesce(is_archived, 0) = 0");
+    u.bind([str, str, str]);
+    let match = false;
+    while (u.step()) {
+      const ur = u.getAsObject();
+      if (ur && (ur.role === 'ADMIN' || ur.role === 'PC' || ur.role === 'SUPER_ADMIN')) {
+        match = true;
+        break;
+      }
+    }
+    u.free();
+    if (match) return true;
+
+    const e = database.prepare("SELECT designation FROM employees WHERE id = ? AND coalesce(is_archived, 0) = 0");
+    e.bind([str]);
+    if (e.step()) {
+      const er = e.getAsObject();
+      const desig = (er.designation || '').toLowerCase();
+      if (desig === 'pc' || desig === 'admin' || desig === 'super admin' || desig === 'process coordinator') {
+        match = true;
+      }
+    }
+    e.free();
+    return match;
+  } catch (err) {
+    return false;
+  }
+}
+
 // POST /api/tasks - create a new task (ADMIN only)
 app.post('/api/tasks', requireAuth, (req, res) => {
   try {
@@ -3298,6 +3635,10 @@ app.post('/api/tasks', requireAuth, (req, res) => {
     // Validate assignee presence to avoid accidental empty-string -> numeric 0 coercion
     if (assignedTo == null || String(assignedTo).trim() === '') {
       return failure(res, 'Missing required field: assignedTo', 400);
+    }
+
+    if (isAssigneeAdminOrPc(db, assignedTo) || (assigned_to != null && isAssigneeAdminOrPc(db, assigned_to))) {
+      return failure(res, 'Cannot assign tasks to Admin or PC users', 400);
     }
 
     try {
@@ -3807,6 +4148,11 @@ app.put('/api/tasks/:id', requireAuth, (req, res) => {
 
     try {
       db.run('BEGIN TRANSACTION');
+
+      if ((updates.assignedTo && isAssigneeAdminOrPc(db, updates.assignedTo)) || (updates.assigned_to && isAssigneeAdminOrPc(db, updates.assigned_to))) {
+        db.run('ROLLBACK');
+        return failure(res, 'Cannot assign tasks to Admin or PC users', 400);
+      }
 
       // If assignedTo is being changed, validate new assignee (prefer employee id lookup)
       let assigned_to_val = null;
@@ -4366,11 +4712,29 @@ app.post('/api/checklists/bulk', requireAuth, (req, res) => {
       // Clean up previous pending instances of the templates only when replace is explicitly requested (e.g. schedule regeneration)
       if (replace === true) {
         const uniqueRefIds = [...new Set(items.map(it => it.refId).filter(Boolean))];
-        const deleteStmt = db.prepare('DELETE FROM checklists WHERE refId = ? AND done = 0');
-        for (const refId of uniqueRefIds) {
-          deleteStmt.run([refId]);
+        let minIncomingDate = '';
+        for (const it of items) {
+          try {
+            const p = JSON.parse(it.item);
+            if (p.date && (!minIncomingDate || p.date < minIncomingDate)) {
+              minIncomingDate = p.date;
+            }
+          } catch (e) {}
         }
-        deleteStmt.free();
+
+        if (minIncomingDate) {
+          const deleteStmt = db.prepare("DELETE FROM checklists WHERE refId = ? AND done = 0 AND (json_extract(item, '$.date') >= ? OR json_extract(item, '$.date') IS NULL)");
+          for (const refId of uniqueRefIds) {
+            deleteStmt.run([refId, minIncomingDate]);
+          }
+          deleteStmt.free();
+        } else {
+          const deleteStmt = db.prepare('DELETE FROM checklists WHERE refId = ? AND done = 0');
+          for (const refId of uniqueRefIds) {
+            deleteStmt.run([refId]);
+          }
+          deleteStmt.free();
+        }
       }
 
       const insert = db.prepare('INSERT INTO checklists (id, refId, refType, item, done, createdBy, createdAt) VALUES (?,?,?,?,?,?,?)');
@@ -4529,6 +4893,9 @@ app.post('/api/checklist-templates', requireAuth, (req, res) => {
     if (req.user.role !== 'ADMIN' && req.user.role !== 'PC') return failure(res, 'Forbidden', 403);
     const { id, taskName, doerId, department, startDate, config, active } = req.body || {};
     if (!taskName || !doerId || !startDate) return failure(res, 'Missing fields', 400);
+    if (isAssigneeAdminOrPc(db, doerId) || (req.body && req.body.buddyId && isAssigneeAdminOrPc(db, req.body.buddyId))) {
+      return failure(res, 'Cannot assign checklist routines to Admin or PC users', 400);
+    }
     try {
       db.run('BEGIN TRANSACTION');
       let tplId = id;
@@ -4569,6 +4936,9 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
     if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Admin only', 403);
     const id = req.params.id;
     const { taskName, doerId, department, startDate, config, active, transferEffectiveDate } = req.body || {};
+    if ((doerId && isAssigneeAdminOrPc(db, doerId)) || (req.body && req.body.buddyId && isAssigneeAdminOrPc(db, req.body.buddyId))) {
+      return failure(res, 'Cannot assign checklist routines to Admin or PC users', 400);
+    }
 
     // Check if template exists
     const check = db.prepare('SELECT id, data FROM checklist_templates WHERE id = ?');
@@ -4583,13 +4953,38 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
 
     try {
       db.run('BEGIN TRANSACTION');
-      const data = JSON.stringify({ taskName, doerId, department, startDate, config, active });
+      const dataObj = {
+        ...oldData,
+        taskName: taskName !== undefined ? taskName : oldData.taskName,
+        doerId: doerId !== undefined ? doerId : oldData.doerId,
+        buddyId: (req.body && req.body.buddyId !== undefined) ? req.body.buddyId : oldData.buddyId,
+        department: department !== undefined ? department : oldData.department,
+        startDate: transferEffectiveDate || (startDate !== undefined ? startDate : oldData.startDate),
+        config: config !== undefined ? config : oldData.config,
+        active: active !== undefined ? active : oldData.active,
+      };
+
+      // When template is active or reactivated, clear archive-related stop flags
+      if (dataObj.active !== false) {
+        delete dataObj.stoppedDueToArchive;
+        delete dataObj.archivedAt;
+        delete dataObj.archivedMemberName;
+      }
+
       const update = db.prepare('UPDATE checklist_templates SET data = ? WHERE id = ?');
-      update.run([data, id]);
+      update.run([JSON.stringify(dataObj), id]);
       update.free();
 
-      // If doerId changed and transferEffectiveDate is provided, update future pending instances
-      if (doerId && oldDoerId && doerId !== oldDoerId && transferEffectiveDate) {
+      // Check if instances need transfer, unstopping, or stopping:
+      const isReactivated = dataObj.active !== false && oldData.active === false;
+      const isTransferred = (doerId && oldDoerId && String(doerId) !== String(oldDoerId)) || Boolean(transferEffectiveDate);
+      const isDeactivated = dataObj.active === false && oldData.active !== false;
+
+      if (isTransferred || isReactivated || isDeactivated) {
+        const effectiveCutoff = transferEffectiveDate || startDate || new Date().toISOString().split('T')[0];
+        const targetDoer = doerId || oldDoerId;
+        const targetDept = department || oldData.department;
+
         // Find all checklists items referencing this template (refId = id)
         const getItems = db.prepare('SELECT id, item, done FROM checklists WHERE refId = ?');
         getItems.bind([id]);
@@ -4598,16 +4993,43 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
           const row = getItems.getAsObject();
           try {
             const parsed = JSON.parse(row.item);
-            // Update if it is PENDING and date is >= transferEffectiveDate
-            if (!row.done && parsed.status === 'PENDING' && parsed.date >= transferEffectiveDate) {
-              parsed.doerId = doerId;
-              parsed.department = department || parsed.department;
-              itemsToUpdate.push({ id: row.id, item: JSON.stringify(parsed) });
+            const itemDate = String(parsed.date || '').trim();
+
+            if (itemDate >= effectiveCutoff) {
+              // Instances on or after the effective start date:
+              // Only modify if not finished (done === 0 and status !== 'COMPLETED')
+              if (!row.done && parsed.status !== 'COMPLETED') {
+                if (dataObj.active !== false) {
+                  // Routine is active / resumed: assign to target doer and unstop to PENDING
+                  parsed.doerId = targetDoer;
+                  if (targetDept) parsed.department = targetDept;
+                  parsed.status = 'PENDING';
+                  delete parsed.stoppedReason;
+                  delete parsed.stoppedAt;
+                } else {
+                  // Routine is stopped / archived: mark as STOPPED (dead)
+                  parsed.status = 'STOPPED';
+                  parsed.stoppedReason = parsed.stoppedReason || 'Routine stopped/paused';
+                }
+                itemsToUpdate.push({ id: row.id, item: JSON.stringify(parsed) });
+              }
             } else {
-              // Ensure older or completed/stopped instances lock in their original doerId explicitly in JSON
+              // Instances before the effective cutoff (past or in-between stopped period):
+              // In-between uncompleted tasks must be DEAD (STOPPED)
+              let changed = false;
+              if (!row.done && parsed.status !== 'COMPLETED') {
+                if (parsed.status !== 'STOPPED') {
+                  parsed.status = 'STOPPED';
+                  parsed.stoppedReason = parsed.stoppedReason || 'Routine stopped/hiatus before resumption';
+                  changed = true;
+                }
+              }
               if (!parsed.doerId) {
                 parsed.doerId = oldDoerId;
                 parsed.department = oldData.department || parsed.department;
+                changed = true;
+              }
+              if (changed) {
                 itemsToUpdate.push({ id: row.id, item: JSON.stringify(parsed) });
               }
             }
@@ -4621,12 +5043,13 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
           updItem.run([item.item, item.id]);
         }
         updItem.free();
-        console.log(`[Transfer Task] Updated ${itemsToUpdate.length} checklist items to new doer ${doerId} from date ${transferEffectiveDate}`);
+        console.log(`[Transfer Task] Updated ${itemsToUpdate.length} checklist items for template ${id} (effective: ${effectiveCutoff}, target doer: ${targetDoer}, active: ${dataObj.active !== false})`);
       }
 
       db.run('COMMIT');
       persistDB();
       cacheInvalidate('checklists');
+      cacheInvalidate('checklist-templates');
       return success(res, { id, message: 'Template updated' });
     } catch (e) {
       try { db.run('ROLLBACK'); } catch (er) { }

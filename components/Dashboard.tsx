@@ -1,20 +1,22 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Employee, AttendanceRecord, ViewMode, User } from '../types';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, AreaChart, Area, Legend } from 'recharts';
 import { Users, AlertTriangle, CheckCircle2, Clock, ChevronRight, Download, RefreshCw, UserCog, Cake, TrendingUp, Activity, Target, Zap } from 'lucide-react';
 import { formatDateKey, isDateSunday } from '../utils/dateUtils';
 import { format, getDate, getMonth } from 'date-fns';
-
+import { isAdminOrPc } from '../utils/roleUtils';
 
 interface DashboardProps {
   employees: Employee[];
   attendanceData: Record<string, AttendanceRecord>;
   onNavigate: (view: ViewMode) => void;
   currentUser?: User | null;
+  users?: User[];
+  archivedEmployees?: Employee[];
 }
 
-const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceData, onNavigate, currentUser }) => {
+const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceData, onNavigate, currentUser, users = [], archivedEmployees = [] }) => {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const currentDate = new Date();
   const dateKey = formatDateKey(currentDate);
@@ -53,8 +55,45 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
     return null;
   };
 
-  // Birthday Logic
-  const birthdaysToday = employees.filter(emp => {
+  // Active team members in Team Master (matching Team Master's 19 Active Members count)
+  const activeEmployees = useMemo(() => {
+    const archivedIds = new Set((archivedEmployees || []).map(e => String(e.id)));
+    return (employees || []).filter(emp => {
+      const idUpper = (emp.id || '').toUpperCase();
+      if (idUpper === 'E-PC101' || idUpper.startsWith('U-ADMIN') || idUpper.startsWith('U-PC')) return false;
+      if ((emp.name || '').trim().toLowerCase() === 'process coordinator (pc)') return false;
+      // 1. Exclude if present in archivedEmployees list
+      if (archivedIds.has(String(emp.id))) return false;
+      // 2. Exclude if marked as archived directly
+      if ((emp as any).is_archived === 1 || (emp as any).is_archived === true || (emp as any).is_archived === '1') return false;
+      // 3. Must have status 'Active' (matching Team Master: e.status === 'Active')
+      return emp.status === 'Active';
+    });
+  }, [employees, archivedEmployees]);
+
+  // Total non-archived team members in Team Master (matching Team Master's 19 Total Members count)
+  const totalEmployees = useMemo(() => {
+    const archivedIds = new Set((archivedEmployees || []).map(e => String(e.id)));
+    return (employees || []).filter(emp => {
+      const idUpper = (emp.id || '').toUpperCase();
+      if (idUpper === 'E-PC101' || idUpper.startsWith('U-ADMIN') || idUpper.startsWith('U-PC')) return false;
+      if ((emp.name || '').trim().toLowerCase() === 'process coordinator (pc)') return false;
+      if (archivedIds.has(String(emp.id))) return false;
+      if ((emp as any).is_archived === 1 || (emp as any).is_archived === true || (emp as any).is_archived === '1') return false;
+      return true;
+    });
+  }, [employees, archivedEmployees]);
+
+  // Backward-compatible alias for active employees
+  const teamStrengthEmployees = activeEmployees;
+
+  // Trackable attendance employees: active employees tracked on attendance sheet (excluding Admin and PC)
+  const trackableEmployees = useMemo(() => {
+    return activeEmployees.filter(emp => !isAdminOrPc(emp, users));
+  }, [activeEmployees, users]);
+
+  // Birthday Logic (All active team members)
+  const birthdaysToday = teamStrengthEmployees.filter(emp => {
     if (!emp.birthDate) return false;
     const parts = getBirthdayParts(emp.birthDate);
     return parts && parts.day === getDate(currentDate) && parts.month === getMonth(currentDate);
@@ -64,7 +103,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
   let absentToday = 0;
   let leaveToday = 0;
 
-  employees.forEach(emp => {
+  trackableEmployees.forEach(emp => {
     const val = attendanceData[emp.id]?.[dateKey];
     if (val === 1) presentToday++;
     else if (val === 0) absentToday++;
@@ -72,10 +111,10 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
   });
 
   // Productivity Score (Mock logic based on attendance)
-  const attendanceRate = employees.length > 0 ? Math.round((presentToday / employees.length) * 100) : 0;
+  const attendanceRate = trackableEmployees.length > 0 ? Math.round((presentToday / trackableEmployees.length) * 100) : 0;
 
   // Calculate Yearly Leaves and Absents for Chart
-  const chartData = employees.map(emp => {
+  const chartData = trackableEmployees.map(emp => {
     const record = attendanceData[emp.id] || {};
     let leaves = 0;
     let absents = 0;
@@ -101,7 +140,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
      // Generate CSV content
      const headers = ['Employee ID', 'Name', 'Department', 'Present Days', 'Absent Days', 'Leaves Taken'];
      
-     const rows = employees.map(emp => {
+     const rows = trackableEmployees.map(emp => {
          const record = attendanceData[emp.id] || {};
          let present = 0, absent = 0, leaves = 0;
          
@@ -142,17 +181,18 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
      document.body.removeChild(link);
   };
 
-  const StatCard = ({ title, value, icon: Icon, color, delay, subtext }: any) => (
+  const StatCard = ({ title, value, icon: Icon, color, delay, subtext, onClick }: any) => (
     <div 
+      onClick={onClick}
       style={{ animationDelay: delay }}
-      className="relative overflow-hidden bg-white p-7 rounded-[2rem] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.05)] border border-slate-100 group hover:border-slate-300 transition-all duration-500 animate-scale-in"
+      className={`relative overflow-hidden bg-white p-7 rounded-[2rem] shadow-[0_20px_50px_-15px_rgba(0,0,0,0.05)] border border-slate-100 group hover:border-slate-300 transition-all duration-500 animate-scale-in ${onClick ? 'cursor-pointer hover:shadow-lg hover:-translate-y-0.5' : ''}`}
     >
       <div className={`absolute -right-4 -top-4 w-24 h-24 bg-blue-500/5 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700`}></div>
       <div className="flex items-start justify-between relative z-10">
         <div>
           <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em] mb-3">{title}</p>
           <div className="flex items-baseline gap-2">
-            <p className="text-4xl font-black text-slate-800 tracking-tighter">{isSundayToday ? '--' : value}</p>
+            <p className="text-4xl font-black text-slate-800 tracking-tighter">{(isSundayToday && title !== 'Team Strength') ? '--' : value}</p>
             {subtext && <span className="text-xs font-bold text-slate-400">{subtext}</span>}
           </div>
         </div>
@@ -259,7 +299,15 @@ const DashboardComponent: React.FC<DashboardProps> = ({ employees, attendanceDat
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-        <StatCard title="Team Strength" value={employees.length} icon={Users} color="blue" delay="0ms" subtext="Employees" />
+        <StatCard 
+          title="Team Strength" 
+          value={activeEmployees.length} 
+          icon={Users} 
+          color="blue" 
+          delay="0ms" 
+          subtext={`Active • ${totalEmployees.length} Total`} 
+          onClick={() => onNavigate(ViewMode.EMPLOYEES)}
+        />
         <StatCard title="Active Today" value={presentToday} icon={CheckCircle2} color="emerald" delay="100ms" subtext="Staff" />
         <StatCard title="Absent Logs" value={absentToday} icon={AlertTriangle} color="red" delay="200ms" subtext="Today" />
         <StatCard title="Leave Tracking" value={leaveToday} icon={Clock} color="orange" delay="300ms" subtext="Active" />

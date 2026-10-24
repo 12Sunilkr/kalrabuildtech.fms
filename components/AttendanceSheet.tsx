@@ -6,6 +6,7 @@ import { ChevronLeft, ChevronRight, Calendar, CheckCircle2, XCircle, X, Eye, Eye
 import api from '../src/utils/api';
 import { extractPayload, ensureArray } from '../src/utils/api';
 import { format, isBefore } from 'date-fns';
+import { isAdminOrPc } from '../utils/roleUtils';
 
 interface AttendanceSheetProps {
   employees: Employee[];
@@ -17,6 +18,7 @@ interface AttendanceSheetProps {
   setSundayRequests: React.Dispatch<React.SetStateAction<SundayRequest[]>>;
   currentUser: User;
   archivedEmployees?: Employee[];
+  users?: User[];
 }
 
 interface CellCoord {
@@ -38,7 +40,8 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
   sundayRequests,
   setSundayRequests,
   currentUser,
-  archivedEmployees = []
+  archivedEmployees = [],
+  users = []
 }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [showRequestsModal, setShowRequestsModal] = useState(false);
@@ -81,6 +84,10 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
     const combined = [...active, ...filteredArchived].sort((a, b) => a.id.localeCompare(b.id));
 
     return combined.filter(emp => {
+      // 0. Exclude users with ADMIN or PC role
+      if (isAdminOrPc(emp, users)) {
+        return false;
+      }
       // 1. Hide attendance filter for non-admin or hidden employees
       if (!showHidden && emp.hideAttendance && !(currentUser && currentUser.role === 'ADMIN' && currentUser.employeeId === emp.id)) {
         return false;
@@ -101,9 +108,14 @@ export const AttendanceSheetComponent: React.FC<AttendanceSheetProps> = ({
       }
       return true;
     });
-  }, [employees, archivedEmployees, year, month, showHidden, currentUser, searchQuery]);
+  }, [employees, archivedEmployees, year, month, showHidden, currentUser, searchQuery, users]);
 
-  const pendingRequests = useMemo(() => sundayRequests.filter(r => r.status === 'PENDING'), [sundayRequests]);
+  const pendingRequests = useMemo(() => sundayRequests.filter(r => {
+    if (r.status !== 'PENDING') return false;
+    const reqEmp = employees.find(e => e.id === r.employeeId);
+    if (reqEmp && isAdminOrPc(reqEmp, users)) return false;
+    return true;
+  }), [sundayRequests, employees, users]);
 
   // Toast notification helper
   const showToast = useCallback((text: string, type: 'success' | 'info' = 'success') => {

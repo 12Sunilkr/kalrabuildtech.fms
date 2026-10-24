@@ -358,14 +358,16 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                             </button>
                         </div>
 
-                        {/* Quick Task Creator */}
-                        <div className="p-4 border-b bg-white">
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Create Task for {format(selectedDate, 'MMM d')}</label>
-                            <div className="flex gap-2">
-                                <input value={quickTaskTitle} onChange={e => setQuickTaskTitle(e.target.value)} placeholder="Task title" className="flex-1 border p-2 rounded-xl" />
-                                <button onClick={handleCreateQuickTask} className="px-4 py-2 bg-indigo-600 text-white rounded-xl">Create</button>
+                        {/* Quick Task Creator (Employees only) */}
+                        {currentUser.role !== 'ADMIN' && currentUser.role !== 'PC' && (
+                            <div className="p-4 border-b bg-white">
+                                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Create Task for {format(selectedDate, 'MMM d')}</label>
+                                <div className="flex gap-2">
+                                    <input value={quickTaskTitle} onChange={e => setQuickTaskTitle(e.target.value)} placeholder="Task title" className="flex-1 border p-2 rounded-xl" />
+                                    <button onClick={handleCreateQuickTask} className="px-4 py-2 bg-indigo-600 text-white rounded-xl">Create</button>
+                                </div>
                             </div>
-                        </div>
+                        )}
 
                         <div className="p-6 overflow-y-auto space-y-4">
                             {getEventsForDate(selectedDate).length === 0 ? (

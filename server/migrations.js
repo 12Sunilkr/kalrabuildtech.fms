@@ -344,7 +344,8 @@ export async function runMigrations({ db, dbFile }) {
     address: 'TEXT',
     documents: 'TEXT',
     hideAttendance: 'INTEGER DEFAULT 0',
-    compOffBalance: 'REAL DEFAULT 0'
+    compOffBalance: 'REAL DEFAULT 0',
+    employmentType: "TEXT DEFAULT 'Full Time'"
   });
 
   // Add leave-specific columns

@@ -26,6 +26,7 @@ export interface Employee {
   employmentType?: string;
   is_archived?: number;
   archived_at?: string;
+  role?: Role;
 }
 
 export type Role = 'ADMIN' | 'EMPLOYEE' | 'SUPER_ADMIN' | 'PC';

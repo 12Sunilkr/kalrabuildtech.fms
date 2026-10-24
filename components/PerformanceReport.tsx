@@ -1,9 +1,10 @@
 
-import React, { useState } from 'react';
-import { Employee, Task, AttendanceRecord, ChecklistInstance, ChecklistTemplate, TimeLog } from '../types';
+import React, { useState, useMemo } from 'react';
+import { Employee, Task, AttendanceRecord, ChecklistInstance, ChecklistTemplate, TimeLog, User } from '../types';
 import { BarChart, Printer, UserCircle, CalendarCheck, ClipboardList, AlertTriangle, Filter, X, Calendar, CheckCircle, AlertCircle, Pause, XOctagon, ListChecks, Clock, ArrowLeft, TrendingUp } from 'lucide-react';
 import { format, isPast } from 'date-fns';
 import { COMPANY_LOGO } from '../constants';
+import { isAdminOrPc } from '../utils/roleUtils';
 
 interface PerformanceReportProps {
  employees: Employee[];
@@ -12,6 +13,7 @@ interface PerformanceReportProps {
  checklistInstances?: ChecklistInstance[];
  checklistTemplates?: ChecklistTemplate[];
  timeLogs?: Record<string, Record<string, TimeLog[]>>;
+ users?: User[];
 }
 
 // ── Exact mirror of TaskManager's getDisplayStatus ──────────────────────────
@@ -69,9 +71,13 @@ const getStatusBadgeColor = (status: string) => {
  }
 };
 
-const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData, checklistInstances = [], checklistTemplates = [], timeLogs = {} }) => {
+const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employees, tasks, attendanceData, checklistInstances = [], checklistTemplates = [], timeLogs = {}, users = [] }) => {
  const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
  const [printMode, setPrintMode] = useState(false);
+
+ const reportEmployees = useMemo(() => {
+  return employees.filter(emp => !isAdminOrPc(emp, users));
+ }, [employees, users]);
 
  // Date Filters
  const [fromDate, setFromDate] = useState('');
@@ -350,7 +356,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  setToDate('');
  };
 
- const selectedEmployee = employees.find(e => e.id === selectedEmpId);
+ const selectedEmployee = reportEmployees.find(e => e.id === selectedEmpId);
  const selectedStats = selectedEmployee ? getEmployeeStats(selectedEmployee.id) : null;
  const attendanceStats = selectedEmployee ? getAttendanceStats(selectedEmployee.id) : null;
  const checklistStats = selectedEmployee ? getChecklistStats(selectedEmployee.id) : null;
@@ -750,7 +756,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  }
  }
  `}</style>
- {employees.map((emp, index) => {
+ {reportEmployees.map((emp, index) => {
  const stats = getEmployeeStats(emp.id);
  const att = getAttendanceStats(emp.id);
  const checkStats = getChecklistStats(emp.id);
@@ -790,7 +796,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  const incompleteCombined = (stats.total - stats.completed) + (checkStats.total - checkStats.completed);
  const bulkCombinedScore = totalCombined > 0 ? Math.round((incompleteCombined / totalCombined) * 100) : 0;
 
- const isLast = index === employees.length - 1;
+ const isLast = index === reportEmployees.length - 1;
 
  return (
  <div key={emp.id} className={`print-container ${isLast ? '' : 'print:break-after-page'} p-8 bg-white text-slate-900 border-none shadow-none`}>
@@ -1014,7 +1020,7 @@ const PerformanceReportComponent: React.FC<PerformanceReportProps> = ({ employee
  </div>
 
  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
- {employees.map(emp => {
+ {reportEmployees.map(emp => {
  const stats = getEmployeeStats(emp.id);
  const checkStats = getChecklistStats(emp.id);
  

@@ -7,9 +7,11 @@ import {
     Filter, Search, ChevronLeft, ChevronRight, CheckCheck, Circle,
     BarChart3, TrendingUp, Users, AlertTriangle, Zap, Pencil, Save,
     BookOpen, ThumbsUp, ThumbsDown, MessageSquare, CalendarClock, ArrowRightLeft,
-    Play, Pause
+    Play, Pause, Archive
 } from 'lucide-react';
 import { format, addDays, addMonths, addYears, addWeeks, isSunday, isBefore, getDay } from 'date-fns';
+import { isAdminOrPc } from '../utils/roleUtils';
+import { applyTransferToInstances } from '../utils/checklistUtils';
 
 interface ChecklistSystemProps {
     templates: ChecklistTemplate[];
@@ -20,6 +22,7 @@ interface ChecklistSystemProps {
     employees: Employee[];
     holidays: Holiday[];
     addNotification: (title: string, msg: string, type: Notification['type'], targetUser: string) => void;
+    users?: User[];
 }
 
 // ─── tiny helpers ────────────────────────────────────────────────────────────
@@ -107,8 +110,12 @@ const Avatar: React.FC<{ name: string; size?: number; className?: string }> = ({
 // ─── main component ───────────────────────────────────────────────────────────
 
 const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
-    templates, setTemplates, instances, setInstances, currentUser, employees, holidays, addNotification
+    templates, setTemplates, instances, setInstances, currentUser, employees, holidays, addNotification, users = []
 }) => {
+    const assignableEmployees = useMemo(() => {
+        return employees.filter(emp => !isAdminOrPc(emp, users));
+    }, [employees, users]);
+
     const getEmployeeName = useCallback((id: string | number | undefined) => {
         if (!id) return '';
         const emp = employees.find(e => String(e.id) === String(id));
@@ -283,8 +290,15 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                             rows.forEach((it: any) => {
                                 try {
                                     const p = JSON.parse(it.item);
-                                    const status = it.done ? 'COMPLETED' : (p.status ?? 'PENDING');
-                                    if (tpl.active === false && status === 'PENDING') return;
+                                    let status = it.done ? 'COMPLETED' : (p.status ?? 'PENDING');
+                                    // If routine is inactive or task date is before the template's active start date, uncompleted task is STOPPED (dead)
+                                    if (status === 'PENDING') {
+                                        if (tpl.active === false) {
+                                            status = 'STOPPED';
+                                        } else if (tpl.startDate && p.date && p.date < tpl.startDate) {
+                                            status = 'STOPPED';
+                                        }
+                                    }
 
                                     // Skip daily checklist tasks on holidays/Sundays
                                     if (tpl.config?.frequency === 'DAILY' && status === 'PENDING' && p.date) {
@@ -304,11 +318,14 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                         taskName: p.taskName ?? tpl.taskName,
                                         templateId: String(tpl.id),
                                         status: status,
+                                        stoppedReason: status === 'STOPPED' ? (p.stoppedReason || (tpl.active === false ? 'Routine stopped/paused' : 'Routine stopped/hiatus before resumption')) : p.stoppedReason,
                                         completedDate: p.completedDate,
                                     });
                                 } catch {
-                                    const status = it.done ? 'COMPLETED' : 'PENDING';
-                                    if (tpl.active === false && status === 'PENDING') return;
+                                    let status = it.done ? 'COMPLETED' : 'PENDING';
+                                    if (tpl.active === false && status === 'PENDING') {
+                                        status = 'STOPPED';
+                                    }
 
                                     const dateStr = it.item; // Fallback string representation
                                     // Skip daily checklist tasks on holidays/Sundays
@@ -396,6 +413,10 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
     const handleCreateTemplate = () => {
         if (!newTemplate.taskName || !newTemplate.doerId || !newTemplate.startDate) {
             alert('Task Name, Assignee, and Start Date are required.');
+            return;
+        }
+        if (isAdminOrPc(newTemplate.doerId, users) || (newTemplate.buddyId && isAdminOrPc(newTemplate.buddyId, users))) {
+            alert('Cannot assign checklist routines to Admin or PC roles.');
             return;
         }
         setIsProcessing(true);
@@ -501,6 +522,21 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         const instance = instances.find(i => i.id === id);
         if (!instance || instance.status !== 'STOPPED' || markingIds.has(id)) return;
 
+        const tpl = templates.find(t => String(t.id) === String(instance.templateId));
+        if (tpl && tpl.active === false) {
+            const isStoppedDueToArchive = (tpl as any).stoppedDueToArchive || !employees.some(e => String(e.id) === String(tpl.doerId) && e.status === 'Active');
+            if (isStoppedDueToArchive) {
+                const oldName = employees.find(e => String(e.id) === String(tpl.doerId))?.name || (tpl as any).archivedMemberName || tpl.doerId;
+                alert(`This routine was stopped because assignee "${oldName}" is archived.\n\nPlease assign an active team member and set the effective start date to continue this routine.`);
+                handleOpenEditFreq(tpl);
+                return;
+            }
+            if (confirm(`This routine ("${tpl.taskName}") is currently stopped. Continue and resume generating tasks starting from TODAY?`)) {
+                await handleToggleActive(tpl);
+                return;
+            }
+        }
+
         if (!dbId) {
             console.warn('No dbId for', id);
             alert('Hold on! The system is still syncing this task with the server. Please wait a moment and refresh before trying again.');
@@ -564,6 +600,10 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         reason: string
     ) => {
         if (!reason.trim()) { alert('Please enter a reason before submitting.'); return; }
+        if (targetDoerId && isAdminOrPc(targetDoerId, users)) {
+            alert('Cannot transfer checklist tasks to Admin or PC roles.');
+            return;
+        }
         const instance = instances.find(i => i.id === id);
         if (!instance || instance.status !== 'PENDING') return;
 
@@ -768,6 +808,10 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             alert('Please select an employee to transfer the task to.');
             return;
         }
+        if (isAdminOrPc(targetDoerId, users)) {
+            alert('Cannot transfer checklist tasks to Admin or PC roles.');
+            return;
+        }
 
         const instance = instances.find(i => i.id === id);
         if (!instance) return;
@@ -877,25 +921,56 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
     };
 
     const handleToggleActive = async (tpl: ChecklistTemplate) => {
+        const isStoppedDueToArchive = (tpl as any).stoppedDueToArchive || !employees.some(e => String(e.id) === String(tpl.doerId) && e.status === 'Active');
+        if (tpl.active === false && isStoppedDueToArchive) {
+            const oldName = employees.find(e => String(e.id) === String(tpl.doerId))?.name || (tpl as any).archivedMemberName || tpl.doerId;
+            alert(`This routine was stopped because assignee "${oldName}" is archived.\n\nPlease assign an active team member and set the effective start date to continue this routine.`);
+            handleOpenEditFreq(tpl);
+            return;
+        }
+
         const newActive = tpl.active === false ? true : false;
-        if (!newActive && !confirm('Stop this routine? All future pending tasks will be hidden, but past completed/stopped tasks will remain.')) return;
-        if (newActive && !confirm('Reactivate this routine? The routine will resume generating tasks. You may need to refresh the page to see new tasks.')) return;
+        if (!newActive && !confirm('Stop this routine? All future pending tasks will be hidden from today, but past completed/stopped tasks will remain.')) return;
+        if (newActive && !confirm('Continue/Reactivate this routine? The routine will start generating tasks from TODAY onwards.')) return;
 
         try {
-            const updated = { ...tpl, active: newActive };
+            const todayStr = format(new Date(), 'yyyy-MM-dd');
+            // When reactivating/continuing, start from TODAY!
+            const updated: ChecklistTemplate = newActive
+                ? { ...tpl, active: true, startDate: todayStr }
+                : { ...tpl, active: false };
+
             await api.put(`/checklist-templates/${encodeURIComponent(tpl.id)}`, updated, { withCredentials: true });
             setTemplates(prev => prev.map(t => t.id === tpl.id ? updated : t));
 
             if (!newActive) {
-                setInstances(prev => prev.filter(i => !(String(i.templateId) === String(tpl.id) && i.status === 'PENDING')));
+                // When stopping a routine, mark pending instances as STOPPED (dead)
+                setInstances(prev => prev.map(i => {
+                    if (String(i.templateId) === String(tpl.id) && i.status === 'PENDING') {
+                        return { ...i, status: 'STOPPED' as const, stoppedReason: 'Routine stopped/paused' };
+                    }
+                    return i;
+                }));
             } else {
+                // When continuing/reactivating, in-between tasks before todayStr must be marked STOPPED (dead)
                 const newInsts = generateInstances(updated);
-                setInstances(prev => [...prev, ...newInsts]);
+                setInstances(prev => {
+                    const markedHiatus = prev.map(i => {
+                        if (String(i.templateId) === String(tpl.id) && i.status === 'PENDING' && i.date < todayStr) {
+                            return { ...i, status: 'STOPPED' as const, stoppedReason: 'Routine stopped/hiatus before resumption' };
+                        }
+                        return i;
+                    });
+                    return [
+                        ...markedHiatus.filter(i => !(String(i.templateId) === String(tpl.id) && i.status === 'PENDING' && i.date >= todayStr)),
+                        ...newInsts
+                    ];
+                });
                 if (newInsts.length > 0) {
-                    safePost('/checklists/bulk', {
+                    await safePost('/checklists/bulk', {
                         replace: true,
                         items: newInsts.map(i => ({ refId: tpl.id, refType: 'TEMPLATE_INSTANCE', item: JSON.stringify(i) }))
-                    }).catch(console.error);
+                    });
                 }
             }
         } catch (err) {
@@ -918,6 +993,10 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
     const handleSaveFrequency = async () => {
         if (!editingTemplate) return;
         if (!editConfig.startDate) { alert('Please select a start date.'); return; }
+        if (isAdminOrPc(editDoerId, users)) {
+            alert('Cannot assign checklist routines to Admin or PC roles.');
+            return;
+        }
         setIsSavingFreq(true);
         try {
             const updatedConfig = {
@@ -926,6 +1005,14 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                 particularDateType: editConfig.frequency === 'PARTICULAR-DATE' ? editConfig.particularDateType : undefined,
             };
             const newDept = employees.find(e => String(e.id) === String(editDoerId))?.department || editingTemplate.department;
+
+            // When transferring or editing a stopped routine, reactivate it so new tasks are raised!
+            const shouldReactivate = true;
+            const isTransferredOrReactivated = (editDoerId !== editingTemplate.doerId) || !editingTemplate.active;
+
+            // When transferring or editing a stopped routine, start from the effective transfer date
+            const effectiveStartDate = isTransferredOrReactivated ? transferEffectiveDate : editConfig.startDate;
+
             // Patch the template on the server
             await api.put(
                 `/checklist-templates/${encodeURIComponent(editingTemplate.id)}`,
@@ -934,10 +1021,10 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                     doerId: editDoerId,
                     buddyId: editingTemplate.buddyId,
                     department: newDept,
-                    startDate: editConfig.startDate,
+                    startDate: effectiveStartDate,
                     config: updatedConfig,
-                    active: editingTemplate.active,
-                    transferEffectiveDate: editDoerId !== editingTemplate.doerId ? transferEffectiveDate : undefined,
+                    active: shouldReactivate,
+                    transferEffectiveDate: isTransferredOrReactivated ? transferEffectiveDate : undefined,
                 },
                 { withCredentials: true }
             );
@@ -946,18 +1033,42 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             const updatedTpl: ChecklistTemplate = { 
                 ...editingTemplate, 
                 config: updatedConfig, 
-                startDate: editConfig.startDate,
+                startDate: effectiveStartDate,
                 doerId: editDoerId,
-                department: newDept
+                department: newDept,
+                active: shouldReactivate,
             };
+            if (shouldReactivate) {
+                delete (updatedTpl as any).stoppedDueToArchive;
+                delete (updatedTpl as any).archivedAt;
+                delete (updatedTpl as any).archivedMemberName;
+            }
             setTemplates(prev => prev.map(t => t.id === updatedTpl.id ? updatedTpl : t));
+
+            // Update local instances:
+            // In-between stopped tasks (< transferEffectiveDate) stay STOPPED for the old user.
+            // Future tasks (>= transferEffectiveDate) become PENDING for the new user.
+            if (isTransferredOrReactivated) {
+                setInstances(prev => applyTransferToInstances({
+                    instances: prev,
+                    templateId: String(updatedTpl.id),
+                    oldDoerId: editingTemplate.doerId,
+                    newDoerId: editDoerId,
+                    newDepartment: newDept,
+                    transferEffectiveDate: transferEffectiveDate,
+                    reactivate: shouldReactivate,
+                }));
+            }
 
             const freqOrStartChanged = editConfig.frequency !== editingTemplate.config.frequency || editConfig.startDate !== editingTemplate.startDate;
 
             if (freqOrStartChanged) {
-                // Remove all PENDING instances for this template, regenerate with new frequency + date
-                setInstances(prev => prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.status === 'PENDING')));
-                const newInsts = generateInstances(updatedTpl);
+                // Remove future pending/stopped instances for this template from transferEffectiveDate onwards, regenerate with new frequency + date
+                const newInsts = generateInstances({ ...updatedTpl, startDate: transferEffectiveDate });
+                setInstances(prev => {
+                    const filtered = prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.date >= transferEffectiveDate && i.status !== 'COMPLETED'));
+                    return [...filtered, ...newInsts];
+                });
 
                 // Bulk-save new instances to DB (fire and forget)
                 safePost('/checklists/bulk', {
@@ -969,14 +1080,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                     }))
                 }).then(() => setRefreshTrigger(prev => prev + 1))
                   .catch(e => console.warn('[Checklist] Regen bulk save failed:', e));
-            } else if (editDoerId !== editingTemplate.doerId) {
-                // Assignee transferred, update future pending instances locally
-                setInstances(prev => prev.map(i => {
-                    if (String(i.templateId) === String(updatedTpl.id) && i.status === 'PENDING' && i.date >= transferEffectiveDate) {
-                        return { ...i, doerId: editDoerId, department: newDept };
-                    }
-                    return i;
-                }));
+            } else {
                 setRefreshTrigger(prev => prev + 1);
             }
 
@@ -1586,7 +1690,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                             className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all shadow-xs"
                                         >
                                             <option value="">Keep Assigned / Just Request Excuse/Reschedule</option>
-                                            {employees.filter(emp => String(emp.id) !== String(instance?.doerId)).map(emp => (
+                                            {assignableEmployees.filter(emp => String(emp.id) !== String(instance?.doerId)).map(emp => (
                                                 <option key={emp.id} value={emp.id}>
                                                     {emp.name} {emp.department ? `(${emp.department})` : ''} {emp.designation ? `• ${emp.designation}` : ''}
                                                 </option>
@@ -1933,7 +2037,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                             className="w-full pl-10 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 transition-all shadow-xs"
                                         >
                                             <option value="" disabled>Select Target Employee...</option>
-                                            {employees.map(emp => (
+                                            {assignableEmployees.map(emp => (
                                                 <option key={emp.id} value={emp.id}>
                                                     {emp.name} {emp.department ? `(${emp.department})` : ''} {emp.designation ? `• ${emp.designation}` : ''}
                                                 </option>
@@ -2451,7 +2555,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                                 onChange={e => setCompletedLeadId(e.target.value)}
                                             >
                                                 <option value="ALL">All Members</option>
-                                                {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                                                {assignableEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                                             </select>
                                         )}
                                         <select
@@ -2576,7 +2680,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                                 onChange={e => setMonitorLeadId(e.target.value)}
                                             >
                                                 <option value="ALL">All Members</option>
-                                                {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                                                {assignableEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                                             </select>
                                         )}
                                         <select
@@ -2925,6 +3029,11 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                                                     {t.taskName}
                                                                 </h4>
                                                             </div>
+                                                            {(t as any).stoppedDueToArchive && (
+                                                                <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                                                                    <Archive size={10}/> Stopped: Archived Member ({(t as any).archivedMemberName || t.doerId})
+                                                                </span>
+                                                            )}
                                                             <span className="font-mono-jb text-[9px] font-bold text-slate-400 block">{t.id}</span>
                                                         </div>
                                                         
@@ -3030,20 +3139,32 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                     value={editDoerId}
                                     onChange={e => setEditDoerId(e.target.value)}
                                 >
-                                    {employees.map(emp => (
+                                    {assignableEmployees.map(emp => (
                                         <option key={emp.id} value={emp.id}>{emp.name} ({emp.designation || emp.department})</option>
                                     ))}
                                 </select>
                             </div>
 
-                            {editDoerId !== editingTemplate.doerId && (
+                            {(editingTemplate.active === false || (editingTemplate as any).stoppedDueToArchive) && (
+                                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 text-xs text-amber-800 flex items-start gap-2.5">
+                                    <Archive size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                                    <div>
+                                        <p className="font-bold">Routine Currently Stopped</p>
+                                        <p className="text-[11px] text-amber-700 mt-0.5 leading-relaxed">
+                                            Assigning an active team member and saving will transfer and resume this routine starting from the <strong>Transfer Effective Date</strong>. Past in-between tasks will remain recorded as stopped without KPI penalty.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {(editDoerId !== editingTemplate.doerId || editingTemplate.active === false || (editingTemplate as any).stoppedDueToArchive) && (
                                 <div className="bg-gradient-to-r from-violet-50 via-indigo-50 to-purple-50 border border-indigo-200/80 rounded-2xl p-4 space-y-3 shadow-xs">
                                     <div className="flex items-center justify-between">
                                         <label className="block text-[11px] font-black text-indigo-700 uppercase tracking-wider flex items-center gap-1.5">
                                             <CalendarClock size={14} className="text-indigo-600" /> Transfer Effective Date *
                                         </label>
                                         <span className="text-[10px] bg-indigo-600 text-white font-extrabold px-2.5 py-0.5 rounded-full shadow-xs">
-                                            Reassignment Mode
+                                            {editingTemplate.active === false ? 'Resume & Transfer' : 'Reassignment Mode'}
                                         </span>
                                     </div>
 
@@ -3058,7 +3179,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
 
                                     <div className="flex items-start gap-2 text-[11px] text-indigo-800/90 font-medium leading-relaxed bg-white/80 p-2.5 rounded-xl border border-indigo-100/80">
                                         <Info size={14} className="text-indigo-600 shrink-0 mt-0.5" />
-                                        <span>All pending routine instances from <strong className="font-mono text-indigo-900">{transferEffectiveDate || 'selected date'}</strong> onwards will be transferred to the new assignee. Past completed logs remain unchanged.</span>
+                                        <span>All routine instances from <strong className="font-mono text-indigo-900">{transferEffectiveDate || 'selected date'}</strong> onwards will be transferred to the new assignee and activated. Past in-between stopped logs remain preserved with no KPI impact.</span>
                                     </div>
                                 </div>
                             )}
@@ -3183,7 +3304,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                         onChange={e => setNewTemplate({ ...newTemplate, doerId: e.target.value })}
                                     >
                                         <option value="">— Select Lead —</option>
-                                        {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                                        {assignableEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                                     </select>
                                 </div>
                                 <div className="space-y-1.5">
@@ -3194,7 +3315,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                                         onChange={e => setNewTemplate({ ...newTemplate, buddyId: e.target.value })}
                                     >
                                         <option value="">— Select Buddy —</option>
-                                        {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                                        {assignableEmployees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                                     </select>
                                 </div>
                                 <div className="space-y-1.5">

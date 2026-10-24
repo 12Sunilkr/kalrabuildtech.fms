@@ -1,11 +1,12 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Task, TaskStatus, Employee, User, Notification, ExtensionRequest } from '../types';
 import { format, isPast, differenceInHours } from 'date-fns';
-import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronLeft, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw, Users, ArrowRightLeft, XCircle, Layers } from 'lucide-react';
+import { ClipboardList, Plus, Clock, CheckCircle2, AlertTriangle, AlertCircle, Calendar, User as UserIcon, Upload, X, Ban, PauseCircle, ChevronLeft, ChevronRight, FileText, Trash2, MoreVertical, Search, MessageSquare, Download, Sparkles, Link, RefreshCw, Users, ArrowRightLeft, XCircle, Layers, Archive } from 'lucide-react';
 
 import { convertFileToBase64 } from '../utils/fileHelper';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, safeGetSwr } from '../src/utils/api';
+import { isAdminOrPc } from '../utils/roleUtils';
 
 const extractPayload = apiExtractPayload;
 const ensureArray = apiEnsureArray;
@@ -19,10 +20,11 @@ interface TaskManagerProps {
   employees: Employee[];
   archivedEmployees?: Employee[];
   addNotification: (title: string, msg: string, type: Notification['type'], targetUser: string) => void;
+  users?: User[];
 }
 
-const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, archivedEmployees = [], addNotification }) => {
-  const [activeTab, setActiveTab] = useState<'ALL' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS' | 'TERMINATE' | 'REJECT'>('ALL');
+const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, currentUser, employees, archivedEmployees = [], addNotification, users = [] }) => {
+  const [activeTab, setActiveTab] = useState<'ALL' | 'TODAY' | 'PENDING' | 'HOLD' | 'COMPLETED' | 'OVERDUE' | 'OBJECTIONS' | 'TERMINATE' | 'REJECT'>('ALL');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState<string | null>(null); // Task ID
   const [showObjectionModal, setShowObjectionModal] = useState<string | null>(null); // Task ID
@@ -60,6 +62,11 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   const canSeeAllTasks = currentUser.role === 'ADMIN' || currentUser.role === 'PC';
   const isAdmin = currentUser.role === 'ADMIN';
   const isPC = currentUser.role === 'PC';
+
+  const effectiveUsers = usersList.length ? usersList : users;
+  const assignableEmployees = useMemo(() => {
+    return employees.filter(emp => !(emp as any).is_archived && !isAdminOrPc(emp, effectiveUsers));
+  }, [employees, effectiveUsers]);
 
   // Close mobile menu when clicking outside
   useEffect(() => {
@@ -117,6 +124,43 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   // Helper: consider tasks with completionDate as completed
   const isTaskCompleted = (task: Task) => {
     return !!task.completionDate || (task.status || '').toUpperCase() === 'COMPLETED';
+  };
+
+  // Helper to check if a date string matches today (handles YYYY-MM-DD, ISO, etc. reliably without timezone shift)
+  const isDateToday = (dateStr?: string | null): boolean => {
+    if (!dateStr) return false;
+    try {
+      const today = new Date();
+      const todayY = today.getFullYear();
+      const todayM = today.getMonth();
+      const todayD = today.getDate();
+
+      const trimmed = String(dateStr).trim();
+      const datePart = trimmed.split('T')[0].split(' ')[0];
+      const parts = datePart.split('-');
+      if (parts.length === 3) {
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        const d = parseInt(parts[2], 10);
+        if (y === todayY && m === todayM && d === todayD) return true;
+      }
+
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        return (
+          parsed.getFullYear() === todayY &&
+          parsed.getMonth() === todayM &&
+          parsed.getDate() === todayD
+        );
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  };
+
+  const isTaskForToday = (task: Task): boolean => {
+    return isDateToday(task.dueDate) || (isTaskCompleted(task) && isDateToday(task.completionDate));
   };
 
   // --- Fetch tasks using stale-while-revalidate for instant loading ---
@@ -259,6 +303,14 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   }) => {
     setIsLoading(true);
     setError(null);
+
+    const effUsers = usersList.length ? usersList : users;
+    if (isAdminOrPc(payload.assignedTo, effUsers)) {
+      setError('Cannot assign tasks to Admin or PC members.');
+      setIsLoading(false);
+      return;
+    }
+
     try {
       const serverPayload: any = {
         title: payload.title,
@@ -413,6 +465,13 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   }) => {
     if (!showEditModal) return;
     const targetId = showEditModal;
+
+    const effUsers = usersList.length ? usersList : users;
+    if (payload.assignedTo && isAdminOrPc(payload.assignedTo, effUsers)) {
+      setError('Cannot assign tasks to Admin or PC members.');
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     try {
@@ -599,14 +658,17 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     return new Set((archivedEmployees || []).map(e => String(e.id).trim()));
   }, [archivedEmployees]);
 
-  const { relevantTasks, filteredTasks, counts } = React.useMemo(() => {
+  const { relevantTasks, filteredTasks, memberFilteredTasks, counts } = React.useMemo(() => {
     const relevant = safeTasks.filter(t => {
       const assignedToId = (t.assignedTo || t.assignedToEmployeeId || '').toString().trim();
       const assignedByName = (t.assignedBy || t.assignedByName || '').toString().trim();
 
-      // Exclude tasks assigned to employees who are currently archived
+      // For tasks assigned to archived employees:
+      // Allow them if task is on HOLD, or if user is Admin/PC (so they appear in the Hold section)
       if (assignedToId && archivedEmpIdSet.has(assignedToId)) {
-        return false;
+        if (!canSeeAllTasks && t.status !== 'HOLD') {
+          return false;
+        }
       }
 
       const matchesAssignedTo = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
@@ -626,7 +688,9 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
 
     // 1. Tab Filter
     let matchesTab = true;
-    if (activeTab === 'PENDING') {
+    if (activeTab === 'TODAY') {
+      matchesTab = isTaskForToday(t);
+    } else if (activeTab === 'PENDING') {
       // Pending tab should show only tasks with status 'PENDING' (exclude HOLD/EXTENSION_REQUESTED)
       matchesTab = (displayStatus === 'PENDING');
     } else if (activeTab === 'HOLD') {
@@ -667,7 +731,8 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
 
     // 2. Search Filter (Text)
     const term = searchTerm.toLowerCase();
-    const assigneeEmp = employees.find(e => e.id === (t.assignedTo || (t as any).assignedToEmployeeId || ''));
+    const assigneeEmp = employees.find(e => e.id === (t.assignedTo || (t as any).assignedToEmployeeId || '')) ||
+      (archivedEmployees || []).find(e => e.id === (t.assignedTo || (t as any).assignedToEmployeeId || ''));
     const assigneeName = assigneeEmp ? (assigneeEmp.name || '').toLowerCase() : '';
     const assignedByName = (t.assignedByName || '').toString().toLowerCase();
     const matchesSearch =
@@ -726,6 +791,7 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
     : relevant;
 
   const totalCount = memberFilteredTasks.length;
+  const todayCount = memberFilteredTasks.filter(t => isTaskForToday(t)).length;
   const pendingCount = memberFilteredTasks.filter(t => getDisplayStatus(t) === 'PENDING').length;
   const holdCount = memberFilteredTasks.filter(t => getDisplayStatus(t) === 'HOLD' || t.status === 'HOLD').length;
   const completedCount = memberFilteredTasks.filter(t => {
@@ -755,11 +821,12 @@ const TaskManagerComponent: React.FC<TaskManagerProps> = ({ tasks, setTasks, cur
   return { 
     relevantTasks: relevant, 
     filteredTasks: filtered, 
-    counts: { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } 
+    memberFilteredTasks,
+    counts: { totalCount, todayCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } 
   };
 }, [safeTasks, activeTab, searchTerm, searchDateFrom, searchDateTo, selectedMemberId, isAdmin, currentUser.employeeId, currentUser.id, currentUser.name, employees, archivedEmpIdSet]);
 
-const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } = counts;
+const { totalCount, todayCount, pendingCount, holdCount, completedCount, overdueCount, objectionCount, terminateCount, rejectCount } = counts;
 
   // Memoize sorted tasks list (newest first)
   const sortedTasks = React.useMemo(() => {
@@ -976,6 +1043,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
         <div className="flex gap-1.5 md:gap-2 overflow-x-auto pb-1 md:pb-4 w-full bg-white/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl border border-slate-100 backdrop-blur-sm" style={{ scrollbarWidth: 'none' }}>
           {[
             { id: 'ALL', label: 'All', count: totalCount, icon: Layers },
+            { id: 'TODAY', label: 'Today', count: todayCount, icon: Calendar },
             { id: 'PENDING', label: 'Pending', count: pendingCount, icon: Clock },
             { id: 'HOLD', label: 'Hold', count: holdCount, icon: PauseCircle },
             { id: 'COMPLETED', label: 'Done', count: completedCount, icon: CheckCircle2 },
@@ -1031,19 +1099,38 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                 className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm transition-all text-sm font-semibold text-primary appearance-none"
               >
                 <option value="ALL">All Members ({relevantTasks.length})</option>
-                {employees
-                  .filter(e => e.status === 'Active')
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map(e => {
-                    const count = relevantTasks.filter(t =>
-                      (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === e.id
-                    ).length;
-                    return (
-                      <option key={e.id} value={e.id}>
-                        {e.name} ({count})
-                      </option>
-                    );
-                  })}
+                <optgroup label="Active Team">
+                  {employees
+                    .filter(e => e.status === 'Active' && !isAdminOrPc(e, effectiveUsers))
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map(e => {
+                      const count = relevantTasks.filter(t =>
+                        (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === e.id
+                      ).length;
+                      return (
+                        <option key={e.id} value={e.id}>
+                          {e.name} ({count})
+                        </option>
+                      );
+                    })}
+                </optgroup>
+                {archivedEmployees && archivedEmployees.length > 0 && (
+                  <optgroup label="Archived Members">
+                    {archivedEmployees
+                      .filter(e => relevantTasks.some(t => (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === e.id))
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map(e => {
+                        const count = relevantTasks.filter(t =>
+                          (t.assignedTo || (t as any).assignedToEmployeeId || '').toString() === e.id
+                        ).length;
+                        return (
+                          <option key={e.id} value={e.id}>
+                            {e.name} (Archived) ({count})
+                          </option>
+                        );
+                      })}
+                  </optgroup>
+                )}
               </select>
               {selectedMemberId !== 'ALL' && (
                 <button
@@ -1119,7 +1206,9 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
               const displayStatus = getDisplayStatus(task);
               const isTaskOverdue = displayStatus === 'OVERDUE';
               const assignedToId = (task.assignedTo || (task as any).assignedToEmployeeId || '').toString();
-              const assignedEmp = employees.find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || ''));
+              const assignedEmp = employees.find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || '')) ||
+                (archivedEmployees || []).find(e => e.id === (task.assignedTo || task.assignedToEmployeeId || ''));
+              const isArchivedMember = archivedEmpIdSet.has(assignedToId) || Boolean(task.statusNote && task.statusNote.includes('Archived Member:'));
               const isCreator = (task.assignedBy === currentUser.name) || (task.assignedBy === currentUser.employeeId) || (String(task.assignedBy) === String(currentUser.id)) || (task.assignedByName === currentUser.name);
               const isAssignee = assignedToId && currentUser.employeeId && assignedToId === currentUser.employeeId.toString();
               const isNew = isNewTask(task.createdDate);
@@ -1163,6 +1252,11 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                         <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${getStatusColor(displayStatus)}`}>
                           {displayStatus.replace('_', ' ')}
                         </span>
+                        {isArchivedMember && (
+                          <span className="flex items-center gap-1 bg-amber-50 text-amber-800 px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border border-amber-300 shadow-sm">
+                            <Archive size={11} /> Archived Member: {assignedEmp?.name || task.assignedTo}
+                          </span>
+                        )}
                       </div>
 
                       <h3 className="text-xl font-bold text-slate-800 mb-2">{task.title}</h3>
@@ -1198,7 +1292,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
                         </div>
                         <div className="flex items-center gap-2">
                           <UserIcon size={16} className="text-slate-400" />
-                          <span className="font-medium">To: <span className="text-slate-700">{assignedEmp?.name || task.assignedToName || task.assignedTo}</span></span>
+                          <span className="font-medium">To: <span className="text-slate-700">{assignedEmp ? (archivedEmpIdSet.has(assignedEmp.id) ? `${assignedEmp.name} (Archived)` : assignedEmp.name) : (task.assignedToName || task.assignedTo)}</span></span>
                         </div>
                         <div className="flex items-center gap-2">
                           <Calendar size={16} className="text-slate-400" />
@@ -1419,7 +1513,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
       <AssignTaskModal
         isOpen={showAssignModal}
         onClose={() => setShowAssignModal(false)}
-        employees={employees}
+        employees={assignableEmployees}
         usersList={usersList}
         currentUser={currentUser}
         onSubmit={createTask}
@@ -1467,7 +1561,7 @@ const { totalCount, pendingCount, holdCount, completedCount, overdueCount, objec
             isOpen={!!showEditModal}
             onClose={() => setShowEditModal(null)}
             task={taskToEdit}
-            employees={employees}
+            employees={assignableEmployees}
             usersList={usersList}
             onSubmit={handleUpdateTask}
             isLoading={isLoading}
@@ -1548,6 +1642,11 @@ const AssignTaskModal: React.FC<AssignTaskModalProps> = React.memo(({
     }
     setServerError(null);
 
+    if (isAdminOrPc(assignedTo, usersList)) {
+      setServerError('Cannot assign tasks to Admin or PC members.');
+      return;
+    }
+
     const matchedUser = usersList.find(u => String(u.employeeId) === String(assignedTo));
     const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
 
@@ -1616,7 +1715,7 @@ const AssignTaskModal: React.FC<AssignTaskModalProps> = React.memo(({
                 onChange={e => { setAssignedTo(e.target.value || ''); setServerError(null); }}
               >
                 <option value="">Select Team Member</option>
-                {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                {employees.map(emp => (
                   <option key={emp.id} value={emp.id}>{emp.name} <span className="text-slate-400">({emp.id})</span></option>
                 ))}
               </select>
@@ -1778,6 +1877,11 @@ const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
     }
     setServerError(null);
 
+    if (isAdminOrPc(assignedTo, usersList)) {
+      setServerError('Cannot assign tasks to Admin or PC members.');
+      return;
+    }
+
     const matchedUser = usersList.find(u => String(u.employeeId) === String(assignedTo));
     const assigned_to_numeric = matchedUser ? Number(matchedUser.id) : null;
 
@@ -1839,7 +1943,7 @@ const EditTaskModal: React.FC<EditTaskModalProps> = React.memo(({
                   onChange={e => { setAssignedTo(e.target.value); setServerError(null); }}
                 >
                   <option value="">Select Team Member...</option>
-                  {employees.filter(emp => !(emp as any).is_archived).map(emp => (
+                  {employees.map(emp => (
                     <option key={emp.id} value={emp.id}>{emp.name} {emp.department ? `(${emp.department})` : ''}</option>
                   ))}
                 </select>

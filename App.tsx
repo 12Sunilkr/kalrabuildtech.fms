@@ -1264,11 +1264,11 @@ const App: React.FC = () => {
           currentView === ViewMode.DATABASE ||
           currentView === ViewMode.TIME_LOGS
         ) {
-          return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} />;
+          return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} users={users} archivedEmployees={archivedEmployees} />;
         }
       }
       switch (currentView) {
-        case ViewMode.DASHBOARD: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} />;
+        case ViewMode.DASHBOARD: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} users={users} archivedEmployees={archivedEmployees} />;
         case ViewMode.CALENDAR: return <CalendarView {...commonProps} leaves={leaveRequests} reminders={reminders} setReminders={setReminders} />;
         case ViewMode.ATTENDANCE: return <AttendanceSheet {...commonProps} />;
         case ViewMode.EMPLOYEES: return <EmployeeMaster {...commonProps} onSwitchUser={setCurrentUser} />;
@@ -1292,7 +1292,7 @@ const App: React.FC = () => {
         case ViewMode.NOTIFICATIONS: return <NotificationCenter notifications={notifications} setNotifications={setNotifications} currentUser={currentUser} onNavigate={setCurrentView} />;
         case ViewMode.README: return <ReadMe role={currentUser.role} />;
         case ViewMode.SYSTEM_MASTER: return <SystemMaster currentView={currentView} onNavigate={setCurrentView} currentUser={currentUser} showToast={showToast} />;
-        default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} />;
+        default: return <Dashboard employees={employees} attendanceData={attendanceData} onNavigate={setCurrentView} currentUser={currentUser} users={users} archivedEmployees={archivedEmployees} />;
       }
     } else {
       switch (currentView) {

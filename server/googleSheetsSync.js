@@ -33,13 +33,20 @@ function shouldRetryWithInsecureTls(error) {
 async function postSheetsPayload(payload, allowInsecureTls = false) {
   const body = JSON.stringify(payload);
   if (!allowInsecureTls) {
-    return fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8', // Google Apps Script handles text/plain without CORS preflight
-      },
-      body
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+    try {
+      return await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8', // Google Apps Script handles text/plain without CORS preflight
+        },
+        body,
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   // Built-in HTTPS fallback without external dependencies.
@@ -140,7 +147,12 @@ export async function syncToGoogleSheets(db) {
       console.log('Successfully synced data to Google Sheets. Status:', response.status);
     }
   } catch (error) {
-    console.error('Failed to sync to Google Sheets:', error);
+    const msg = error && (error.message || String(error));
+    if (msg.includes('Timeout') || (error && error.code === 'UND_ERR_HEADERS_TIMEOUT')) {
+      console.warn('Google Sheets sync timed out waiting for Apps Script response (will retry in next cycle).');
+    } else {
+      console.warn('Failed to sync to Google Sheets (will retry in next cycle):', msg);
+    }
   } finally {
     isSyncing = false;
   }

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet } from '../src/utils/api';
+import React, { useState, useMemo } from 'react';
+import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, invalidateCache } from '../src/utils/api';
 import { Employee, User, Role, ViewMode } from '../types';
 import { DEPARTMENT_ROLES } from '../constants';
 import { Users, ShieldCheck, UserPlus, Search, Mail, Phone, LogIn, FileText, Edit2, Archive, X, Lock, Trash2, AlertTriangle, Plus, LayoutGrid, List as ListIcon, Filter, ExternalLink, Shield, CheckSquare, Clock, Briefcase, ArrowLeft } from 'lucide-react';
+import { isAdminOrPc } from '../utils/roleUtils';
 
 interface EmployeeMasterProps {
   employees: Employee[];
@@ -84,14 +85,24 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   const [isNewDept, setIsNewDept] = useState(false);
   const [isNewDesig, setIsNewDesig] = useState(false);
 
+  // Strictly filter out system/virtual accounts like E-PC101 that should never show in Team Master
+  const teamEmployees = useMemo(() => {
+    return (employees || []).filter(e => {
+      const idUpper = (e.id || '').toUpperCase();
+      if (idUpper === 'E-PC101' || idUpper.startsWith('U-ADMIN') || idUpper.startsWith('U-PC')) return false;
+      if ((e.name || '').trim().toLowerCase() === 'process coordinator (pc)') return false;
+      return true;
+    });
+  }, [employees]);
+
   const allDepartments = Array.from(new Set([
     ...Object.keys(DEPARTMENT_ROLES),
-    ...employees.map(e => e.department)
+    ...teamEmployees.map(e => e.department)
   ])).filter(Boolean).sort();
 
   const getDesignationsForDept = (dept: string) => {
     const predefined = DEPARTMENT_ROLES[dept] || [];
-    const existing = employees.filter(e => e.department === dept && e.designation).map(e => e.designation);
+    const existing = teamEmployees.filter(e => e.department === dept && e.designation).map(e => e.designation);
     return Array.from(new Set([...predefined, ...existing])).filter(Boolean).sort();
   };
 
@@ -218,12 +229,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     setShowPlainPassword(false);
     setIsNewDept(false);
     setIsNewDesig(false);
-    let target = emp;
+    let target: Employee = { ...emp, employmentType: emp.employmentType || 'Full Time' };
     if (!emp.documents) {
       try {
-        const res = await safeGet(`/employees/${encodeURIComponent(emp.id)}`, { cacheTtlMs: 30000 });
+        const res = await safeGet(`/employees/${encodeURIComponent(emp.id)}`, { cacheBust: true });
         const full = extractPayload(res) as Employee | null;
-        if (full) target = { ...emp, ...full };
+        if (full) target = { ...target, ...full, employmentType: full.employmentType || target.employmentType || 'Full Time' };
       } catch (e) {
         console.warn('Could not load full employee for edit', e);
       }
@@ -245,15 +256,25 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
   const handleEditEmployee = async () => {
     if (!currentEmp.id) return;
 
+    const empToSave: Employee = {
+      ...(currentEmp as Employee),
+      employmentType: currentEmp.employmentType || 'Full Time'
+    };
+
     // Optimistically update local employees
-    setEmployees(employees.map(e => e.id === currentEmp.id ? { ...e, ...currentEmp } as Employee : e));
+    setEmployees(employees.map(e => e.id === empToSave.id ? { ...e, ...empToSave } : e));
 
     // Update employee on server
     try {
-      const empUpd = await api.put(`/employees/${currentEmp.id}`, currentEmp, { withCredentials: true });
+      const empUpd = await api.put(`/employees/${empToSave.id}`, empToSave, { withCredentials: true });
       if (empUpd) {
-        const refreshed = await safeGet('/employees');
-        setEmployees(ensureArray(extractPayload(refreshed)));
+        invalidateCache('/employees');
+        invalidateCache(`/employees/${empToSave.id}`);
+        const refreshed = await safeGet('/employees', { cacheBust: true });
+        const list = ensureArray(extractPayload(refreshed));
+        if (list.length > 0) {
+          setEmployees(list);
+        }
       }
     } catch (err) {
       console.warn('Failed to update employee on server, keeping local copy', err && (err.stack || err.message || err));
@@ -349,6 +370,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
         }
       }
 
+      invalidateCache('/employees');
+      invalidateCache('/users');
+      invalidateCache('/tasks');
+      invalidateCache('/checklists');
+      invalidateCache('/checklist-templates');
+
       setShowDeleteModal(false);
       setDeleteTarget(null);
       setReassignToId('');
@@ -380,6 +407,15 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
 
       if (archiveReassignToId && setTasks) {
         setTasks(prev => prev.map(t => (t.assignedTo === id || (t as any).assignedToEmployeeId === id) ? { ...t, assignedTo: archiveReassignToId } : t));
+      } else if (setTasks) {
+        // Move uncompleted tasks to HOLD with archived member note
+        const holdNote = `Archived Member: ${archiveTarget.name} (${id})`;
+        setTasks(prev => prev.map(t => {
+          if ((t.assignedTo === id || (t as any).assignedToEmployeeId === id) && t.status !== 'COMPLETED' && t.status !== 'TERMINATED') {
+            return { ...t, status: 'HOLD', statusNote: holdNote };
+          }
+          return t;
+        }));
       }
 
       // Update server status and archive flags
@@ -392,6 +428,12 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
           await api.delete(`/users/${(linkedUser as any).id}`);
         } catch (e) { console.warn('Failed to archive linked user', e); }
       }
+
+      invalidateCache('/employees');
+      invalidateCache('/users');
+      invalidateCache('/tasks');
+      invalidateCache('/checklists');
+      invalidateCache('/checklist-templates');
 
       // Refresh server lists
       try {
@@ -428,7 +470,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     }
   };
 
-  const filteredEmployees = employees.filter(e => {
+  const filteredEmployees = teamEmployees.filter(e => {
     const term = searchTerm.toLowerCase();
     const matchesSearch = e.name.toLowerCase().includes(term) ||
       e.id.toLowerCase().includes(term) ||
@@ -437,7 +479,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
     if (!matchesSearch) return false;
 
     if (activeTab === 'Active') return e.status === 'Active';
-    if (activeTab === 'Full Time') return e.employmentType === 'Full Time' || e.employmentType === 'Probation';
+    if (activeTab === 'Full Time') return (e.employmentType || 'Full Time') === 'Full Time' || e.employmentType === 'Probation';
     if (activeTab === 'Part Time') return e.employmentType === 'Part Time' || e.employmentType === 'Internship' || e.employmentType === 'Contractual';
     return true;
   });
@@ -644,27 +686,27 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
             <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs font-bold rounded-full">↑ 2 new</span>
           </div>
           <div>
-            <h3 className="text-3xl font-black text-slate-800">{employees.length}</h3>
+            <h3 className="text-3xl font-black text-slate-800">{teamEmployees.length}</h3>
             <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Total Members</p>
           </div>
         </div>
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 border-t-4 border-t-green-500 flex flex-col justify-between">
           <div className="flex justify-between items-start mb-4">
             <div className="p-2 bg-slate-50 rounded-lg text-green-600"><CheckSquare size={18} /></div>
-            <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs font-bold rounded-full">{Math.round((employees.filter(e => e.status === 'Active').length / (employees.length || 1)) * 100)}%</span>
+            <span className="px-2 py-0.5 bg-green-50 text-green-600 text-xs font-bold rounded-full">{Math.round((teamEmployees.filter(e => e.status === 'Active').length / (teamEmployees.length || 1)) * 100)}%</span>
           </div>
           <div>
-            <h3 className="text-3xl font-black text-slate-800">{employees.filter(e => e.status === 'Active').length}</h3>
+            <h3 className="text-3xl font-black text-slate-800">{teamEmployees.filter(e => e.status === 'Active').length}</h3>
             <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Active Members</p>
           </div>
         </div>
         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 border-t-4 border-t-purple-500 flex flex-col justify-between">
           <div className="flex justify-between items-start mb-4">
             <div className="p-2 bg-slate-50 rounded-lg text-purple-600"><Clock size={18} /></div>
-            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-full">{Math.round((employees.filter(e => e.employmentType === 'Full Time').length / (employees.length || 1)) * 100)}%</span>
+            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-full">{Math.round((teamEmployees.filter(e => (e.employmentType || 'Full Time') === 'Full Time' || e.employmentType === 'Probation').length / (teamEmployees.length || 1)) * 100)}%</span>
           </div>
           <div>
-            <h3 className="text-3xl font-black text-slate-800">{employees.filter(e => e.employmentType === 'Full Time').length}</h3>
+            <h3 className="text-3xl font-black text-slate-800">{teamEmployees.filter(e => (e.employmentType || 'Full Time') === 'Full Time' || e.employmentType === 'Probation').length}</h3>
             <p className="text-xs font-bold text-slate-400 tracking-wider uppercase mt-1">Full Time</p>
           </div>
         </div>
@@ -695,10 +737,10 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
         
         <div className="flex items-center justify-between md:justify-end gap-6 w-full md:w-auto">
           <div className="flex gap-4 md:gap-5 text-sm font-semibold overflow-x-auto pb-2 md:pb-0 hide-scrollbar">
-            <button onClick={() => setActiveTab('All')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'All' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>All <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'All' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.length}</span></button>
-            <button onClick={() => setActiveTab('Active')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Active' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Active <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Active' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.filter(e => e.status === 'Active').length}</span></button>
-            <button onClick={() => setActiveTab('Full Time')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Full Time' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Full Time <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Full Time' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.filter(e => e.employmentType === 'Full Time' || e.employmentType === 'Probation').length}</span></button>
-            <button onClick={() => setActiveTab('Part Time')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Part Time' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Part Time <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Part Time' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{employees.filter(e => e.employmentType === 'Part Time' || e.employmentType === 'Internship' || e.employmentType === 'Contractual').length}</span></button>
+            <button onClick={() => setActiveTab('All')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'All' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>All <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'All' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{teamEmployees.length}</span></button>
+            <button onClick={() => setActiveTab('Active')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Active' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Active <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Active' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{teamEmployees.filter(e => e.status === 'Active').length}</span></button>
+            <button onClick={() => setActiveTab('Full Time')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Full Time' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Full Time <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Full Time' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{teamEmployees.filter(e => (e.employmentType || 'Full Time') === 'Full Time' || e.employmentType === 'Probation').length}</span></button>
+            <button onClick={() => setActiveTab('Part Time')} className={`flex items-center gap-1.5 whitespace-nowrap transition-colors ${activeTab === 'Part Time' ? 'text-blue-600' : 'text-slate-400 hover:text-slate-700'}`}>Part Time <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTab === 'Part Time' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{teamEmployees.filter(e => e.employmentType === 'Part Time' || e.employmentType === 'Internship' || e.employmentType === 'Contractual').length}</span></button>
           </div>
           
           <div className="flex items-center gap-3 shrink-0 hidden md:flex">
@@ -1448,7 +1490,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                 >
                   <option value="">— Leave tasks unassigned —</option>
                   {employees
-                    .filter(e => e.id !== deleteTarget.id && e.status === 'Active')
+                    .filter(e => e.id !== deleteTarget.id && e.status === 'Active' && !isAdminOrPc(e, users))
                     .map(e => (
                       <option key={e.id} value={e.id}>{e.name} ({e.id})</option>
                     ))}
@@ -1523,7 +1565,7 @@ export const EmployeeMaster: React.FC<EmployeeMasterProps> = ({
                 >
                   <option value="">— Do not reassign (Keep tasks tied to this member) —</option>
                   {employees
-                    .filter(e => e.id !== archiveTarget.id && e.status === 'Active')
+                    .filter(e => e.id !== archiveTarget.id && e.status === 'Active' && !isAdminOrPc(e, users))
                     .map(e => (
                       <option key={e.id} value={e.id}>{e.name} ({e.id})</option>
                     ))}

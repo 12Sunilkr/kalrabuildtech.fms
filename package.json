@@ -10,7 +10,11 @@
     "start": "node server/prod-server.js",
     "server": "node server/prod-server.js",
     "start:server": "node server/prod-server.js",
-    "deploy:pm2": "vite build && pm2 restart all"
+    "deploy:pm2": "vite build && pm2 restart all",
+    "test:unit": "node --test --experimental-strip-types \"test/unit/**/*.test.ts\" \"test/unit/**/*.test.js\"",
+    "test:integration": "node scripts/integration_test.mjs && node test/integration/checklistTransfer.test.mjs",
+    "test": "npm run test:unit && npm run test:integration",
+    "clean:ports": "powershell -NoProfile -Command \"try { Get-NetTCPConnection -LocalPort 3000,24678 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } } catch {}; exit 0\""
   },
   "engines": {
     "node": ">=24.11.0",

@@ -1,7 +1,7 @@
 // Integration test: optionally start the embedded server.
 // To use an already-running server instead of starting one here, set USE_RUNNING_SERVER=1
 
-const SERVER = process.env.SERVER || 'http://127.0.0.1:3000';
+const SERVER = process.env.SERVER || (process.env.USE_RUNNING_SERVER ? 'http://127.0.0.1:3000' : 'http://127.0.0.1:4001');
 
 async function waitForHealth(timeoutMs = 5000, interval = 500) {
   const deadline = Date.now() + timeoutMs;
@@ -162,7 +162,8 @@ function checkEnvelope(obj, expectedSuccess = true) {
     const { default: initSqlJs } = await import('sql.js');
     const fs = await import('fs');
     const SQL = await initSqlJs();
-    const buff = fs.readFileSync('./server/users.sqlite');
+    const dbPath = fs.existsSync('./server/database.sqlite') ? './server/database.sqlite' : './server/users.sqlite';
+    const buff = fs.readFileSync(dbPath);
     const db = new SQL.Database(new Uint8Array(buff));
     const st = db.prepare('SELECT id, email, password FROM users');
     const users = [];
