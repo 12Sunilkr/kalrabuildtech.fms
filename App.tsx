@@ -32,6 +32,7 @@ const Playbook = React.lazy(() => import('./components/Playbook').then(m => ({ d
 import { ViewMode, Employee, AttendanceRecord, User, TimeLog, AttendanceValue, Task, MaterialOrder, Query, ChatMessage, ChatGroup, Notification, SundayRequest, LeaveRequest, Holiday, Reminder, ClientFinancial, VendorFinancial, Note, ChecklistTemplate, ChecklistInstance, CRMLead } from './types';
 import { INITIAL_EMPLOYEES, INITIAL_USERS, INITIAL_TASKS, INITIAL_ORDERS, INITIAL_ARCHIVED_EMPLOYEES, INITIAL_QUERIES, INITIAL_CHATS, COMPANY_LOGO, INITIAL_LEAVE_REQUESTS, INITIAL_CLIENT_FINANCIALS, INITIAL_VENDOR_FINANCIALS, INITIAL_NOTES, INITIAL_CHECKLIST_TEMPLATES, INITIAL_CHECKLIST_INSTANCES } from './constants';
 import { formatDateKey, isDateSunday, formatDecimalHours } from './utils/dateUtils';
+import { reconcileInstancesForHolidays } from './utils/checklistUtils';
 import { differenceInMinutes } from 'date-fns';
 import { Menu, Bell, CheckCircle, AlertCircle, Info, X, AlertTriangle, MessageCircle } from 'lucide-react';
 import api, { extractPayload as apiExtractPayload, ensureArray as apiEnsureArray, safeGet, safeGetSwr, invalidateCache } from './src/utils/api';
@@ -591,7 +592,11 @@ const App: React.FC = () => {
                 }
               });
             });
-            setChecklistInstances(insts);
+            setChecklistInstances(reconcileInstancesForHolidays({
+              instances: insts,
+              templates: mappedTpl,
+              holidayDates: holidays,
+            }));
           }
         );
         const grouped = extractPayload(batchRes) as Record<string, any[]> || {};
@@ -611,7 +616,11 @@ const App: React.FC = () => {
             }
           });
         });
-        setChecklistInstances(insts);
+        setChecklistInstances(reconcileInstancesForHolidays({
+          instances: insts,
+          templates: mappedTpl,
+          holidayDates: holidays,
+        }));
       } catch (e) {
         console.warn('Failed to load checklists', e);
       }

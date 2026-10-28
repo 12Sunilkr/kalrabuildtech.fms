@@ -24,6 +24,7 @@ async function verifyMainDb() {
     tasks: tasks[0]?.values[0][0],
     checklist_templates: ct[0]?.values[0][0]
   });
+
   console.log('✓ Main single database verified perfectly!');
 }
 

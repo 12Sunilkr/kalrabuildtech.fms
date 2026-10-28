@@ -30,6 +30,8 @@ export const HolidayManager: React.FC<HolidayManagerProps> = ({ holidays, setHol
       // Persist to server
       await api.post('/holidays', { name: newHolidayName.trim(), date: newDate });
       invalidateCache('/holidays');
+      invalidateCache('/checklists');
+      invalidateCache('/checklists-instances/all');
 
       // Refresh latest from server
       const listRes = await safeGet('/holidays');
@@ -51,6 +53,8 @@ export const HolidayManager: React.FC<HolidayManagerProps> = ({ holidays, setHol
       setHolidays(prev => prev.filter(h => h.id !== idToRemove));
       await api.delete(`/holidays/${encodeURIComponent(idToRemove)}`);
       invalidateCache('/holidays');
+      invalidateCache('/checklists');
+      invalidateCache('/checklists-instances/all');
 
       const listRes = await safeGet('/holidays');
       const data = extractPayload(listRes);

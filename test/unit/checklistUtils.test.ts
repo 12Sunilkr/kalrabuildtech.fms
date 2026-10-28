@@ -194,6 +194,89 @@ describe('checklistUtils Unit Tests', () => {
       assert.equal(result[0].status, 'COMPLETED');
       assert.equal(result[0].doerId, 'E-OLD');
     });
+
+    test('exact boundary test: uncompleted task on transferEffectiveDate transitions to new assignee and PENDING', () => {
+      const boundaryInstance = {
+        id: 'CI-BOUNDARY-1',
+        templateId: 'CT-100',
+        doerId: 'E-OLD',
+        department: 'Sales',
+        date: '2026-10-24',
+        status: 'STOPPED',
+        stoppedReason: 'Medical leave',
+        done: 0,
+      };
+
+      const result = applyTransferToInstances({
+        instances: [boundaryInstance],
+        templateId: 'CT-100',
+        oldDoerId: 'E-OLD',
+        newDoerId: 'E-NEW',
+        newDepartment: 'Operations',
+        transferEffectiveDate: '2026-10-24',
+        reactivate: true,
+      });
+
+      assert.equal(result[0].status, 'PENDING');
+      assert.equal(result[0].doerId, 'E-NEW');
+      assert.equal(result[0].department, 'Operations');
+      assert.equal(result[0].stoppedReason, undefined);
+    });
+
+    test('exact boundary test: completed task on transferEffectiveDate remains COMPLETED and with old doer', () => {
+      const boundaryCompleted = {
+        id: 'CI-BOUNDARY-2',
+        templateId: 'CT-100',
+        doerId: 'E-OLD',
+        department: 'Sales',
+        date: '2026-10-24',
+        status: 'COMPLETED',
+        done: 1,
+      };
+
+      const result = applyTransferToInstances({
+        instances: [boundaryCompleted],
+        templateId: 'CT-100',
+        oldDoerId: 'E-OLD',
+        newDoerId: 'E-NEW',
+        newDepartment: 'Operations',
+        transferEffectiveDate: '2026-10-24',
+        reactivate: true,
+      });
+
+      assert.equal(result[0].status, 'COMPLETED');
+      assert.equal(result[0].doerId, 'E-OLD');
+      assert.equal(result[0].done, 1);
+    });
+
+    test('retains historical instances with original employee and original stop reasons', () => {
+      const historicalInstances = [
+        {
+          id: 'CI-HIST-1',
+          templateId: 'CT-100',
+          doerId: 'E-OLD',
+          department: 'Sales',
+          date: '2026-09-01',
+          status: 'STOPPED',
+          stoppedReason: 'Original Department Restructuring',
+          done: 0,
+        },
+      ];
+
+      const result = applyTransferToInstances({
+        instances: historicalInstances,
+        templateId: 'CT-100',
+        oldDoerId: 'E-OLD',
+        newDoerId: 'E-NEW',
+        newDepartment: 'Operations',
+        transferEffectiveDate: '2026-10-24',
+        reactivate: true,
+      });
+
+      assert.equal(result[0].doerId, 'E-OLD');
+      assert.equal(result[0].status, 'STOPPED');
+      assert.equal(result[0].stoppedReason, 'Original Department Restructuring');
+    });
   });
 
   describe('sanitizeTemplateOnReactivate', () => {
@@ -220,6 +303,43 @@ describe('checklistUtils Unit Tests', () => {
       assert.equal(result.stoppedDueToArchive, undefined);
       assert.equal(result.archivedAt, undefined);
       assert.equal(result.archivedMemberName, undefined);
+    });
+
+    test('preserves unrelated template configuration and custom properties', () => {
+      const templateData = {
+        id: 'KCT-01',
+        taskName: 'Fire Safety Inspection',
+        doerId: 'E-OLD',
+        buddyId: 'E-BUDDY',
+        department: 'Safety',
+        active: false,
+        config: {
+          frequency: 'MONTHLY',
+          particularDateType: 'EVERY-MONTH',
+          customChecklistItems: ['Item 1', 'Item 2'],
+        },
+        customPriority: 'HIGH',
+        stoppedDueToArchive: true,
+        archivedAt: '2026-10-15T00:00:00.000Z',
+      };
+
+      const result = sanitizeTemplateOnReactivate(templateData, {
+        newDoerId: 'E-NEW',
+      });
+
+      assert.equal(result.id, 'KCT-01');
+      assert.equal(result.taskName, 'Fire Safety Inspection');
+      assert.equal(result.buddyId, 'E-BUDDY');
+      assert.equal(result.customPriority, 'HIGH');
+      assert.deepEqual(result.config, {
+        frequency: 'MONTHLY',
+        particularDateType: 'EVERY-MONTH',
+        customChecklistItems: ['Item 1', 'Item 2'],
+      });
+      assert.equal(result.active, true);
+      assert.equal(result.doerId, 'E-NEW');
+      assert.equal(result.stoppedDueToArchive, undefined);
+      assert.equal(result.archivedAt, undefined);
     });
   });
 });

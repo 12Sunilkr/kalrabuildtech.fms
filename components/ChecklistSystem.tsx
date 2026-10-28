@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { format, addDays, addMonths, addYears, addWeeks, isSunday, isBefore, getDay } from 'date-fns';
 import { isAdminOrPc } from '../utils/roleUtils';
-import { applyTransferToInstances } from '../utils/checklistUtils';
+import { applyTransferToInstances, sanitizeTemplateOnReactivate, reconcileInstancesForHolidays } from '../utils/checklistUtils';
 
 interface ChecklistSystemProps {
     templates: ChecklistTemplate[];
@@ -349,7 +349,13 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                     } catch (err) { /* ignore per-template fetch/parse errors */ }
                 }
 
-                if (mounted) setInstances(insts);
+                const reconciled = reconcileInstancesForHolidays({
+                    instances: insts,
+                    templates: mapped,
+                    holidayDates: holidays,
+                });
+
+                if (mounted) setInstances(reconciled);
             } catch (e) {
                 console.warn('Load failed', e);
             } finally {
@@ -388,7 +394,19 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                 if (isSunday(d) || hDates.includes(format(d, 'yyyy-MM-dd'))) return;
             }
             const { date: wd, shifted } = (config.frequency === 'DAILY' || config.frequency === 'ALTERNATE') ? { date: d, shifted: false } : getNextWorkingDay(d);
-            items.push({ id: `CI-${template.id}-${idx}`, templateId: template.id, doerId: template.doerId, taskName: template.taskName, department: template.department, date: format(wd, 'yyyy-MM-dd'), status: 'PENDING', shiftedDueToHoliday: shifted });
+            const dateStr = format(wd, 'yyyy-MM-dd');
+            const origStr = format(d, 'yyyy-MM-dd');
+            items.push({
+                id: `CI-${template.id}-${idx}`,
+                templateId: template.id,
+                doerId: template.doerId,
+                taskName: template.taskName,
+                department: template.department,
+                date: dateStr,
+                originalDate: shifted ? origStr : undefined,
+                status: 'PENDING',
+                shiftedDueToHoliday: shifted,
+            });
         };
 
         if (config.frequency === 'ONE-TIME' || config.frequency === 'EVENT-BASED') { push(start, 0); }
@@ -650,15 +668,17 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         if (!dbId) { alert('Task sync in progress. Please wait.'); return; }
 
         setApprovingExcuseIds(prev => new Set(prev).add(id));
+        const prevInstancesSnapshot = instances;
 
         const originalDate = instance.date;
         const originalDoer = instance.doerId;
         const targetDoer = instance.requestedTransferTo || instance.doerId;
-        const requestedDates = (instance.requestedTransferDates && instance.requestedTransferDates.length > 0)
-            ? [...instance.requestedTransferDates].sort()
+        const rawDates = (instance.requestedTransferDates && instance.requestedTransferDates.length > 0)
+            ? instance.requestedTransferDates
             : [instance.requestedTransferDate || instance.date];
+        const requestedDates = [...new Set(rawDates.map(d => String(d).trim()))].filter(Boolean).sort();
 
-        const firstDate = requestedDates[0];
+        const firstDate = requestedDates[0] || originalDate;
         const tpl = templates.find(t => String(t.id) === String(instance.templateId));
         const isTransfer = Boolean(instance.requestedTransferTo && String(instance.requestedTransferTo) !== String(originalDoer)) || firstDate !== originalDate || requestedDates.length > 1;
 
@@ -702,30 +722,26 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             newInstances.push(extraInst);
         }
 
-        // Optimistic update
-        setInstances(prev => {
-            const filtered = prev.filter(x => x.id !== id);
-            return [...filtered, ...newInstances];
-        });
-
         try {
             await api.put(`/checklists/${dbId}`, { done: false, item: JSON.stringify(firstUpdated) }, { withCredentials: true });
 
             if (newInstances.length > 1) {
                 const extraItems = newInstances.slice(1);
-                try {
-                    await safePost('/checklists/bulk', {
-                        replace: false,
-                        items: extraItems.map(inst => ({
-                            refId: instance.templateId,
-                            refType: 'TEMPLATE_INSTANCE',
-                            item: JSON.stringify(inst)
-                        }))
-                    });
-                } catch (err) {
-                    console.warn('Bulk insert extra requested transferred instances failed', err);
-                }
+                await safePost('/checklists/bulk', {
+                    replace: false,
+                    items: extraItems.map(inst => ({
+                        refId: instance.templateId,
+                        refType: 'TEMPLATE_INSTANCE',
+                        item: JSON.stringify(inst)
+                    }))
+                });
             }
+
+            // Update UI state only after server persistence succeeds
+            setInstances(prev => {
+                const filtered = prev.filter(x => x.id !== id);
+                return [...filtered, ...newInstances];
+            });
             setRefreshTrigger(prev => prev + 1);
 
             // Notify Requester
@@ -747,8 +763,10 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             }
         } catch (err) {
             console.error('Approve transfer failed', err);
-            setInstances(prev => prev.map(i => i.id === id ? { ...i, status: 'EXCUSE_REQUESTED' } : i));
-            alert('Failed to approve transfer request. Please try again.');
+            // Cleanly restore previous instances snapshot
+            setInstances(prevInstancesSnapshot);
+            setRefreshTrigger(prev => prev + 1);
+            alert('Failed to approve transfer request on server. No changes were applied.');
         } finally {
             setApprovingExcuseIds(prev => { const s = new Set(prev); s.delete(id); return s; });
         }
@@ -815,19 +833,31 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
 
         const instance = instances.find(i => i.id === id);
         if (!instance) return;
+        if (instance.status === 'COMPLETED' || instance.done) {
+            alert('Cannot transfer an already completed task.');
+            return;
+        }
 
         setIsTransferring(true);
+        const prevInstancesSnapshot = instances;
+
         const originalDate = instance.date;
         const originalDoer = instance.doerId;
         const tpl = templates.find(t => String(t.id) === String(instance.templateId));
         const targetEmp = employees.find(e => String(e.id) === String(targetDoerId));
         const targetName = targetEmp ? targetEmp.name : targetDoerId;
 
-        const sortedDates = [...selectedDates].sort();
+        const dedupedDates = [...new Set((selectedDates || []).map(d => String(d).trim()))].filter(Boolean).sort();
+        if (dedupedDates.length === 0) {
+            setIsTransferring(false);
+            alert('Please select at least one valid date for transfer.');
+            return;
+        }
+
         const newInstances: ChecklistInstance[] = [];
 
         // First date updates the existing instance
-        const firstDate = sortedDates[0];
+        const firstDate = dedupedDates[0];
         const firstUpdated: ChecklistInstance = {
             ...instance,
             date: firstDate,
@@ -842,8 +872,8 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         newInstances.push(firstUpdated);
 
         // Additional dates create new task instances assigned to target user
-        for (let idx = 1; idx < sortedDates.length; idx++) {
-            const extraDate = sortedDates[idx];
+        for (let idx = 1; idx < dedupedDates.length; idx++) {
+            const extraDate = dedupedDates[idx];
             const extraInst: ChecklistInstance = {
                 id: `CI-TR-${instance.templateId}-${Date.now()}-${idx}`,
                 templateId: instance.templateId,
@@ -861,15 +891,6 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             newInstances.push(extraInst);
         }
 
-        // Optimistic update: replace old instance with firstUpdated and append remaining
-        setInstances(prev => {
-            const filtered = prev.filter(x => x.id !== id);
-            return [...filtered, ...newInstances];
-        });
-        setTransferModal({
-            open: false, itemId: '', dbId: '', currentDate: '', selectedDates: [], targetDoerId: '', customDateInput: '', note: ''
-        });
-
         try {
             // Persist updated first instance to server
             if (dbId) {
@@ -878,31 +899,39 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             // Persist extra instances if multi-date transfer
             if (newInstances.length > 1) {
                 const extraItems = newInstances.slice(1);
-                try {
-                    await safePost('/checklists/bulk', {
-                        replace: false,
-                        items: extraItems.map(inst => ({
-                            refId: instance.templateId,
-                            refType: 'TEMPLATE_INSTANCE',
-                            item: JSON.stringify(inst)
-                        }))
-                    });
-                } catch (err) {
-                    console.warn('Bulk insert extra transferred instances failed', err);
-                }
+                await safePost('/checklists/bulk', {
+                    replace: false,
+                    items: extraItems.map(inst => ({
+                        refId: instance.templateId,
+                        refType: 'TEMPLATE_INSTANCE',
+                        item: JSON.stringify(inst)
+                    }))
+                });
             }
+
+            // Update UI state only after server persistence succeeds
+            setInstances(prev => {
+                const filtered = prev.filter(x => x.id !== id);
+                return [...filtered, ...newInstances];
+            });
+            setTransferModal({
+                open: false, itemId: '', dbId: '', currentDate: '', selectedDates: [], targetDoerId: '', customDateInput: '', note: ''
+            });
             setRefreshTrigger(prev => prev + 1);
 
-            // Notify target employee
+            // Notify target employee only after server operations succeed
             addNotification(
                 'Task Transferred to You',
-                `"${instance.taskName || 'Routine task'}" (${sortedDates.join(', ')}) has been assigned to you by ${currentUser.name}${note.trim() ? ` — Note: ${note.trim()}` : ''}. Completing this will count toward your score.`,
+                `"${instance.taskName || 'Routine task'}" (${dedupedDates.join(', ')}) has been assigned to you by ${currentUser.name}${note.trim() ? ` — Note: ${note.trim()}` : ''}. Completing this will count toward your score.`,
                 'CHECKLIST',
                 String(targetDoerId)
             );
         } catch (err) {
             console.error('Transfer failed', err);
-            alert('Failed to update server. Local view updated.');
+            // Restore previous UI state from snapshot on failure
+            setInstances(prevInstancesSnapshot);
+            setRefreshTrigger(prev => prev + 1);
+            alert('Failed to transfer task on server. No changes were applied.');
         } finally {
             setIsTransferring(false);
         }
@@ -912,8 +941,8 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         if (!confirm('Delete this routine? All pending tasks will be removed.')) return;
         try {
             await api.delete(`/checklist-templates/${encodeURIComponent(id)}`, { withCredentials: true });
-            setTemplates(prev => prev.filter(t => t.id !== id));
-            setInstances(prev => prev.filter(i => !(i.templateId === id && i.status === 'PENDING')));
+            setTemplates(prev => prev.filter(t => String(t.id) !== String(id)));
+            setInstances(prev => prev.filter(i => !(String(i.templateId) === String(id) && i.status === 'PENDING')));
         } catch (err) {
             console.error('Delete failed', err);
             alert('Failed to delete template.');
@@ -933,15 +962,18 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
         if (!newActive && !confirm('Stop this routine? All future pending tasks will be hidden from today, but past completed/stopped tasks will remain.')) return;
         if (newActive && !confirm('Continue/Reactivate this routine? The routine will start generating tasks from TODAY onwards.')) return;
 
+        const prevTemplatesSnapshot = templates;
+        const prevInstancesSnapshot = instances;
+
         try {
             const todayStr = format(new Date(), 'yyyy-MM-dd');
-            // When reactivating/continuing, start from TODAY!
+            // When reactivating/continuing, start from TODAY and sanitize archive flags!
             const updated: ChecklistTemplate = newActive
-                ? { ...tpl, active: true, startDate: todayStr }
+                ? sanitizeTemplateOnReactivate(tpl, { newStartDate: todayStr })
                 : { ...tpl, active: false };
 
             await api.put(`/checklist-templates/${encodeURIComponent(tpl.id)}`, updated, { withCredentials: true });
-            setTemplates(prev => prev.map(t => t.id === tpl.id ? updated : t));
+            setTemplates(prev => prev.map(t => String(t.id) === String(tpl.id) ? updated : t));
 
             if (!newActive) {
                 // When stopping a routine, mark pending instances as STOPPED (dead)
@@ -954,6 +986,13 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             } else {
                 // When continuing/reactivating, in-between tasks before todayStr must be marked STOPPED (dead)
                 const newInsts = generateInstances(updated);
+                const completedDates = new Set(
+                    instances
+                        .filter(i => String(i.templateId) === String(tpl.id) && (i.done || i.status === 'COMPLETED'))
+                        .map(i => i.date)
+                );
+                const validNewInsts = newInsts.filter(i => !completedDates.has(i.date));
+
                 setInstances(prev => {
                     const markedHiatus = prev.map(i => {
                         if (String(i.templateId) === String(tpl.id) && i.status === 'PENDING' && i.date < todayStr) {
@@ -963,19 +1002,24 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                     });
                     return [
                         ...markedHiatus.filter(i => !(String(i.templateId) === String(tpl.id) && i.status === 'PENDING' && i.date >= todayStr)),
-                        ...newInsts
+                        ...validNewInsts
                     ];
                 });
-                if (newInsts.length > 0) {
+                if (validNewInsts.length > 0) {
                     await safePost('/checklists/bulk', {
                         replace: true,
-                        items: newInsts.map(i => ({ refId: tpl.id, refType: 'TEMPLATE_INSTANCE', item: JSON.stringify(i) }))
+                        items: validNewInsts.map(i => ({ refId: tpl.id, refType: 'TEMPLATE_INSTANCE', item: JSON.stringify(i) }))
                     });
                 }
             }
+            setRefreshTrigger(prev => prev + 1);
         } catch (err) {
             console.error('Toggle active failed', err);
-            alert('Failed to update routine status.');
+            // Restore previous snapshot on failure
+            setTemplates(prevTemplatesSnapshot);
+            setInstances(prevInstancesSnapshot);
+            setRefreshTrigger(prev => prev + 1);
+            alert('Failed to update routine status on server. Changes were rolled back.');
         }
     };
 
@@ -998,6 +1042,9 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             return;
         }
         setIsSavingFreq(true);
+        const prevTemplatesSnapshot = templates;
+        const prevInstancesSnapshot = instances;
+
         try {
             const updatedConfig = {
                 ...editingTemplate.config,
@@ -1010,7 +1057,7 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             const shouldReactivate = true;
             const isTransferredOrReactivated = (editDoerId !== editingTemplate.doerId) || !editingTemplate.active;
 
-            // When transferring or editing a stopped routine, start from the effective transfer date
+            // Ordinary edits preserve editConfig.startDate; transfers/reactivations use transferEffectiveDate
             const effectiveStartDate = isTransferredOrReactivated ? transferEffectiveDate : editConfig.startDate;
 
             // Patch the template on the server
@@ -1029,21 +1076,23 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
                 { withCredentials: true }
             );
 
-            // Update local template list
-            const updatedTpl: ChecklistTemplate = { 
-                ...editingTemplate, 
-                config: updatedConfig, 
-                startDate: effectiveStartDate,
-                doerId: editDoerId,
-                department: newDept,
-                active: shouldReactivate,
-            };
-            if (shouldReactivate) {
-                delete (updatedTpl as any).stoppedDueToArchive;
-                delete (updatedTpl as any).archivedAt;
-                delete (updatedTpl as any).archivedMemberName;
-            }
-            setTemplates(prev => prev.map(t => t.id === updatedTpl.id ? updatedTpl : t));
+            // Update local template list with sanitized properties
+            const updatedTpl: ChecklistTemplate = sanitizeTemplateOnReactivate(
+                {
+                    ...editingTemplate,
+                    config: updatedConfig,
+                    startDate: effectiveStartDate,
+                    doerId: editDoerId,
+                    department: newDept,
+                    active: shouldReactivate,
+                },
+                {
+                    newDoerId: editDoerId,
+                    newDepartment: newDept,
+                    newStartDate: effectiveStartDate,
+                }
+            );
+            setTemplates(prev => prev.map(t => String(t.id) === String(updatedTpl.id) ? updatedTpl : t));
 
             // Update local instances:
             // In-between stopped tasks (< transferEffectiveDate) stay STOPPED for the old user.
@@ -1061,34 +1110,51 @@ const ChecklistSystemComponent: React.FC<ChecklistSystemProps> = ({
             }
 
             const freqOrStartChanged = editConfig.frequency !== editingTemplate.config.frequency || editConfig.startDate !== editingTemplate.startDate;
+            const needsScheduleRegen = freqOrStartChanged || isTransferredOrReactivated;
 
-            if (freqOrStartChanged) {
-                // Remove future pending/stopped instances for this template from transferEffectiveDate onwards, regenerate with new frequency + date
-                const newInsts = generateInstances({ ...updatedTpl, startDate: transferEffectiveDate });
+            if (needsScheduleRegen) {
+                // Regenerate schedule starting from the appropriate effective start date:
+                // - transfers/reactivations start from transferEffectiveDate
+                // - ordinary schedule edits start from editConfig.startDate
+                const regenStartDate = isTransferredOrReactivated ? transferEffectiveDate : editConfig.startDate;
+                const newInsts = generateInstances({ ...updatedTpl, startDate: regenStartDate });
+
+                // Filter out dates that already have completed tasks to prevent duplicate generation
+                const completedDates = new Set(
+                    instances
+                        .filter(i => String(i.templateId) === String(updatedTpl.id) && (i.done || i.status === 'COMPLETED'))
+                        .map(i => i.date)
+                );
+                const validNewInsts = newInsts.filter(i => !completedDates.has(i.date));
+
                 setInstances(prev => {
-                    const filtered = prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.date >= transferEffectiveDate && i.status !== 'COMPLETED'));
-                    return [...filtered, ...newInsts];
+                    const filtered = prev.filter(i => !(String(i.templateId) === String(updatedTpl.id) && i.date >= regenStartDate && i.status !== 'COMPLETED'));
+                    return [...filtered, ...validNewInsts];
                 });
 
-                // Bulk-save new instances to DB (fire and forget)
-                safePost('/checklists/bulk', {
-                    replace: true,
-                    items: newInsts.map(inst => ({
-                        refId: updatedTpl.id,
-                        refType: 'TEMPLATE_INSTANCE',
-                        item: JSON.stringify({ ...inst, templateId: updatedTpl.id }),
-                    }))
-                }).then(() => setRefreshTrigger(prev => prev + 1))
-                  .catch(e => console.warn('[Checklist] Regen bulk save failed:', e));
-            } else {
-                setRefreshTrigger(prev => prev + 1);
+                // Bulk-save new instances to DB and await confirmation
+                if (validNewInsts.length > 0) {
+                    await safePost('/checklists/bulk', {
+                        replace: true,
+                        items: validNewInsts.map(inst => ({
+                            refId: updatedTpl.id,
+                            refType: 'TEMPLATE_INSTANCE',
+                            item: JSON.stringify({ ...inst, templateId: updatedTpl.id }),
+                        }))
+                    });
+                }
             }
 
+            setRefreshTrigger(prev => prev + 1);
             setEditingTemplate(null);
-            addNotification('Routine Updated', `"${updatedTpl.taskName}" updated — ${editConfig.frequency} from ${editConfig.startDate}.`, 'CHECKLIST', String(updatedTpl.doerId));
+            addNotification('Routine Updated', `"${updatedTpl.taskName}" updated — ${editConfig.frequency} from ${effectiveStartDate}.`, 'CHECKLIST', String(updatedTpl.doerId));
         } catch (err) {
             console.error('Update routine failed', err);
-            alert('Failed to update routine. Please try again.');
+            // Restore snapshot on failure
+            setTemplates(prevTemplatesSnapshot);
+            setInstances(prevInstancesSnapshot);
+            setRefreshTrigger(prev => prev + 1);
+            alert('Failed to update routine on server. Changes were rolled back.');
         } finally {
             setIsSavingFreq(false);
         }

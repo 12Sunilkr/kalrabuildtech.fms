@@ -28,6 +28,7 @@ export const isAdminOrPc = (
       );
       if (u) {
         const r = (u.role || '').toUpperCase();
+        if (r === 'EMPLOYEE') return false;
         if (r === 'ADMIN' || r === 'PC' || r === 'SUPER_ADMIN') return true;
       }
     }
@@ -36,6 +37,9 @@ export const isAdminOrPc = (
 
   // 2. Direct role on the object (from User or Employee with role property)
   const role = (((emp as any).role) || '').toString().trim().toUpperCase();
+  if (role === 'EMPLOYEE') {
+    return false;
+  }
   if (role === 'ADMIN' || role === 'PC' || role === 'SUPER_ADMIN') {
     return true;
   }
@@ -46,18 +50,7 @@ export const isAdminOrPc = (
     return true;
   }
 
-  // 3. Designation check
-  const desig = (((emp as any).designation) || '').toString().trim().toLowerCase();
-  if (
-    desig === 'pc' ||
-    desig === 'admin' ||
-    desig === 'super admin' ||
-    desig === 'process coordinator'
-  ) {
-    return true;
-  }
-
-  // 4. Linked user check from users array
+  // 3. Linked user check from users array
   if (users && Array.isArray(users)) {
     const linkedUser = users.find(u => {
       if (empId && u.employeeId && String(u.employeeId) === empId) return true;
@@ -69,10 +62,24 @@ export const isAdminOrPc = (
 
     if (linkedUser) {
       const uRole = (linkedUser.role || '').toString().trim().toUpperCase();
+      if (uRole === 'EMPLOYEE') {
+        return false;
+      }
       if (uRole === 'ADMIN' || uRole === 'PC' || uRole === 'SUPER_ADMIN') {
         return true;
       }
     }
+  }
+
+  // 4. Designation check (fallback if role is not EMPLOYEE)
+  const desig = (((emp as any).designation) || '').toString().trim().toLowerCase();
+  if (
+    desig === 'pc' ||
+    desig === 'admin' ||
+    desig === 'super admin' ||
+    desig === 'process coordinator'
+  ) {
+    return true;
   }
 
   return false;
@@ -114,6 +121,7 @@ export const isProcessCoordinator = (
       );
       if (u) {
         const r = (u.role || '').toUpperCase();
+        if (r === 'EMPLOYEE') return false;
         if (r === 'PC') return true;
       }
     }
@@ -122,6 +130,9 @@ export const isProcessCoordinator = (
 
   // 2. Direct role check
   const role = (((emp as any).role) || '').toString().trim().toUpperCase();
+  if (role === 'EMPLOYEE') {
+    return false;
+  }
   if (role === 'PC') {
     return true;
   }
@@ -132,23 +143,7 @@ export const isProcessCoordinator = (
     return true;
   }
 
-  // 3. Designation check
-  const desig = (((emp as any).designation) || '').toString().trim().toLowerCase();
-  if (
-    desig === 'pc' ||
-    desig === 'process coordinator' ||
-    desig.includes('process coordinator')
-  ) {
-    return true;
-  }
-
-  // 4. Name check
-  const name = (((emp as any).name) || '').toString().trim().toLowerCase();
-  if (name.includes('process coordinator')) {
-    return true;
-  }
-
-  // 5. Linked user check
+  // 3. Linked user check
   if (users && Array.isArray(users)) {
     const linkedUser = users.find(u => {
       if (empId && u.employeeId && String(u.employeeId) === empId) return true;
@@ -160,14 +155,34 @@ export const isProcessCoordinator = (
 
     if (linkedUser) {
       const uRole = (linkedUser.role || '').toString().trim().toUpperCase();
+      if (uRole === 'EMPLOYEE') {
+        return false;
+      }
       if (uRole === 'PC') {
         return true;
       }
     }
   }
 
+  // 4. Designation check (fallback if role is not EMPLOYEE)
+  const desig = (((emp as any).designation) || '').toString().trim().toLowerCase();
+  if (
+    desig === 'pc' ||
+    desig === 'process coordinator' ||
+    desig.includes('process coordinator')
+  ) {
+    return true;
+  }
+
+  // 5. Name check
+  const name = (((emp as any).name) || '').toString().trim().toLowerCase();
+  if (name.includes('process coordinator')) {
+    return true;
+  }
+
   return false;
 };
+
 
 /**
  * Filters out Process Coordinator (PC) members from an employee list

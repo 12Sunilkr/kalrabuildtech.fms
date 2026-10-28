@@ -16,6 +16,7 @@ import { startPeriodicSync, syncToGoogleSheets } from './googleSheetsSync.js';
 import { createDebouncedPersist, safeWriteFileSync } from './utils/dbPersist.js';
 import { cacheGet, cacheSet, cacheInvalidate, withCache } from './utils/apiCache.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { alignChecklistsOnHolidayAdded, alignChecklistsOnHolidayRemoved } from './utils/holidayChecklist.js';
 
 // Load .env files manually if process.env is not populated (such as when run directly or in production via PM2)
 try {
@@ -3594,29 +3595,51 @@ function isAssigneeAdminOrPc(database, assignee) {
     return true;
   }
   try {
-    const u = database.prepare("SELECT role FROM users WHERE (employeeId = ? OR CAST(id AS TEXT) = ? OR lower(email) = lower(?)) AND coalesce(is_archived, 0) = 0");
+    const u = database.prepare("SELECT role, employeeId FROM users WHERE (employeeId = ? OR CAST(id AS TEXT) = ? OR lower(email) = lower(?)) AND coalesce(is_archived, 0) = 0");
     u.bind([str, str, str]);
     let match = false;
+    let hasEmployeeRole = false;
     while (u.step()) {
       const ur = u.getAsObject();
-      if (ur && (ur.role === 'ADMIN' || ur.role === 'PC' || ur.role === 'SUPER_ADMIN')) {
-        match = true;
-        break;
+      if (ur) {
+        if (ur.role === 'ADMIN' || ur.role === 'PC' || ur.role === 'SUPER_ADMIN') {
+          match = true;
+          break;
+        } else if (ur.role === 'EMPLOYEE') {
+          hasEmployeeRole = true;
+        }
       }
     }
     u.free();
     if (match) return true;
+    if (hasEmployeeRole) return false;
 
-    const e = database.prepare("SELECT designation FROM employees WHERE id = ? AND coalesce(is_archived, 0) = 0");
+    const e = database.prepare("SELECT id, designation, email FROM employees WHERE id = ? AND coalesce(is_archived, 0) = 0");
     e.bind([str]);
+    let empRow = null;
     if (e.step()) {
-      const er = e.getAsObject();
-      const desig = (er.designation || '').toLowerCase();
+      empRow = e.getAsObject();
+    }
+    e.free();
+
+    if (empRow) {
+      // Check if linked user has explicit role
+      const u2 = database.prepare("SELECT role FROM users WHERE (employeeId = ? OR lower(email) = lower(?)) AND coalesce(is_archived, 0) = 0");
+      u2.bind([empRow.id || '', empRow.email || '']);
+      let u2Role = null;
+      if (u2.step()) {
+        const u2Obj = u2.getAsObject();
+        u2Role = u2Obj ? u2Obj.role : null;
+      }
+      u2.free();
+      if (u2Role === 'EMPLOYEE') return false;
+      if (u2Role === 'ADMIN' || u2Role === 'PC' || u2Role === 'SUPER_ADMIN') return true;
+
+      const desig = (empRow.designation || '').toLowerCase();
       if (desig === 'pc' || desig === 'admin' || desig === 'super admin' || desig === 'process coordinator') {
         match = true;
       }
     }
-    e.free();
     return match;
   } catch (err) {
     return false;
@@ -4723,13 +4746,13 @@ app.post('/api/checklists/bulk', requireAuth, (req, res) => {
         }
 
         if (minIncomingDate) {
-          const deleteStmt = db.prepare("DELETE FROM checklists WHERE refId = ? AND done = 0 AND (json_extract(item, '$.date') >= ? OR json_extract(item, '$.date') IS NULL)");
+          const deleteStmt = db.prepare("DELETE FROM checklists WHERE refId = ? AND done = 0 AND (json_extract(item, '$.status') IS NULL OR json_extract(item, '$.status') = 'PENDING') AND (json_extract(item, '$.date') >= ? OR json_extract(item, '$.date') IS NULL)");
           for (const refId of uniqueRefIds) {
             deleteStmt.run([refId, minIncomingDate]);
           }
           deleteStmt.free();
         } else {
-          const deleteStmt = db.prepare('DELETE FROM checklists WHERE refId = ? AND done = 0');
+          const deleteStmt = db.prepare("DELETE FROM checklists WHERE refId = ? AND done = 0 AND (json_extract(item, '$.status') IS NULL OR json_extract(item, '$.status') = 'PENDING')");
           for (const refId of uniqueRefIds) {
             deleteStmt.run([refId]);
           }
@@ -4737,18 +4760,51 @@ app.post('/api/checklists/bulk', requireAuth, (req, res) => {
         }
       }
 
+      // Query existing completed instances for these refIds to avoid duplicate insertions on the same date when replacing
+      const existingCompletedDatesByRef = new Map();
+      if (replace === true) {
+        const uniqueRefIds = [...new Set(items.map(it => it.refId).filter(Boolean))];
+        for (const refId of uniqueRefIds) {
+          const q = db.prepare("SELECT json_extract(item, '$.date') as d FROM checklists WHERE refId = ? AND (done = 1 OR json_extract(item, '$.status') = 'COMPLETED')");
+          q.bind([refId]);
+          const dSet = new Set();
+          while (q.step()) {
+            const row = q.getAsObject();
+            if (row.d) dSet.add(row.d);
+          }
+          q.free();
+          existingCompletedDatesByRef.set(refId, dSet);
+        }
+      }
+
       const insert = db.prepare('INSERT INTO checklists (id, refId, refType, item, done, createdBy, createdAt) VALUES (?,?,?,?,?,?,?)');
       const createdBy = req.user && (req.user.employeeId || req.user.id) || null;
       const createdAt = new Date().toISOString();
+      let insertedCount = 0;
       for (const it of items) {
+        let itemDate = '';
+        try {
+          const parsed = JSON.parse(it.item);
+          itemDate = parsed.date;
+        } catch (e) {}
+
+        // Skip if replacing schedule and this date already has a completed task for this refId
+        if (replace === true && it.refId && itemDate) {
+          const completedSet = existingCompletedDatesByRef.get(it.refId);
+          if (completedSet && completedSet.has(itemDate)) {
+            continue;
+          }
+        }
+
         const id = genId('CK-');
         insert.run([id, it.refId, it.refType || null, it.item, 0, createdBy, createdAt]);
+        insertedCount++;
       }
       insert.free();
       db.run('COMMIT');
       persistDB();
       cacheInvalidate('checklists');
-      return success(res, { count: items.length }, 'Bulk created', 201);
+      return success(res, { count: insertedCount }, 'Bulk created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Checklists bulk POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
@@ -5058,15 +5114,15 @@ app.put('/api/checklist-templates/:id', requireAuth, (req, res) => {
   } catch (err) { console.error('Checklist templates PUT error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });
 
-// DELETE /api/checklist-templates/:id - delete a checklist template and all its instances
+// DELETE /api/checklist-templates/:id - delete a checklist template and all its pending instances (preserves completed historical records)
 app.delete('/api/checklist-templates/:id', requireAuth, (req, res) => {
   try {
     if (req.user.role !== 'ADMIN') return failure(res, 'Forbidden: Admin only', 403);
     console.log('DELETE checklist-template endpoint called', { id: req.params.id });
     const id = req.params.id;
 
-    // Delete all checklist items that reference this template first
-    const delItems = db.prepare('DELETE FROM checklists WHERE refId = ?');
+    // Delete only uncompleted pending instances for this template, preserving completed history
+    const delItems = db.prepare("DELETE FROM checklists WHERE refId = ? AND done = 0 AND (json_extract(item, '$.status') IS NULL OR json_extract(item, '$.status') = 'PENDING')");
     delItems.run([id]);
     delItems.free();
 
@@ -5075,8 +5131,12 @@ app.delete('/api/checklist-templates/:id', requireAuth, (req, res) => {
     delTemplate.run([id]);
     delTemplate.free();
 
-    // Persist to DB file
-    try { persistDB(); } catch (e) { console.warn('DB persist failed', e); }
+    // Persist to DB file and invalidate caches
+    try {
+      persistDB();
+      cacheInvalidate('checklists');
+      cacheInvalidate('checklist-templates');
+    } catch (e) { console.warn('DB persist or cache invalidate failed', e); }
 
     console.log('DELETE checklist-template succeeded', { id });
     return success(res, { message: 'Template deleted successfully', id });
@@ -6535,8 +6595,14 @@ app.post('/api/holidays', requireAuth, (req, res) => {
       insert.run([id, name, date, recurring ? 1 : 0, createdAt]);
       insert.free();
       db.run('COMMIT');
+
+      // Align existing checklist instances for this new holiday (works like Sunday)
+      alignChecklistsOnHolidayAdded(db, date);
+
       persistDB();
       cacheInvalidate('holidays');
+      cacheInvalidate('checklists');
+      cacheInvalidate('checklists:all');
       return success(res, { id, name, date, recurring: !!recurring }, 'Created', 201);
     } catch (e) { try { db.run('ROLLBACK'); } catch (er) { } throw e; }
   } catch (err) { console.error('Holidays POST error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
@@ -6561,10 +6627,25 @@ app.get('/api/holidays', requireAuth, withCache('holidays', 30000), (req, res) =
 app.delete('/api/holidays/:id', requireAuth, (req, res) => {
   try {
     const id = req.params.id;
+    let holDate = null;
+    const findStmt = db.prepare('SELECT date FROM holidays WHERE id = ?');
+    findStmt.bind([id]);
+    if (findStmt.step()) {
+      holDate = findStmt.getAsObject().date;
+    }
+    findStmt.free();
+
     const del = db.prepare('DELETE FROM holidays WHERE id = ?');
     del.run([id]); del.free && del.free();
+
+    if (holDate) {
+      alignChecklistsOnHolidayRemoved(db, holDate);
+    }
+
     persistDB();
     cacheInvalidate('holidays');
+    cacheInvalidate('checklists');
+    cacheInvalidate('checklists:all');
     return success(res, null, 'Deleted');
   } catch (err) { console.error('Holidays DELETE error', err && (err.stack || err.message || err)); return failure(res, 'Internal server error', 500); }
 });

@@ -384,7 +384,9 @@ export interface ChecklistInstance {
   id: string;
   templateId: string;
   date: string; // YYYY-MM-DD (Scheduled Date)
+  originalDate?: string; // Original schedule date before shifting from Sun/Holiday
   status: 'PENDING' | 'COMPLETED' | 'STOPPED' | 'MISSED' | 'EXCUSE_REQUESTED' | 'MISSED_EXCUSED' | 'TRANSFERRED';
+  done?: boolean | number;
   completedDate?: string;
   shiftedDueToHoliday?: boolean; // Tracking if it was moved from Sun/Holiday
   // Enrichment fields populated at load time from the parent template
